@@ -10,8 +10,8 @@ HPA is an AI-assisted workflow for preparing scientific healthcare presentations
 - PDF extraction with PyMuPDF and resource validation.
 - Structured blueprint and slide generation with LangChain, LangGraph and Gemini/OpenAI.
 - Mandatory human approval for the blueprint, slides and final presentation.
-- PowerPoint (`.pptx`) export.
-- Streamlit interface with click-to-approve validation controls and user-scoped SQLite memory.
+- PowerPoint (`.pptx`) export with a mandatory final slide listing user-validated resources.
+- Streamlit interface with click-to-approve validation controls and SQLite memory scoped by user and project.
 - FastAPI endpoints.
 
 ## Architecture
@@ -84,7 +84,7 @@ python main.py
 6. Approve the final presentation.
 7. Download the PowerPoint.
 
-The Streamlit sidebar handles user identification, PDF upload, explicit approval buttons and PowerPoint download. Reuse the same identifier on the same machine to restore the saved workflow. API users can use `POST /resources/pdf/{thread_id}` and `GET /presentations/{thread_id}/export/pptx`.
+The Streamlit sidebar handles user identification, project selection, PDF upload, explicit approval buttons and PowerPoint download. A user can create several projects; each project keeps its own conversation, resources and presentation state. API users must provide both `user_id` and `project_id`: use `POST /resources/pdf/{user_id}/{project_id}` and `GET /presentations/{user_id}/{project_id}/export/pptx`.
 
 ## Tests
 
@@ -100,7 +100,7 @@ Set the main file to `streamlit_app.py`. In Streamlit secrets, set `LLM_PROVIDER
 
 ## Limitations
 
-- Streamlit sessions are persisted locally in SQLite per user identifier. The API session store is still in memory and is lost on restart.
+- Streamlit and API workflow sessions are persisted locally in SQLite per user and project. Configure a shared database service before deploying multiple application instances.
 - Output quality and availability depend on the LLM provider and its quota.
 - PDF extraction supports selectable text; scanned PDFs need OCR, which is not yet implemented.
 - Clinical claims and references require human review.

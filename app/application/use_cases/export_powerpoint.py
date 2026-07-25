@@ -15,6 +15,10 @@ class ExportPowerPointUseCase:
             raise ValueError("Generate presentation slides before exporting PowerPoint.")
         if not presentation.state.presentation_validated:
             raise ValueError("Human approval of the final presentation is required before export.")
+        if not presentation.resources or not presentation.state.resources_validated:
+            raise ValueError("Validated user resources are required before exporting PowerPoint.")
+        if not all(resource.is_validated for resource in presentation.resources):
+            raise ValueError("Every resource must be validated by the user before export.")
 
         output_dir.mkdir(parents=True, exist_ok=True)
         deck = PowerPoint()
@@ -39,6 +43,30 @@ class ExportPowerPointUseCase:
                 textbox.text_frame.paragraphs[0].text = "References: " + "; ".join(slide.references)
                 textbox.text_frame.paragraphs[0].font.size = Pt(8)
 
+        self._add_resources_slide(deck, presentation)
+
         path = output_dir / f"{presentation.id}-{uuid4().hex[:8]}.pptx"
         deck.save(path)
         return path
+
+    @staticmethod
+    def _add_resources_slide(deck: PowerPoint, presentation: Presentation) -> None:
+        """Append the mandatory, human-validated source list to every exported deck."""
+        resources_slide = deck.slides.add_slide(deck.slide_layouts[1])
+        resources_slide.shapes.title.text = "Ressources et validation"
+        frame = resources_slide.placeholders[1].text_frame
+        frame.clear()
+
+        heading = frame.paragraphs[0]
+        heading.text = "Toutes les ressources ci-dessous ont été validées par l’utilisateur."
+        heading.font.size = Pt(20)
+
+        for resource in presentation.resources:
+            details = [resource.title or resource.filename]
+            if resource.source:
+                details.append(resource.source)
+            details.append(f"ID : {resource.id}")
+            paragraph = frame.add_paragraph()
+            paragraph.text = " — ".join(details) + " (validée par l’utilisateur)"
+            paragraph.level = 0
+            paragraph.font.size = Pt(16)

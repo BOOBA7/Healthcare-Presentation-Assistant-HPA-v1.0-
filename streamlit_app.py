@@ -56,18 +56,43 @@ def authenticated_user_id() -> str:
     ).strip() or "demo-user"
 
 
-def load_user_state(user_id: str) -> GraphState:
-    if st.session_state.get("active_user_id") != user_id:
-        stored = get_repository().load(user_id)
-        thread_id, state = stored if stored else get_repository().create_empty(user_id)
+def load_project_state(user_id: str, project_id: str) -> GraphState:
+    """Load an isolated workflow state for one user project."""
+    if (
+        st.session_state.get("active_user_id") != user_id
+        or st.session_state.get("active_project_id") != project_id
+    ):
+        stored = get_repository().load(user_id, project_id)
+        thread_id, state = stored if stored else get_repository().create_empty(user_id, project_id)
         st.session_state.active_user_id = user_id
+        st.session_state.active_project_id = project_id
         st.session_state.thread_id = thread_id
         st.session_state.state = state
+        st.session_state.pop("pptx_data", None)
+        st.session_state.pop("pptx_name", None)
     return st.session_state.state
 
 
 def save_state() -> None:
-    get_repository().save(st.session_state.active_user_id, st.session_state.thread_id, st.session_state.state)
+    get_repository().save(
+        st.session_state.active_user_id,
+        st.session_state.active_project_id,
+        st.session_state.thread_id,
+        st.session_state.state,
+    )
+
+
+def open_or_create_project(user_id: str) -> None:
+    """Callback used before widgets render, so changing the selected project is safe."""
+    project_id = str(st.session_state.get("new_project_id_input", "")).strip()
+    if not project_id:
+        st.session_state.project_error = "Saisissez un identifiant de projet."
+        return
+    if get_repository().load(user_id, project_id) is None:
+        get_repository().create_empty(user_id, project_id)
+    st.session_state.project_selector = project_id
+    st.session_state.active_project_id = None
+    st.session_state.pop("project_error", None)
 
 
 def run_validation(tool, **arguments: object) -> None:
@@ -116,8 +141,34 @@ st.caption("Créez une présentation scientifique à partir de ressources PDF va
 with st.sidebar:
     st.header("Utilisateur")
     user_id = authenticated_user_id()
-    state = load_user_state(user_id)
-    st.caption(f"Session : {st.session_state.thread_id[:8]}")
+    if st.session_state.get("active_user_id") != user_id:
+        st.session_state.pop("project_selector", None)
+
+    project_ids = get_repository().list_project_ids(user_id)
+    if not project_ids:
+        project_ids = ["projet-1"]
+    default_project = st.session_state.get("project_selector", project_ids[0])
+    if default_project not in project_ids:
+        default_project = project_ids[0]
+    project_id = st.selectbox(
+        "Projet",
+        options=project_ids,
+        index=project_ids.index(default_project),
+        key="project_selector",
+        help="Chaque projet conserve sa propre conversation, ses ressources et sa présentation.",
+    )
+    st.text_input(
+        "Nouvel identifiant de projet",
+        placeholder="ex. depression-medecine-generale",
+        max_chars=128,
+        key="new_project_id_input",
+    )
+    st.button("Créer / ouvrir ce projet", on_click=open_or_create_project, args=(user_id,))
+    if project_error := st.session_state.pop("project_error", None):
+        st.error(project_error)
+
+    state = load_project_state(user_id, project_id)
+    st.caption(f"Projet : {project_id} · Session : {st.session_state.thread_id[:8]}")
     st.divider()
     st.header("Ressource scientifique")
     uploaded_pdf = st.file_uploader("Déposez un PDF", type=["pdf"])

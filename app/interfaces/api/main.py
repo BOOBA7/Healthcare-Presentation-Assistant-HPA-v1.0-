@@ -26,6 +26,7 @@ _exports_dir = Path("exports")
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=20_000)
     user_id: str = Field(min_length=1, max_length=128)
+    project_id: str = Field(min_length=1, max_length=128)
 
 
 @lru_cache
@@ -58,8 +59,12 @@ def health():
 @app.post("/chat")
 def chat(request: ChatRequest):
     """Send a user message to the presentation workflow."""
-    stored = get_repository().load(request.user_id)
-    thread_id, state = stored if stored else get_repository().create_empty(request.user_id)
+    stored = get_repository().load(request.user_id, request.project_id)
+    thread_id, state = (
+        stored
+        if stored
+        else get_repository().create_empty(request.user_id, request.project_id)
+    )
     state.messages.append(HumanMessage(content=request.message))
     try:
         result = get_agent().invoke(state, thread_id=thread_id)
@@ -74,12 +79,13 @@ def chat(request: ChatRequest):
             status_code=502,
             detail="The language-model provider could not process this request.",
         ) from exc
-    get_repository().save(request.user_id, thread_id, GraphState(**result))
+    get_repository().save(request.user_id, request.project_id, thread_id, GraphState(**result))
     messages = result.get("messages", [])
     last_message = messages[-1] if messages else None
 
     return {
         "thread_id": thread_id,
+        "project_id": request.project_id,
         "message": getattr(last_message, "content", ""),
         "last_tool": result.get("last_tool"),
         "error": result.get("error"),
@@ -87,12 +93,12 @@ def chat(request: ChatRequest):
     }
 
 
-@app.post("/resources/pdf/{user_id}")
-async def upload_pdf_resource(user_id: str, file: UploadFile = File(...)):
+@app.post("/resources/pdf/{user_id}/{project_id}")
+async def upload_pdf_resource(user_id: str, project_id: str, file: UploadFile = File(...)):
     """Extract a PDF and attach it as validated evidence to a presentation."""
     if file.content_type not in {"application/pdf", "application/x-pdf"}:
         raise HTTPException(status_code=415, detail="Only PDF uploads are accepted.")
-    stored = get_repository().load(user_id)
+    stored = get_repository().load(user_id, project_id)
     if stored is None or stored[1].presentation is None:
         raise HTTPException(status_code=409, detail="Create a presentation before uploading resources.")
     thread_id, state = stored
@@ -104,14 +110,14 @@ async def upload_pdf_resource(user_id: str, file: UploadFile = File(...)):
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     state.presentation.resources.append(resource)
-    get_repository().save(user_id, thread_id, state)
+    get_repository().save(user_id, project_id, thread_id, state)
     return {"resource_id": resource.id, "filename": resource.filename, "characters_extracted": len(resource.extracted_text or "")}
 
 
-@app.get("/presentations/{user_id}/export/pptx")
-def export_powerpoint(user_id: str):
+@app.get("/presentations/{user_id}/{project_id}/export/pptx")
+def export_powerpoint(user_id: str, project_id: str):
     """Download the generated presentation as a PowerPoint file."""
-    stored = get_repository().load(user_id)
+    stored = get_repository().load(user_id, project_id)
     if stored is None or stored[1].presentation is None:
         raise HTTPException(status_code=404, detail="Presentation not found.")
     _, state = stored

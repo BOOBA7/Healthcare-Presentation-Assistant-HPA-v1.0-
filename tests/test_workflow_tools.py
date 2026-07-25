@@ -11,6 +11,10 @@ from app.domain.enums.language import Language
 from app.domain.enums.presentation_type import PresentationType
 from app.domain.models.slide import Slide
 from app.application.use_cases.workflow_steps import ReviewSlideUseCase
+from app.application.use_cases.export_powerpoint import ExportPowerPointUseCase
+from app.domain.enums.resource_type import ResourceType
+from app.domain.models.resource import Resource
+from pptx import Presentation as PowerPoint
 
 
 def test_context_can_create_a_presentation_without_a_live_llm():
@@ -41,3 +45,39 @@ def test_final_approval_requires_slide_approval_first():
 
     assert state.presentation.state.slides_validated
     assert state.presentation.state.presentation_validated
+
+
+def test_powerpoint_always_ends_with_user_validated_resources(tmp_path):
+    state = collect_context.func(
+        GraphState(),
+        topic="Depression",
+        audience=AudienceType.SPECIALIST,
+        presentation_type=PresentationType.LECTURE,
+        language=Language.FRENCH,
+        duration_minutes=20,
+        objective="Review novel treatment strategies",
+    )
+    state = create_presentation.func(validate_context.func(state))
+    presentation = state.presentation
+    presentation.slides = [Slide(slide_number=1, title="Introduction", key_messages=["Message"])]
+    presentation.resources = [
+        Resource(
+            id="resource-1",
+            filename="guideline.pdf",
+            title="Clinical guideline",
+            source="WHO",
+            file_type=ResourceType.PDF,
+            extracted_text="Evidence",
+            is_validated=True,
+        )
+    ]
+    presentation.state.resources_validated = True
+    presentation.state.presentation_validated = True
+
+    path = ExportPowerPointUseCase().execute(presentation, tmp_path)
+    deck = PowerPoint(path)
+    last_slide_text = " ".join(shape.text for shape in deck.slides[-1].shapes if hasattr(shape, "text"))
+
+    assert deck.slides[-1].shapes.title.text == "Ressources et validation"
+    assert "guideline" in last_slide_text
+    assert "validées par l’utilisateur" in last_slide_text
