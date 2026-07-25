@@ -1,0 +1,358 @@
+# ADR-0007 — Cognitive Agent Architecture for Healthcare Presentation Assistant (HPA)
+
+## Status
+
+**Accepted**
+
+---
+
+# Context
+
+The Healthcare Presentation Assistant (HPA) is not a sequential workflow.
+
+It is an autonomous cognitive agent specialized in creating scientific healthcare presentations while keeping the human expert in control of every critical scientific decision.
+
+The architecture must remain:
+
+* deterministic
+* auditable
+* FDA-oriented
+* extensible
+* modular
+
+No business logic shall exist inside the agent.
+
+---
+
+# Guiding Principles
+
+## 1. One Single Cognitive Agent
+
+The project shall expose only one intelligent agent.
+
+```
+HealthcarePresentationAgent
+```
+
+This agent represents the cognitive layer of HPA.
+
+It is responsible for:
+
+* understanding user requests
+* reasoning
+* planning
+* deciding which tool to execute
+* deciding when to stop
+* interacting with the user naturally
+
+The agent **never performs business logic itself**.
+
+---
+
+## 2. The LLM is Built Once
+
+The language model is instantiated only once during the initialization of the agent.
+
+The LLM is permanently configured with:
+
+* System Prompt
+* Healthcare Harness
+* Loop Engineering Prompt
+* Registered Tools
+
+The LLM is never reconstructed during execution.
+
+---
+
+## 3. LangGraph Only Orchestrates
+
+LangGraph is responsible only for orchestration.
+
+It does not contain business rules.
+
+It does not decide which medical action to perform.
+
+Its responsibilities are:
+
+* maintain AgentState
+* execute the reasoning loop
+* call ToolNode
+* manage checkpoints
+* resume interrupted executions
+
+---
+
+## 4. ReAct Loop
+
+The agent follows a continuous reasoning loop.
+
+```
+User
+
+↓
+
+HealthcarePresentationAgent
+
+↓
+
+Reason
+
+↓
+
+Should Continue ?
+
+↓
+
+Tool
+
+↓
+
+Updated State
+
+↓
+
+Reason
+
+↓
+
+Finish
+```
+
+The LLM decides whether:
+
+* a tool must be executed
+* the user must answer a question
+* the workflow is complete
+
+---
+
+## 5. AgentState is the Single Source of Truth
+
+Every component exchanges exactly one object:
+
+```
+AgentState
+```
+
+No component directly exchanges Presentation objects.
+
+Presentation is only one attribute of AgentState.
+
+Every node receives:
+
+```
+AgentState
+```
+
+Every node returns:
+
+```
+AgentState
+```
+
+---
+
+## 6. Tools Execute Business Capabilities
+
+Every tool represents one business capability.
+
+Examples:
+
+* Create Presentation
+* Validate Context
+* Validate Resources
+* Build Blueprint
+* Generate Slides
+
+Tools never contain business logic.
+
+Each tool delegates to exactly one UseCase.
+
+---
+
+## 7. UseCases Contain All Business Logic
+
+Business rules live exclusively inside UseCases.
+
+Examples:
+
+```
+CreatePresentationUseCase
+
+BuildBlueprintUseCase
+
+GenerateSlidesUseCase
+```
+
+No business logic is allowed inside:
+
+* Agent
+* LangGraph
+* ToolExecutor
+* ToolRegistry
+
+---
+
+## 8. Domain is Pure
+
+The Domain layer contains:
+
+* entities
+* value objects
+* enums
+* business models
+
+The Domain never depends on:
+
+* LangChain
+* LangGraph
+* LLM providers
+* prompts
+
+---
+
+## 9. Prompt Responsibilities
+
+Prompting is divided into four independent layers.
+
+### System Prompt
+
+Defines the permanent identity of the assistant.
+
+---
+
+### Healthcare Harness
+
+Defines scientific constraints.
+
+Examples:
+
+* evidence-based medicine
+* no hallucinations
+* guideline-first reasoning
+* citation requirements
+
+---
+
+### Loop Engineering
+
+Defines reasoning behaviour.
+
+Examples:
+
+* when to call a tool
+* when to ask the user
+* when to wait
+* when to stop
+
+---
+
+### Task Prompt Builders
+
+Used only for specialized generation.
+
+Examples:
+
+* Blueprint Prompt
+* Slide Prompt
+
+Prompt Builders never control the agent behaviour.
+
+---
+
+## 10. Human-in-the-Loop
+
+HPA is designed following FDA Good Machine Learning Practice principles.
+
+The human expert validates every critical decision.
+
+Mandatory validation points include:
+
+* presentation context
+* uploaded resources
+* blueprint
+* generated slides
+* final presentation
+
+The agent never bypasses these validation steps.
+
+---
+
+## 11. Logging
+
+Every reasoning cycle must be logged.
+
+Logs should include:
+
+* timestamp
+* selected tool
+* reasoning outcome
+* workflow state
+* execution duration
+* validation events
+* failures
+
+The logs must support scientific auditing and reproducibility.
+
+---
+
+## 12. Future Extensions
+
+The architecture must allow additional tools without modifying the cognitive layer.
+
+Future tools may include:
+
+* PubMed Search
+* ClinicalTrials.gov Search
+* CrossRef Search
+* Internal RAG Retrieval
+* Figure Generator
+* Scientific Fact Checker
+* PPTX Export
+* PDF Export
+
+The agent should automatically reason about when these tools are required.
+
+---
+
+# Final Architecture
+
+```
+User
+        │
+        ▼
+HealthcarePresentationAgent
+        │
+        ▼
+LLM
+(System Prompt + Harness + Loop Engineering)
+        │
+        ▼
+Reasoning
+        │
+        ▼
+LangGraph
+(ReAct Loop)
+        │
+        ▼
+ToolNode
+        │
+        ▼
+Business Tool
+        │
+        ▼
+UseCase
+        │
+        ▼
+Domain
+```
+
+---
+
+# Decision
+
+This architecture becomes the reference architecture of HPA.
+
+Every future component must comply with this document.
+
+Any implementation conflicting with these principles shall be refactored before introducing new functionality.
