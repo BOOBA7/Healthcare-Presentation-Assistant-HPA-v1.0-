@@ -1,6 +1,8 @@
 from functools import lru_cache
+import logging
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -29,6 +31,7 @@ from app.ai.workflows.tools import (
 )
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title=settings.app_name,
@@ -165,15 +168,21 @@ def chat(request: ChatRequest):
     try:
         result = get_agent().invoke(state, thread_id=thread_id)
     except Exception as exc:
+        logger.exception("Language-model request failed for user=%s project=%s", request.user_id, request.project_id)
         error_message = str(exc)
         if "RESOURCE_EXHAUSTED" in error_message or "429" in error_message:
             raise HTTPException(
                 status_code=429,
                 detail="Gemini quota is exhausted. Retry later or use an API project with available quota.",
             ) from exc
+        if isinstance(exc, httpx.ConnectError) or "nodename nor servname" in error_message:
+            raise HTTPException(
+                status_code=503,
+                detail="Cannot reach Gemini. Check your Internet connection, DNS, or firewall, then retry.",
+            ) from exc
         raise HTTPException(
             status_code=502,
-            detail="The language-model provider could not process this request.",
+            detail="The language-model provider could not process this request. Check the selected model and API key.",
         ) from exc
     saved_state = GraphState(**result)
     get_repository().save(request.user_id, request.project_id, thread_id, saved_state)

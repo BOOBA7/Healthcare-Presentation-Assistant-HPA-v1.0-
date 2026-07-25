@@ -42,7 +42,15 @@ async function createProject() {
   const projectId = $("#new-project-id").value.trim();
   if (!projectId) return notify("Saisissez un identifiant de projet.", true);
   state.projectId = projectId; localStorage.setItem("hpa_project_id", projectId);
-  await loadProjects(); await openProject(); $("#new-project-id").value = ""; notify(`Projet « ${projectId} » ouvert.`);
+  try {
+    const response = await api("/projects", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ user_id:state.userId, project_id:state.projectId }) });
+    state.project = await response.json();
+    await loadProjects();
+    $("#project-id").value = projectId;
+    $("#new-project-id").value = "";
+    render();
+    notify(`Projet « ${projectId} » ouvert.`);
+  } catch (error) { notify(error.message, true); }
 }
 async function refreshProject() { const response = await api(projectPath()); state.project = await response.json(); render(); }
 function saveProjectResponse(payload) { state.project = payload; render(); }
@@ -61,6 +69,7 @@ function render() {
   const steps = { context:Boolean(state.project?.presentation_context || presentation), resources:Boolean(workflow.resources_validated), blueprint:Boolean(workflow.blueprint_validated), slides:Boolean(workflow.slides_validated), final:Boolean(workflow.presentation_validated) };
   document.querySelectorAll(".step").forEach((node, index) => { const key = node.dataset.step; node.classList.toggle("done", steps[key]); node.classList.toggle("active", !steps[key] && Object.values(steps).slice(0,index).every(Boolean)); });
   $("#validate-resources").hidden = !(presentation?.resources?.length && !workflow.resources_validated);
+  $("#upload-resource").disabled = !presentation || !$("#pdf-file").files[0];
   $("#export-pptx").disabled = !workflow.presentation_validated;
   const overview = $("#overview");
   overview.innerHTML = presentation ? `<div class="stat-list"><div class="stat"><span>Ressources validées</span><strong>${workflow.resources_validated ? "Oui" : "À valider"}</strong></div><div class="stat"><span>Éléments du blueprint</span><strong>${presentation.blueprint?.slides?.length || 0}</strong></div><div class="stat"><span>Slides générées</span><strong>${presentation.slides?.length || 0}</strong></div><div class="stat"><span>Validation finale</span><strong>${workflow.presentation_validated ? "Approuvée" : "En attente"}</strong></div></div>` : '<div class="empty-state">Commencez par décrire votre présentation à l’assistant.</div>';
@@ -88,7 +97,7 @@ async function reviewAction(button) { const kind=button.dataset.review, index=bu
 async function exportPptx() { try { const response=await api(`/presentations/${endpoint(state.userId)}/${endpoint(state.projectId)}/export/pptx`); const blob=await response.blob(); const link=document.createElement("a"); link.href=URL.createObjectURL(blob); link.download=`${currentPresentation()?.title || state.projectId}.pptx`; link.click(); URL.revokeObjectURL(link.href); } catch (error) { notify(error.message,true); } }
 
 $("#user-id").addEventListener("change", async () => { try { await loadProjects(); await openProject(); } catch(error) { notify(error.message,true); } });
-$("#project-id").addEventListener("change", openProject); $("#create-project").addEventListener("click", createProject); $("#pdf-file").addEventListener("change", event => { const file=event.target.files[0]; $("#file-name").textContent=file ? file.name : "20 Mo maximum"; $("#upload-resource").disabled=!file; }); $("#upload-resource").addEventListener("click",uploadResource); $("#validate-resources").addEventListener("click",()=>simpleAction("/resources/validate")); $("#chat-form").addEventListener("submit",sendChat); $("#export-pptx").addEventListener("click",exportPptx);
+$("#project-id").addEventListener("change", openProject); $("#create-project").addEventListener("click", createProject); $("#pdf-file").addEventListener("change", event => { const file=event.target.files[0]; $("#file-name").textContent=file ? file.name : "20 Mo maximum"; $("#upload-resource").disabled=!file || !currentPresentation(); if (file && !currentPresentation()) notify("Décrivez d’abord la présentation dans la conversation avant d’ajouter un PDF."); }); $("#upload-resource").addEventListener("click",uploadResource); $("#validate-resources").addEventListener("click",()=>simpleAction("/resources/validate")); $("#chat-form").addEventListener("submit",sendChat); $("#export-pptx").addEventListener("click",exportPptx);
 $("#final-actions").addEventListener("click", event => { const action=event.target.dataset.action; if (action === "blueprint-approve") simpleAction("/blueprint/approve"); if (action === "slides-approve") simpleAction("/slides/approve"); if (action === "final-approve") simpleAction("/presentation/approve"); });
 $("#review-area").addEventListener("click", event => { const button=event.target.closest("button"); if (!button) return; if (button.dataset.review) reviewAction(button); if (button.dataset.action === "blueprint-regenerate") simpleAction("/blueprint/regenerate"); });
 (async () => { try { $("#user-id").value=state.userId; await loadProjects(); await openProject(); } catch(error) { notify(error.message,true); } })();
