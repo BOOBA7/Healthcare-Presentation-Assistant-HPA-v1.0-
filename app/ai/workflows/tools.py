@@ -71,4 +71,21 @@ def validate_final_presentation(state: Annotated[GraphState, InjectedToolArg], a
     return ValidateFinalPresentationWorkflowUseCase().execute(state, approved)
 
 
-TOOLS = (collect_context, validate_context, create_presentation, validate_resources, build_blueprint, validate_blueprint, generate_slides, validate_slides, validate_final_presentation)
+# The cognitive agent can advance production only. Human approvals are invoked
+# directly by the interface/API and are deliberately not bound to the LLM.
+COGNITIVE_TOOLS = (
+    collect_context,
+    validate_context,
+    create_presentation,
+    build_blueprint,
+    generate_slides,
+)
+
+HUMAN_VALIDATION_TOOLS = (
+    validate_resources,
+    validate_blueprint,
+    validate_slides,
+    validate_final_presentation,
+)
+
+TOOLS = COGNITIVE_TOOLS + HUMAN_VALIDATION_TOOLS

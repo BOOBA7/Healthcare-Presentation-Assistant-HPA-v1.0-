@@ -26,7 +26,9 @@ class StateSummaryBuilder:
                 f"- Slides approved: {'yes' if workflow_state and workflow_state.slides_validated else 'no'}",
                 f"- Final presentation approved: {'yes' if workflow_state and workflow_state.presentation_validated else 'no'}",
                 f"- Allowed next tools: {', '.join(self.allowed_tools(state)) or 'none; ask the user for the required information or PDF'}",
-                "- Call only an allowed next tool. Never call a validation tool until its prerequisite is complete.",
+                "- Natural discussion is always allowed and does not require a tool.",
+                "- Resource, blueprint, slide and final validations are human actions performed in the interface, never LLM tools.",
+                "- Call only an allowed next tool after an explicit execution request. Never call a validation tool.",
             ]
         )
 
@@ -43,15 +45,15 @@ class StateSummaryBuilder:
         if not presentation.resources:
             return ()
         if not presentation.state.resources_validated:
-            return ("validate_resources",)
+            return ()
         if presentation.blueprint is None:
             return ("build_blueprint",)
         if not presentation.state.blueprint_validated:
-            return ("validate_blueprint",)
+            return ()
         if not presentation.slides:
             return ("generate_slides",)
         if not presentation.state.slides_validated:
-            return ("validate_slides",)
+            return ()
         if not presentation.state.presentation_validated:
-            return ("validate_final_presentation",)
+            return ()
         return ()

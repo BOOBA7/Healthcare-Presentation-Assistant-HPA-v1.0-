@@ -57,7 +57,7 @@ function saveProjectResponse(payload) { state.project = payload; render(); }
 
 function renderMessages(messages = []) {
   const node = $("#chat-messages");
-  if (!messages.length) { node.innerHTML = '<div class="empty-chat">Décrivez le sujet, le public, le format, la langue, la durée et votre objectif.</div>'; return; }
+  if (!messages.length) { node.innerHTML = '<div class="empty-chat">Explorez une idée, demandez des conseils de structure, ou demandez explicitement de créer votre présentation.</div>'; return; }
   node.innerHTML = messages.map(message => `<div class="message ${message.role}">${escapeHtml(message.text)}</div>`).join(""); node.scrollTop = node.scrollHeight;
 }
 function render() {

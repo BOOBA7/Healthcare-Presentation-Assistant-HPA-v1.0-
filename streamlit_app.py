@@ -136,7 +136,7 @@ def message_text(message) -> str:
 
 
 st.title("🩺 Healthcare Presentation Assistant")
-st.caption("Créez une présentation scientifique à partir de ressources PDF validées.")
+st.caption("Discutez vos idées, puis créez une présentation scientifique à partir de ressources PDF validées.")
 
 with st.sidebar:
     st.header("Utilisateur")
@@ -278,7 +278,7 @@ for message in state.messages:
     with st.chat_message(role):
         st.write(message_text(message))
 
-if prompt := st.chat_input("Décrivez votre présentation ou répondez à la question..."):
+if prompt := st.chat_input("Discutez d’une idée ou demandez explicitement de créer/générer votre présentation..."):
     with st.chat_message("user"):
         st.write(prompt)
     state.messages.append(HumanMessage(content=prompt))
