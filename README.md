@@ -68,6 +68,10 @@ uvicorn app.interfaces.api.main:app --reload
 
 Open `http://127.0.0.1:8000/docs`.
 
+### Interface web JavaScript (recommandée en local)
+
+Lancez la même API, puis ouvrez `http://127.0.0.1:8000/app` dans le navigateur. Cette interface ne nécessite ni Node.js ni une compilation frontend. Elle permet de gérer plusieurs projets par utilisateur, déposer les PDF, discuter avec l’agent, valider chaque élément et télécharger le PowerPoint.
+
 ### CLI
 
 ```bash

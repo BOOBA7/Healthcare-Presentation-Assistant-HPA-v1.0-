@@ -121,6 +121,8 @@ class RejectBlueprintItemUseCase:
     def execute(self, state: GraphState, index: int, comments: str) -> GraphState:
         if state.presentation is None or state.presentation.blueprint is None:
             raise ValueError("Generate a blueprint before reviewing it.")
+        if not 0 <= index < len(state.presentation.blueprint.slides):
+            raise ValueError("Blueprint item index is invalid.")
         item = state.presentation.blueprint.slides[index]
         item.is_validated = False
         item.reviewer_comments = comments.strip() or "Revision requested by reviewer."
@@ -133,6 +135,8 @@ class RejectSlideUseCase:
     def execute(self, state: GraphState, index: int, comments: str) -> GraphState:
         if state.presentation is None or not state.presentation.slides:
             raise ValueError("Generate slides before reviewing them.")
+        if not 0 <= index < len(state.presentation.slides):
+            raise ValueError("Slide index is invalid.")
         slide = state.presentation.slides[index]
         slide.is_validated = False
         slide.reviewer_comments = comments.strip() or "Revision requested by reviewer."
