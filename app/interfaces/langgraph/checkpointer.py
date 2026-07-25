@@ -28,6 +28,13 @@ def get_checkpointer() -> InMemorySaver:
             ("app.domain.models.slide_outline", "SlideOutline"),
             ("app.domain.models.slide", "Slide"),
             ("app.domain.models.resource", "Resource"),
+            ("app.domain.enums.audience_type", "AudienceType"),
+            ("app.domain.enums.language", "Language"),
+            ("app.domain.enums.presentation_type", "PresentationType"),
+            ("app.domain.enums.workflow_step", "WorkflowStep"),
+            ("app.domain.enums.presentation_status", "PresentationStatus"),
+            ("app.domain.enums.resource_type", "ResourceType"),
+            ("app.domain.enums.slide_status", "SlideStatus"),
         ]
     )
     return InMemorySaver(serde=serializer)

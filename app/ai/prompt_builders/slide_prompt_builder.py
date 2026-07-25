@@ -21,7 +21,7 @@ class SlidePromptBuilder:
         context = presentation.context
 
         resources = "\n\n".join(
-            f"SOURCE: {resource.title or resource.filename}\n{(resource.extracted_text or '')[:12000]}"
+            f"SOURCE ID: {resource.id} | TITLE: {resource.title or resource.filename}\n{(resource.extracted_text or '')[:12000]}"
             for resource in presentation.resources
         )
 
@@ -87,6 +87,9 @@ Title:
 Objective:
 {outline.objective}
 
+Reviewer Revision Request:
+{outline.reviewer_comments or "None"}
+
 
 ========================
 OUTPUT FORMAT
@@ -122,6 +125,7 @@ Requirements:
 - Never invent scientific evidence.
 - Never invent references.
 - Cite only references supported by the provided documents.
+- For each reference, include the source resource ID, page number and a short supporting excerpt.
 - Adapt the scientific level to the audience.
 - Write concise PowerPoint bullet points.
 - Speaker notes may be more detailed than the slide itself.

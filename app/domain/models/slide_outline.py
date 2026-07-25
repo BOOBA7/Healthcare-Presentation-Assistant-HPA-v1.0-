@@ -27,3 +27,7 @@ class SlideOutline(BaseModel):
         ...,
         description="Main message the audience should remember.",
     )
+
+    is_validated: bool = Field(default=False)
+
+    reviewer_comments: str | None = Field(default=None)

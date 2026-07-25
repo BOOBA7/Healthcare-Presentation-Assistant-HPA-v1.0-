@@ -20,7 +20,11 @@ class ExtractPdfResourceUseCase:
             raise ValueError("The uploaded file is not a valid PDF.") from exc
 
         try:
-            text = "\n".join(page.get_text("text") for page in document).strip()
+            pages = [
+                {"page": index + 1, "text": page.get_text("text").strip()}
+                for index, page in enumerate(document)
+            ]
+            text = "\n".join(str(page["text"]) for page in pages).strip()
             metadata = document.metadata or {}
         finally:
             document.close()
@@ -35,5 +39,6 @@ class ExtractPdfResourceUseCase:
             title=metadata.get("title") or filename,
             source=metadata.get("author") or None,
             extracted_text=text,
+            extracted_pages=pages,
             is_validated=True,
         )

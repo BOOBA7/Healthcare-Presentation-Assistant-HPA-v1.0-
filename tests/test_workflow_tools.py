@@ -10,6 +10,7 @@ from app.domain.enums.audience_type import AudienceType
 from app.domain.enums.language import Language
 from app.domain.enums.presentation_type import PresentationType
 from app.domain.models.slide import Slide
+from app.application.use_cases.workflow_steps import ReviewSlideUseCase
 
 
 def test_context_can_create_a_presentation_without_a_live_llm():
@@ -34,6 +35,7 @@ def test_final_approval_requires_slide_approval_first():
     state = GraphState()
     state.presentation = type("Presentation", (), {"slides": [Slide(slide_number=1, title="Test")], "state": type("State", (), {"slides_validated": False, "presentation_validated": False})()})()
 
+    state = ReviewSlideUseCase().execute(state, index=0, comments="Approved")
     state = validate_slides.func(state, approved=True)
     state = validate_final_presentation.func(state, approved=True)
 

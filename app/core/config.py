@@ -40,6 +40,11 @@ class Settings(BaseSettings):
         alias="GEMINI_MODEL",
     )
 
+    gemini_thinking_level: str = Field(
+        default="low",
+        alias="GEMINI_THINKING_LEVEL",
+    )
+
     llm_temperature: float = Field(
         default=0.2,
         alias="LLM_TEMPERATURE",

@@ -21,6 +21,7 @@ class SlideMapper:
             content=schema.content,
             speaker_notes=schema.speaker_notes,
             references=[reference.title for reference in schema.references],
+            reference_details=[reference.model_dump() for reference in schema.references],
             visual_recommendations=schema.visual_recommendations,
             is_validated=False,
         )

@@ -50,6 +50,11 @@ class Resource(BaseModel):
         description="Text extracted from the document.",
     )
 
+    extracted_pages: list[dict[str, object]] = Field(
+        default_factory=list,
+        description="Extracted PDF pages with page number and text for evidence provenance.",
+    )
+
     is_validated: bool = Field(
         default=False,
         description="Indicates whether the user validated this resource.",

@@ -8,7 +8,7 @@ from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 
 from app.ai.workflows.graph_state import GraphState
-from app.interfaces.langgraph.checkpointer import get_checkpointer
+from app.ai.prompt_builders.state_summary_builder import StateSummaryBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,7 @@ class PresentationGraph:
     ) -> None:
         self.builder = StateGraph(GraphState)
         self.agent = agent
+        self.state_summary_builder = StateSummaryBuilder()
         self.tools = (
             dict(tools)
             if isinstance(tools, Mapping)
@@ -47,7 +48,12 @@ class PresentationGraph:
         self.builder.add_edge("tool", "agent")
 
     def _agent_node(self, state: GraphState) -> dict[str, list]:
-        response = self.agent.invoke({"messages": state.messages})
+        response = self.agent.invoke(
+            {
+                "messages": state.messages,
+                "state_summary": self.state_summary_builder.build(state),
+            }
+        )
         return {"messages": [response]}
 
     def _tool_node(self, state: GraphState) -> dict[str, Any]:
@@ -66,9 +72,13 @@ class PresentationGraph:
             tool_name = tool_call["name"]
             last_tool = tool_name
             tool = self.tools.get(tool_name)
+            allowed_tools = self.state_summary_builder.allowed_tools(current_state)
 
             if tool is None:
                 error = f"Unknown tool requested: {tool_name}"
+                content = error
+            elif tool_name not in allowed_tools:
+                error = f"{tool_name} is not allowed at this stage. Allowed next tools: {', '.join(allowed_tools) or 'none'}"
                 content = error
             else:
                 try:
@@ -87,7 +97,7 @@ class PresentationGraph:
                 except Exception as exc:
                     error = f"{tool_name} failed: {exc}"
                     content = error
-                    logger.exception("tool_failed tool=%s", tool_name)
+                    logger.warning("tool_failed tool=%s error=%s", tool_name, exc)
 
             tool_messages.append(
                 ToolMessage(content=content, tool_call_id=tool_call["id"])
@@ -112,4 +122,4 @@ class PresentationGraph:
         return "end"
 
     def compile(self):
-        return self.builder.compile(checkpointer=get_checkpointer())
+        return self.builder.compile()

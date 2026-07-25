@@ -23,6 +23,12 @@ class SlideReferenceSchema(BaseModel):
         description="Publication year.",
     )
 
+    resource_id: str | None = Field(default=None, description="Validated source resource ID.")
+
+    page: int | None = Field(default=None, ge=1, description="Supporting PDF page number.")
+
+    evidence_excerpt: str | None = Field(default=None, description="Short supporting excerpt from the source.")
+
 
 class SlideSchema(BaseModel):
     """

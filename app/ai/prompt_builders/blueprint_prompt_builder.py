@@ -16,9 +16,14 @@ class BlueprintPromptBuilder:
         context = presentation.context
 
         resources = "\n\n".join(
-            f"SOURCE: {resource.title or resource.filename}\n{(resource.extracted_text or '')[:12000]}"
+            f"SOURCE ID: {resource.id} | TITLE: {resource.title or resource.filename}\n{(resource.extracted_text or '')[:12000]}"
             for resource in presentation.resources
         )
+        review_comments = "\n".join(
+            f"- Slide {item.slide_number}: {item.reviewer_comments}"
+            for item in (presentation.blueprint.slides if presentation.blueprint else [])
+            if item.reviewer_comments
+        ) or "None"
 
         prompt = f"""
 {HEALTHCARE_HARNESS}
@@ -53,6 +58,9 @@ VALIDATED RESOURCES
 ========================
 
 {resources}
+
+REVIEWER REVISION REQUESTS:
+{review_comments}
 
 ========================
 TASK

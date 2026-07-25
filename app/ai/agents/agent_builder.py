@@ -31,6 +31,7 @@ class AgentBuilder:
         prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", self._build_system_prompt()),
+                ("system", "{state_summary}"),
                 MessagesPlaceholder(variable_name="messages"),
             ]
         )
