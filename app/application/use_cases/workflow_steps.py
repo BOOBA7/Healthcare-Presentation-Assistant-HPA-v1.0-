@@ -164,10 +164,12 @@ class RegenerateSlideUseCase:
             raise ValueError("Slide index is invalid.")
         from app.ai.chains.slide_chain import SlideChain
         from app.ai.mappers.slide_mapper import SlideMapper
+        from app.application.validators.evidence_provenance_validator import EvidenceProvenanceValidator
 
         replacement = SlideMapper().to_domain(
             SlideChain().invoke(state.presentation, state.presentation.blueprint.slides[index])
         )
+        EvidenceProvenanceValidator().validate_slide(replacement, state.presentation.resources)
         replacement.reviewer_comments = state.presentation.slides[index].reviewer_comments
         state.presentation.slides[index] = replacement
         state.presentation.state.slides_validated = False

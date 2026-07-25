@@ -49,6 +49,11 @@ class Slide(BaseModel):
         description="Evidence provenance: resource ID, page, excerpt and bibliographic reference.",
     )
 
+    evidence_verified: bool = Field(
+        default=False,
+        description="Whether every citation was verified against an uploaded PDF page.",
+    )
+
     visual_recommendations: List[str] = Field(
         default_factory=list,
         description="Suggested visuals for this slide.",

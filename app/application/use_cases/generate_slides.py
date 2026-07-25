@@ -1,5 +1,6 @@
 from app.ai.chains.slide_chain import SlideChain
 from app.ai.mappers.slide_mapper import SlideMapper
+from app.application.validators.evidence_provenance_validator import EvidenceProvenanceValidator
 from app.domain.enums.workflow_step import WorkflowStep
 from app.domain.models.presentation import Presentation
 
@@ -15,6 +16,7 @@ class GenerateSlidesUseCase:
     def __init__(self) -> None:
         self.chain = SlideChain()
         self.mapper = SlideMapper()
+        self.evidence_validator = EvidenceProvenanceValidator()
 
     def execute(
         self,
@@ -36,6 +38,7 @@ class GenerateSlidesUseCase:
             )
 
             slide = self.mapper.to_domain(schema)
+            self.evidence_validator.validate_slide(slide, presentation.resources)
 
             presentation.slides.append(slide)
 

@@ -59,7 +59,21 @@ def test_powerpoint_always_ends_with_user_validated_resources(tmp_path):
     )
     state = create_presentation.func(validate_context.func(state))
     presentation = state.presentation
-    presentation.slides = [Slide(slide_number=1, title="Introduction", key_messages=["Message"])]
+    presentation.slides = [
+        Slide(
+            slide_number=1,
+            title="Introduction",
+            key_messages=["Message"],
+            reference_details=[
+                {
+                    "title": "Clinical guideline",
+                    "resource_id": "resource-1",
+                    "page": 1,
+                    "evidence_excerpt": "Evidence supporting clinical management.",
+                }
+            ],
+        )
+    ]
     presentation.resources = [
         Resource(
             id="resource-1",
@@ -68,6 +82,7 @@ def test_powerpoint_always_ends_with_user_validated_resources(tmp_path):
             source="WHO",
             file_type=ResourceType.PDF,
             extracted_text="Evidence",
+            extracted_pages=[{"page": 1, "text": "Evidence supporting clinical management."}],
             is_validated=True,
         )
     ]

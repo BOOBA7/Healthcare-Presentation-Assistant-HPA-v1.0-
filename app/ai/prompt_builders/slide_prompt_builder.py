@@ -1,4 +1,5 @@
 from app.ai.harness.healthcare_harness import HEALTHCARE_HARNESS
+from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuilder
 from app.domain.models.presentation import Presentation
 from app.domain.models.slide_outline import SlideOutline
 
@@ -20,10 +21,7 @@ class SlidePromptBuilder:
 
         context = presentation.context
 
-        resources = "\n\n".join(
-            f"SOURCE ID: {resource.id} | TITLE: {resource.title or resource.filename}\n{(resource.extracted_text or '')[:12000]}"
-            for resource in presentation.resources
-        )
+        resources = EvidenceContextBuilder().for_slide(presentation, outline)
 
         blueprint = presentation.blueprint
 

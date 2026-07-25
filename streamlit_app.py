@@ -257,6 +257,14 @@ if state.presentation and state.presentation.slides:
         st.write(slide.content)
         st.markdown("**Messages clés**")
         st.write(slide.key_messages)
+        if slide.reference_details:
+            st.markdown("**Preuves vérifiées**")
+            for reference in slide.reference_details:
+                st.caption(
+                    f"{reference.get('title', 'Source')} · ID {reference.get('resource_id')} "
+                    f"· page {reference.get('page')}"
+                )
+                st.info(f"« {reference.get('evidence_excerpt')} »")
         comments = st.text_area("Commentaire du relecteur", value=slide.reviewer_comments or "", key=f"slide_comment_{index}")
         approve, reject = st.columns(2)
         approve.button("Valider cette slide", disabled=slide.is_validated, on_click=review_item, args=(ReviewSlideUseCase(), index, comments), key=f"slide_validate_{index}")

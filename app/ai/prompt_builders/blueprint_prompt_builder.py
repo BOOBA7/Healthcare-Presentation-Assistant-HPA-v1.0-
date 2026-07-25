@@ -1,4 +1,5 @@
 from app.ai.harness.healthcare_harness import HEALTHCARE_HARNESS
+from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuilder
 from app.domain.models.presentation import Presentation
 
 
@@ -15,10 +16,7 @@ class BlueprintPromptBuilder:
 
         context = presentation.context
 
-        resources = "\n\n".join(
-            f"SOURCE ID: {resource.id} | TITLE: {resource.title or resource.filename}\n{(resource.extracted_text or '')[:12000]}"
-            for resource in presentation.resources
-        )
+        resources = EvidenceContextBuilder().for_presentation(presentation)
         review_comments = "\n".join(
             f"- Slide {item.slide_number}: {item.reviewer_comments}"
             for item in (presentation.blueprint.slides if presentation.blueprint else [])

@@ -4,6 +4,7 @@ from uuid import uuid4
 from pptx import Presentation as PowerPoint
 from pptx.util import Inches, Pt
 
+from app.application.validators.evidence_provenance_validator import EvidenceProvenanceValidator
 from app.domain.models.presentation import Presentation
 
 
@@ -19,6 +20,7 @@ class ExportPowerPointUseCase:
             raise ValueError("Validated user resources are required before exporting PowerPoint.")
         if not all(resource.is_validated for resource in presentation.resources):
             raise ValueError("Every resource must be validated by the user before export.")
+        EvidenceProvenanceValidator().validate_presentation(presentation.slides, presentation.resources)
 
         output_dir.mkdir(parents=True, exist_ok=True)
         deck = PowerPoint()
@@ -38,16 +40,28 @@ class ExportPowerPointUseCase:
                 paragraph.level = 0
                 paragraph.font.size = Pt(20)
 
-            if slide.references:
-                textbox = ppt_slide.shapes.add_textbox(Inches(0.5), Inches(6.7), Inches(9), Inches(0.4))
-                textbox.text_frame.paragraphs[0].text = "References: " + "; ".join(slide.references)
-                textbox.text_frame.paragraphs[0].font.size = Pt(8)
+            self._add_evidence_box(ppt_slide, slide.reference_details)
 
         self._add_resources_slide(deck, presentation)
 
         path = output_dir / f"{presentation.id}-{uuid4().hex[:8]}.pptx"
         deck.save(path)
         return path
+
+    @staticmethod
+    def _add_evidence_box(ppt_slide, references: list[dict[str, object]]) -> None:
+        """Show the exact, verified evidence on each exported content slide."""
+        textbox = ppt_slide.shapes.add_textbox(Inches(0.5), Inches(6.3), Inches(9), Inches(0.8))
+        frame = textbox.text_frame
+        frame.clear()
+        for index, reference in enumerate(references):
+            title = str(reference.get("title") or "Source")
+            resource_id = str(reference.get("resource_id"))
+            page = reference.get("page")
+            excerpt = " ".join(str(reference.get("evidence_excerpt") or "").split())
+            paragraph = frame.paragraphs[0] if index == 0 else frame.add_paragraph()
+            paragraph.text = f"{title} — {resource_id}, p. {page}: « {excerpt} »"
+            paragraph.font.size = Pt(7)
 
     @staticmethod
     def _add_resources_slide(deck: PowerPoint, presentation: Presentation) -> None:
