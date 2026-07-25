@@ -4,6 +4,7 @@ from langchain_core.messages import HumanMessage
 
 from app.ai.agents.healthcare_presentation_agent import HealthcarePresentationAgent
 from app.ai.workflows.graph_state import GraphState
+from app.core.logging import configure_logging
 
 
 def _extract_text(message) -> str:
@@ -26,6 +27,7 @@ def _extract_text(message) -> str:
 
 
 def main() -> None:
+    configure_logging()
     print("=" * 70)
     print("Healthcare Presentation Assistant (HPA)")
     print("=" * 70)

@@ -57,7 +57,19 @@ def chat(request: ChatRequest):
     thread_id = request.thread_id or str(uuid4())
     state = _sessions.get(thread_id, GraphState())
     state.messages.append(HumanMessage(content=request.message))
-    result = get_agent().invoke(state, thread_id=thread_id)
+    try:
+        result = get_agent().invoke(state, thread_id=thread_id)
+    except Exception as exc:
+        error_message = str(exc)
+        if "RESOURCE_EXHAUSTED" in error_message or "429" in error_message:
+            raise HTTPException(
+                status_code=429,
+                detail="Gemini quota is exhausted. Retry later or use an API project with available quota.",
+            ) from exc
+        raise HTTPException(
+            status_code=502,
+            detail="The language-model provider could not process this request.",
+        ) from exc
     _sessions[thread_id] = GraphState(**result)
     messages = result.get("messages", [])
     last_message = messages[-1] if messages else None

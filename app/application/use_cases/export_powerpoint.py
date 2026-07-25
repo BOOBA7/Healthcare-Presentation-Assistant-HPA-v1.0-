@@ -13,6 +13,8 @@ class ExportPowerPointUseCase:
     def execute(self, presentation: Presentation, output_dir: Path) -> Path:
         if not presentation.slides:
             raise ValueError("Generate presentation slides before exporting PowerPoint.")
+        if not presentation.state.presentation_validated:
+            raise ValueError("Human approval of the final presentation is required before export.")
 
         output_dir.mkdir(parents=True, exist_ok=True)
         deck = PowerPoint()

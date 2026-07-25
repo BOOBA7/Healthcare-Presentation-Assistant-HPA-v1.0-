@@ -29,3 +29,5 @@ class PresentationState(BaseModel):
     blueprint_validated: bool = False
 
     slides_validated: bool = False
+
+    presentation_validated: bool = False

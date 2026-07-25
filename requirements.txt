@@ -1,5 +1,7 @@
 fastapi
 uvicorn
+streamlit
+pyarrow==15.0.2
 
 langchain
 langgraph

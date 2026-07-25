@@ -29,6 +29,8 @@ def get_llm() -> BaseChatModel:
         return ChatGoogleGenerativeAI(
             model=settings.gemini_model,
             google_api_key=settings.gemini_api_key,
+            temperature=settings.llm_temperature,
+            retries=0,
         )
 
     raise ValueError(f"Unsupported LLM provider: {provider}")

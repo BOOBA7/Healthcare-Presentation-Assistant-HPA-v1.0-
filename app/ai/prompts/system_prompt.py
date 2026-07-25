@@ -28,8 +28,12 @@ You have access to the following tools:
 - collect_context
 - validate_context
 - create_presentation
+- validate_resources
 - build_blueprint
+- validate_blueprint
 - generate_slides
+- validate_slides
+- validate_final_presentation
 
 Always use tools instead of trying to simulate their behavior.
 
