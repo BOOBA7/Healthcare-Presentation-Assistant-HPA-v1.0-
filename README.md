@@ -1,28 +1,103 @@
 # Healthcare Presentation Assistant (HPA)
 
-HPA is an AI-assisted workflow for preparing scientific healthcare presentations from validated PDF resources. It collects a presentation context, generates a blueprint and slides, requires human approval at critical stages, then exports a PowerPoint file.
+HPA helps healthcare professionals prepare scientific presentations from **their
+own uploaded PDF resources**. It accelerates drafting and PowerPoint creation;
+it does not replace scientific, clinical, or institutional review.
 
-> HPA supports healthcare professionals; it does not provide medical advice or replace expert review. Generated content must be reviewed before use.
+> HPA follows an FDA-oriented, human-in-the-loop design: traceability,
+> evidence provenance, controlled workflow, and professional validation. It is
+> not a diagnostic, prescribing, or individualized clinical decision system.
+> The professional remains responsible for reviewing and approving every output
+> before use.
 
-## Features
+## What the application does
 
-- Conversational collection of topic, audience, format, language, duration and objective.
-- PDF extraction with PyMuPDF and resource validation.
-- Structured blueprint and slide generation with LangChain, LangGraph and Gemini/OpenAI.
-- Mandatory human approval for the blueprint, slides and final presentation.
-- PowerPoint (`.pptx`) export with a mandatory final slide listing user-validated resources.
-- Streamlit interface with click-to-approve validation controls and SQLite memory scoped by user and project.
-- FastAPI endpoints.
+- Collects presentation context: topic, audience, format, language, duration,
+  objective, and professional profile.
+- Keeps separate projects, conversations, resources, and presentation state for
+  each authenticated local user.
+- Accepts user-provided PDFs up to 20 MB and extracts selectable text with
+  PyMuPDF.
+- Retrieves compact evidence passages from **validated PDFs only** through
+  local BM25 retrieval. No external knowledge base is used.
+- Generates a blueprint, editable Agenda, and slides only after the required
+  human validations.
+- Verifies slide provenance: each reference must have a known `resource_id`, an
+  existing PDF page, and an excerpt actually present on that page.
+- Exports a themed `.pptx` presentation with a mandatory Agenda slide and a
+  final *Resources and user validation* slide.
+- Records project audit events such as uploads, approvals, regenerations, and
+  exports in SQLite.
+
+## Safety model
+
+HPA uses prompts, retrieval, and code-level controls together. Prompts are not
+the security boundary.
+
+1. Only user-uploaded and user-validated PDFs are treated as evidence.
+2. PDF text is delimited as untrusted content to resist prompt injection.
+3. A deterministic evidence gate blocks scientific answers when no validated
+   PDF exists or BM25 finds insufficient support; it asks for a suitable PDF or
+   a more precise question instead.
+4. Blueprint and slide generation are also blocked before the model call when
+   sufficient evidence cannot be retrieved.
+5. Provenance is checked again before a slide is accepted and before export.
+6. Agenda, blueprint items, slides, and final presentation require explicit
+   human approval.
+
+The evidence gate is lexical BM25. It is deliberately conservative: a relevant
+PDF written in another language or using very different terminology can be
+blocked and may require a clearer query or a better source.
+
+## Business workflow
+
+```text
+Collect context
+  → Validate context
+  → Create presentation
+  → Upload PDF(s)
+  → Validate resources
+  → Generate blueprint
+  → Edit and approve Agenda
+  → Approve blueprint items and blueprint
+  → Generate slides
+  → Approve slides
+  → Final approval
+  → Export PowerPoint
+```
+
+The durable workflow states are enforced in code. The model can suggest an
+allowed action, but it cannot bypass a state transition or a human approval.
 
 ## Architecture
 
 ```text
-User → HealthcarePresentationAgent → LangGraph → Tool → Use case → Domain
+Web / Streamlit / CLI
+        │
+        ▼
+FastAPI or local agent entry point
+        │
+        ▼
+HealthcarePresentationAgent
+        │  trusted state summary + prompt / harness / loop policy
+        ▼
+LangGraph reasoning loop ──► application use cases ──► domain models
+        │                         │
+        │                         ├─ WorkflowPolicy (state transitions)
+        │                         ├─ ProductionEvidenceGate (BM25 threshold)
+        │                         └─ EvidenceProvenanceValidator
+        ▼
+SQLite: users, projects, state, templates, audit events
 ```
 
-`GraphState` is the workflow state. Tools only delegate to application use cases; domain models do not depend on LangChain, LangGraph or an LLM provider. The architectural decision record is available in [ADR.txt](ADR.txt).
+State is separated by responsibility:
 
-Before each model call, HPA injects a trusted workflow summary (context completeness, resource validation, blueprint and slide approvals). This prevents the model from inferring workflow state only from chat history.
+- `GraphState`: conversation and agent orchestration.
+- `PresentationState`: durable business workflow and approvals.
+- `ExecutionContext`: last tool outcome and safe technical error.
+
+See [ADR.txt](ADR.txt) for the current architectural decisions and
+[docs/PROMPT_REVIEW.md](docs/PROMPT_REVIEW.md) for the historical prompt review.
 
 ## Local setup
 
@@ -35,22 +110,38 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Configure `.env` with one provider:
+Configure one provider in `.env`.
 
 ```env
-LLM_PROVIDER=gemini
-GEMINI_API_KEY=your_key
-GEMINI_MODEL=gemini-3.6-flash
-GEMINI_THINKING_LEVEL=low
+# OpenAI example
+LLM_PROVIDER=openai
+OPENAI_API_KEY=your_key
+OPENAI_MODEL=your_supported_model
+
+# Or Gemini example
+# LLM_PROVIDER=gemini
+# GEMINI_API_KEY=your_key
+# GEMINI_MODEL=your_supported_model
+# GEMINI_THINKING_LEVEL=low
+
 LLM_TEMPERATURE=0.2
 DEBUG=True
 ```
 
-Never commit `.env` or an API key.
+Use a model identifier available to your own API account. Never commit `.env`,
+API keys, session tokens, or `secrets.toml`.
 
-For Gemini 3.6 Flash, `GEMINI_THINKING_LEVEL=low` reduces latency for conversation and tool routing. Use `medium` or `high` only when deeper reasoning is worth the slower response time.
+## Run locally
 
-## Run
+### Web interface (recommended)
+
+```bash
+uvicorn app.interfaces.api.main:app --reload
+```
+
+Open `http://127.0.0.1:8000/app`.
+
+The API documentation is available at `http://127.0.0.1:8000/docs`.
 
 ### Streamlit
 
@@ -60,53 +151,45 @@ streamlit run streamlit_app.py
 
 Open `http://localhost:8501`.
 
-### API
-
-```bash
-uvicorn app.interfaces.api.main:app --reload
-```
-
-Open `http://127.0.0.1:8000/docs`.
-
-### Interface web JavaScript (recommandée en local)
-
-Lancez la même API, puis ouvrez `http://127.0.0.1:8000/app` dans le navigateur. Cette interface ne nécessite ni Node.js ni une compilation frontend. Elle permet de gérer plusieurs projets par utilisateur, déposer les PDF, discuter avec l’agent, valider chaque élément et télécharger le PowerPoint.
-
 ### CLI
 
 ```bash
 python main.py
 ```
 
-## Recommended workflow
+## API notes
 
-1. Describe the presentation in the chat.
-2. Let HPA collect and validate the context, then create the presentation.
-3. Upload a PDF resource and validate it.
-4. Generate the blueprint and explicitly approve it.
-5. Generate slides and explicitly approve them.
-6. Approve the final presentation.
-7. Download the PowerPoint.
+The web interface authenticates first and sends a Bearer token to the API.
+Project endpoints are owner-scoped. Useful endpoints include:
 
-The Streamlit sidebar handles user identification, project selection, PDF upload, explicit approval buttons and PowerPoint download. A user can create several projects; each project keeps its own conversation, resources and presentation state. API users must provide both `user_id` and `project_id`: use `POST /resources/pdf/{user_id}/{project_id}` and `GET /presentations/{user_id}/{project_id}/export/pptx`.
+- `POST /auth/register`, `POST /auth/login`
+- `POST /projects`, `GET /users/{user_id}/projects`
+- `POST /chat`
+- `POST /resources/pdf/{user_id}/{project_id}`
+- `GET /projects/{user_id}/{project_id}/audit-events`
+- `GET /presentations/{user_id}/{project_id}/export/pptx`
+
+The local password-reset route is intentionally only suitable for local
+development. Do not expose it publicly. Use a real identity provider and a
+secure recovery flow before deployment.
 
 ## Tests
 
 ```bash
-pytest -q
+venv/bin/pytest -q
 ```
 
-Tests are designed to run without consuming LLM quota.
+The test suite does not call an LLM and does not consume provider quota.
 
-## Deployment on Streamlit Community Cloud
+## Current limitations and production work
 
-Set the main file to `streamlit_app.py`. In Streamlit secrets, set `LLM_PROVIDER`, `GEMINI_API_KEY`, `GEMINI_MODEL` and `LLM_TEMPERATURE`; do not add them to GitHub.
-
-## Limitations
-
-- Streamlit and API workflow sessions are persisted locally in SQLite per user and project. Configure a shared database service before deploying multiple application instances.
-- Output quality and availability depend on the LLM provider and its quota.
-- PDF extraction supports selectable text; scanned PDFs need OCR, which is not yet implemented.
-- Clinical claims and references require human review.
-
-See [docs/PROMPT_REVIEW.md](docs/PROMPT_REVIEW.md) for a senior engineering review of the prompt design.
+- SQLite is appropriate for one local instance. Use PostgreSQL and migrations
+  for concurrent or multi-instance deployment.
+- PDFs with no selectable text require OCR; OCR is not implemented yet.
+- BM25 is local, private, and transparent, but has no semantic multilingual
+  understanding. A later embedding retrieval layer should remain scoped to the
+  user’s uploaded resources.
+- Authentication, audit storage, uploaded files, and logs need production-grade
+  hardening before public or hospital deployment.
+- HPA is FDA-oriented by design, but it is not certified medical software and
+  does not by itself establish regulatory, legal, or clinical compliance.

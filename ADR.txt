@@ -1,358 +1,172 @@
-# ADR-0007 — Cognitive Agent Architecture for Healthcare Presentation Assistant (HPA)
+# ADR-0007 — Evidence-Gated, Human-Validated Architecture for HPA
 
 ## Status
 
-**Accepted**
+**Accepted — updated 2026-07-26**
 
----
+This ADR supersedes the earlier agent-centric description. HPA retains one
+cognitive agent, but the LLM is no longer considered the workflow authority.
 
-# Context
+## Context
 
-The Healthcare Presentation Assistant (HPA) is not a sequential workflow.
+HPA prepares healthcare presentation material from documents supplied by a
+professional. A language model can generate fluent but unsupported content, so
+the product must prevent unsupported scientific production rather than relying
+on prompt instructions alone.
 
-It is an autonomous cognitive agent specialized in creating scientific healthcare presentations while keeping the human expert in control of every critical scientific decision.
+The system must be locally usable, auditable per user and project, and able to
+evolve toward stronger deployment infrastructure without changing the business
+rules.
 
-The architecture must remain:
+HPA is FDA-oriented by design: it applies human-in-the-loop control,
+traceability, evidence provenance, auditable workflow states, and risk-aware
+boundaries inspired by Good Machine Learning Practice. It is not, however, a
+medical device, clinical decision support system, or evidence authority, and
+this ADR does not claim FDA clearance, approval, or regulatory compliance.
 
-* deterministic
-* auditable
-* FDA-oriented
-* extensible
-* modular
+## Decision
 
-No business logic shall exist inside the agent.
+### 1. One cognitive agent, bounded by deterministic services
 
----
+`HealthcarePresentationAgent` is the sole LLM-facing agent. It interprets
+conversation and may select an allowed production tool. It does not own
+business decisions.
 
-# Guiding Principles
+LangGraph orchestrates the `agent → tool → agent` loop. HPA deliberately uses
+a custom guarded tool node rather than a generic `ToolNode` / tool executor.
+The node permits one tool action per turn, validates its availability, catches
+safe workflow errors, and returns tool outcomes to the model as `ToolMessage`s.
 
-## 1. One Single Cognitive Agent
+### 2. State has three responsibilities
 
-The project shall expose only one intelligent agent.
+| State | Responsibility | Authority |
+|---|---|---|
+| `GraphState` | Conversation, collected context, presentation reference | Agent orchestration |
+| `PresentationState` | Workflow status, validation flags, slide progress | Business lifecycle |
+| `ExecutionContext` | Last tool result, safe error code/message | Technical execution only |
 
-```
-HealthcarePresentationAgent
-```
+The presentation aggregate is the durable business object. An execution error
+must never be treated as a scientific or approval decision.
 
-This agent represents the cognitive layer of HPA.
+### 3. Business state machine is the source of truth
 
-It is responsible for:
+The durable statuses are:
 
-* understanding user requests
-* reasoning
-* planning
-* deciding which tool to execute
-* deciding when to stop
-* interacting with the user naturally
-
-The agent **never performs business logic itself**.
-
----
-
-## 2. The LLM is Built Once
-
-The language model is instantiated only once during the initialization of the agent.
-
-The LLM is permanently configured with:
-
-* System Prompt
-* Healthcare Harness
-* Loop Engineering Prompt
-* Registered Tools
-
-The LLM is never reconstructed during execution.
-
----
-
-## 3. LangGraph Only Orchestrates
-
-LangGraph is responsible only for orchestration.
-
-It does not contain business rules.
-
-It does not decide which medical action to perform.
-
-Its responsibilities are:
-
-* maintain AgentState
-* execute the reasoning loop
-* call ToolNode
-* manage checkpoints
-* resume interrupted executions
-
----
-
-## 4. ReAct Loop
-
-The agent follows a continuous reasoning loop.
-
-```
-User
-
-↓
-
-HealthcarePresentationAgent
-
-↓
-
-Reason
-
-↓
-
-Should Continue ?
-
-↓
-
-Tool
-
-↓
-
-Updated State
-
-↓
-
-Reason
-
-↓
-
-Finish
+```text
+context_collection
+→ awaiting_resource_upload
+→ awaiting_resource_validation
+→ blueprint_generation
+→ awaiting_agenda_approval
+→ awaiting_blueprint_approval
+→ slide_generation
+→ awaiting_slide_approval
+→ awaiting_final_approval
+→ ready_for_export
+→ exported
 ```
 
-The LLM decides whether:
+`WorkflowPolicy` rejects invalid transitions. API routes, human-review use
+cases, and LLM tools must obey the same transitions. Prompts describe the flow,
+but code is the final authority.
 
-* a tool must be executed
-* the user must answer a question
-* the workflow is complete
+### 4. Evidence is user-scoped and system-verified
 
----
+Only PDFs uploaded and validated by the current project user are evidence.
+There is no global document folder and no external retrieval by default.
 
-## 5. AgentState is the Single Source of Truth
+`EvidenceContextBuilder` performs local BM25 chunk retrieval over extracted PDF
+pages. `ProductionEvidenceGate` checks for sufficient lexical support before:
 
-Every component exchanges exactly one object:
+- answering a production-scoped scientific question;
+- generating a blueprint;
+- generating or regenerating a slide.
 
-```
-AgentState
-```
+If there is no validated PDF, or retrieval is insufficient, HPA returns a
+fixed request for a suitable PDF or clarification instead of calling the LLM.
+This conservative policy may produce false negatives for multilingual or
+semantically indirect queries; that trade-off is accepted for safety.
 
-No component directly exchanges Presentation objects.
+Every slide reference is validated by `EvidenceProvenanceValidator`:
 
-Presentation is only one attribute of AgentState.
+1. `resource_id` must exist in the presentation;
+2. the cited page must exist in that resource;
+3. the evidence excerpt must occur on that page.
 
-Every node receives:
+The PowerPoint displays the user-validated resources and associated evidence.
 
-```
-AgentState
-```
+### 5. Prompt, harness, and loop have distinct roles
 
-Every node returns:
+| Layer | Responsibility | Not responsible for |
+|---|---|---|
+| System prompt | identity, trust boundary, role/language adaptation | enforcing permissions |
+| Healthcare harness | evidence, uncertainty, presentation safety | verifying evidence |
+| Loop policy | concise turn behavior and tool discipline | state transitions |
+| Prompt builders | blueprint/slide task instructions and retrieved excerpts | business rules |
 
-```
-AgentState
-```
+Trusted state is injected separately from untrusted user messages and PDF
+excerpts. The code enforces permissions, evidence sufficiency, provenance, and
+approvals.
 
----
+### 6. Human approval is mandatory
 
-## 6. Tools Execute Business Capabilities
+The user must explicitly validate resources, Agenda, blueprint items, complete
+blueprint, slides, and final presentation. The model cannot simulate these
+approvals. Rejections and reviewer comments are persisted and can drive
+regeneration.
 
-Every tool represents one business capability.
+### 7. Persistence and auditability
 
-Examples:
+For local use, `UserSessionRepository` persists user accounts, profile,
+projects, conversation state, templates, and immutable-style project events in
+SQLite. Audit events include action type, actor, time, workflow state, and
+prompt/harness/retrieval/workflow versions. Generation records store selected
+model and version metadata.
 
-* Create Presentation
-* Validate Context
-* Validate Resources
-* Build Blueprint
-* Generate Slides
+The audit API is:
 
-Tools never contain business logic.
-
-Each tool delegates to exactly one UseCase.
-
----
-
-## 7. UseCases Contain All Business Logic
-
-Business rules live exclusively inside UseCases.
-
-Examples:
-
-```
-CreatePresentationUseCase
-
-BuildBlueprintUseCase
-
-GenerateSlidesUseCase
+```text
+GET /projects/{user_id}/{project_id}/audit-events
 ```
 
-No business logic is allowed inside:
+SQLite is a local deployment choice, not a multi-instance production
+architecture.
 
-* Agent
-* LangGraph
-* ToolExecutor
-* ToolRegistry
+### 8. Interfaces and authentication
 
----
+FastAPI serves the local JavaScript interface at `/app`; Streamlit and CLI are
+additional local interfaces. API project access requires a bearer token and is
+owner-scoped. The current password reset route is intentionally local-only and
+is not acceptable for public deployment.
 
-## 8. Domain is Pure
+## Consequences
 
-The Domain layer contains:
+### Positive
 
-* entities
-* value objects
-* enums
-* business models
+- The model cannot advance a prohibited workflow stage.
+- Unsupported scientific generation is blocked before a model request.
+- Citations are verifiable against user-provided PDF pages.
+- The project has reproducible generation metadata and an audit trail.
+- The architecture keeps user responsibility and provenance within scope.
 
-The Domain never depends on:
+### Trade-offs
 
-* LangChain
-* LangGraph
-* LLM providers
-* prompts
+- Users must provide and validate sources before scientific production.
+- BM25 can reject a concept that is present under different wording or language.
+- More gates mean more explicit user interactions and less apparent autonomy.
+- SQLite and local files must be replaced for concurrent production deployment.
 
----
+## Explicit non-decisions
 
-## 9. Prompt Responsibilities
+The following are intentionally not claimed as implemented:
 
-Prompting is divided into four independent layers.
+- OCR for scanned PDFs;
+- external PubMed, guideline, or web retrieval;
+- background job queue, retries, or distributed execution;
+- PostgreSQL migration and object storage;
+- enterprise SSO, MFA, secure public password recovery, or role-based access;
+- clinical validation, regulatory certification, FDA clearance/approval, or
+  hospital compliance.
 
-### System Prompt
-
-Defines the permanent identity of the assistant.
-
----
-
-### Healthcare Harness
-
-Defines scientific constraints.
-
-Examples:
-
-* evidence-based medicine
-* no hallucinations
-* guideline-first reasoning
-* citation requirements
-
----
-
-### Loop Engineering
-
-Defines reasoning behaviour.
-
-Examples:
-
-* when to call a tool
-* when to ask the user
-* when to wait
-* when to stop
-
----
-
-### Task Prompt Builders
-
-Used only for specialized generation.
-
-Examples:
-
-* Blueprint Prompt
-* Slide Prompt
-
-Prompt Builders never control the agent behaviour.
-
----
-
-## 10. Human-in-the-Loop
-
-HPA is designed following FDA Good Machine Learning Practice principles.
-
-The human expert validates every critical decision.
-
-Mandatory validation points include:
-
-* presentation context
-* uploaded resources
-* blueprint
-* generated slides
-* final presentation
-
-The agent never bypasses these validation steps.
-
----
-
-## 11. Logging
-
-Every reasoning cycle must be logged.
-
-Logs should include:
-
-* timestamp
-* selected tool
-* reasoning outcome
-* workflow state
-* execution duration
-* validation events
-* failures
-
-The logs must support scientific auditing and reproducibility.
-
----
-
-## 12. Future Extensions
-
-The architecture must allow additional tools without modifying the cognitive layer.
-
-Future tools may include:
-
-* PubMed Search
-* ClinicalTrials.gov Search
-* CrossRef Search
-* Internal RAG Retrieval
-* Figure Generator
-* Scientific Fact Checker
-* PPTX Export
-* PDF Export
-
-The agent should automatically reason about when these tools are required.
-
----
-
-# Final Architecture
-
-```
-User
-        │
-        ▼
-HealthcarePresentationAgent
-        │
-        ▼
-LLM
-(System Prompt + Harness + Loop Engineering)
-        │
-        ▼
-Reasoning
-        │
-        ▼
-LangGraph
-(ReAct Loop)
-        │
-        ▼
-ToolNode
-        │
-        ▼
-Business Tool
-        │
-        ▼
-UseCase
-        │
-        ▼
-Domain
-```
-
----
-
-# Decision
-
-This architecture becomes the reference architecture of HPA.
-
-Every future component must comply with this document.
-
-Any implementation conflicting with these principles shall be refactored before introducing new functionality.
+These additions must preserve the existing evidence, provenance, workflow, and
+human-approval boundaries.

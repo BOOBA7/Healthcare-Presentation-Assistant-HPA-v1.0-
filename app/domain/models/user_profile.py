@@ -8,6 +8,7 @@ ProfessionalRole = Literal[
     "assistant_professor",
     "veterinarian",
     "biologist",
+    "pharmacist",
     "specialist_physician",
     "resident_physician",
 ]

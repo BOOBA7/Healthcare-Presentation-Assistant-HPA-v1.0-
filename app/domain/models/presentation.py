@@ -11,6 +11,7 @@ from app.domain.models.presentation_state import PresentationState
 from app.domain.models.resource import Resource
 from app.domain.models.slide import Slide
 from app.domain.models.user_profile import UserProfile
+from app.domain.models.generation_record import GenerationRecord
 from app.domain.value_objects.presentation_context import PresentationContext
 
 
@@ -81,6 +82,16 @@ class Presentation(BaseModel):
     owner_profile: UserProfile = Field(
         default_factory=UserProfile,
         description="Professional profile snapshot used for deterministic content adaptation.",
+    )
+
+    professional_scope: str | None = Field(
+        default=None,
+        description="User explanation when professional profile and presentation scope need clarification.",
+    )
+
+    generation_records: List[GenerationRecord] = Field(
+        default_factory=list,
+        description="Versioned model and prompt metadata for reproducibility.",
     )
 
     created_at: datetime = Field(

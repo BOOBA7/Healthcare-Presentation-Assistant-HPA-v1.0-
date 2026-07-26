@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 
 from app.domain.enums.workflow_step import WorkflowStep
+from app.domain.enums.workflow_status import WorkflowStatus
 from app.domain.value_objects.audience_profile import AudienceProfile
 from app.domain.value_objects.presentation_context import PresentationContext
 
@@ -15,6 +16,8 @@ class PresentationState(BaseModel):
     audience_profile: AudienceProfile
 
     current_step: WorkflowStep = WorkflowStep.CONTEXT_VALIDATION
+
+    workflow_status: WorkflowStatus = WorkflowStatus.CONTEXT_COLLECTION
 
     current_slide: int = 0
 

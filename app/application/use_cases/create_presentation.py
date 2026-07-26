@@ -8,6 +8,7 @@ from app.domain.value_objects.presentation_context import (
     PresentationContext,
 )
 from app.domain.models.user_profile import UserProfile
+from app.domain.enums.workflow_status import WorkflowStatus
 
 
 class CreatePresentationUseCase:
@@ -44,6 +45,7 @@ class CreatePresentationUseCase:
         presentation_state = PresentationState(
             context=context,
             audience_profile=audience_profile,
+            workflow_status=WorkflowStatus.AWAITING_RESOURCE_UPLOAD,
         )
 
         return Presentation(

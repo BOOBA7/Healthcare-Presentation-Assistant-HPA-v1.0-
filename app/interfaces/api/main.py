@@ -15,10 +15,14 @@ from app.ai.agents.healthcare_presentation_agent import HealthcarePresentationAg
 from app.ai.workflows.graph_state import GraphState
 from app.application.use_cases.export_powerpoint import ExportPowerPointUseCase
 from app.application.use_cases.extract_pdf_resource import ExtractPdfResourceUseCase
+from app.application.services.workflow_policy import WorkflowPolicy
 from app.core.config import get_settings
+from app.core.versioning import HARNESS_VERSION, RETRIEVAL_VERSION, WORKFLOW_VERSION
 from app.interfaces.storage.user_session_repository import UserSessionRepository
 from app.domain.models.user_profile import UserProfile
 from app.domain.enums.presentation_theme import PresentationTheme
+from app.domain.enums.workflow_status import WorkflowStatus
+from app.domain.exceptions.workflow_error import WorkflowError
 from app.application.use_cases.workflow_steps import (
     RegenerateBlueprintUseCase,
     RegenerateSlideUseCase,
@@ -87,6 +91,19 @@ class ThemeRequest(BaseModel):
     custom_template_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
+def _message_text(content: object) -> str:
+    """Normalize provider-specific message content before returning chat history."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and isinstance(block.get("text"), str)
+        ).strip()
+    return str(content)
+
+
 def _project_response(user_id: str, project_id: str, thread_id: str, state: GraphState) -> dict:
     """Return only JSON-safe state needed by the browser interface."""
     presentation = state.presentation.model_dump(mode="json") if state.presentation else None
@@ -94,7 +111,7 @@ def _project_response(user_id: str, project_id: str, thread_id: str, state: Grap
     for message in state.messages:
         if getattr(message, "type", "") not in {"human", "ai"}:
             continue
-        content = getattr(message, "content", "")
+        content = _message_text(getattr(message, "content", ""))
         if not content:
             continue
         messages.append(
@@ -111,8 +128,11 @@ def _project_response(user_id: str, project_id: str, thread_id: str, state: Grap
         "messages": messages,
         "conversation_context": state.conversation_context.model_dump(mode="json"),
         "user_profile": state.user_profile.model_dump(mode="json"),
-        "last_tool": state.last_tool,
-        "error": state.error,
+        "last_tool": state.execution.last_tool,
+        "workflow_status": (
+            state.presentation.state.workflow_status.value if state.presentation is not None else None
+        ),
+        "error": state.execution.error,
     }
 
 
@@ -137,8 +157,54 @@ def _assert_owner(user_id: str, authenticated_user: str) -> None:
         raise HTTPException(status_code=403, detail="You cannot access another user's projects.")
 
 
-def _save_project(user_id: str, project_id: str, thread_id: str, state: GraphState) -> dict:
-    get_repository().save(user_id, project_id, thread_id, state)
+def _workflow_conflict(exc: ValueError) -> HTTPException:
+    """Use a stable error code so web clients do not have to parse human text."""
+    if isinstance(exc, WorkflowError):
+        detail = {
+            "code": exc.code,
+            "message": exc.user_message,
+            "retryable": exc.retryable,
+        }
+    else:
+        detail = {
+            "code": "WORKFLOW_VALIDATION_FAILED",
+            "message": str(exc),
+            "retryable": False,
+        }
+    return HTTPException(status_code=409, detail=detail)
+
+
+def _audit_payload(state: GraphState, extra: dict[str, object] | None = None) -> dict[str, object]:
+    """Store operational metadata without storing secrets or raw PDF content."""
+    presentation = state.presentation
+    payload: dict[str, object] = {
+        "workflow_version": WORKFLOW_VERSION,
+        "harness_version": HARNESS_VERSION,
+        "retrieval_version": RETRIEVAL_VERSION,
+        "workflow_status": presentation.state.workflow_status.value if presentation else None,
+        "last_tool": state.execution.last_tool,
+        "error": state.execution.error,
+    }
+    if presentation and presentation.generation_records:
+        payload["last_generation"] = presentation.generation_records[-1].model_dump(mode="json")
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _save_project(
+    user_id: str,
+    project_id: str,
+    thread_id: str,
+    state: GraphState,
+    *,
+    event_type: str = "PROJECT_STATE_SAVED",
+    actor: str = "system",
+    extra_audit: dict[str, object] | None = None,
+) -> dict:
+    repository = get_repository()
+    repository.save(user_id, project_id, thread_id, state)
+    repository.record_event(user_id, project_id, event_type, actor, _audit_payload(state, extra_audit))
     return _project_response(user_id, project_id, thread_id, state)
 
 
@@ -278,13 +344,26 @@ async def upload_template(user_id: str, file: UploadFile = File(...), authentica
 def create_or_open_project(request: ProjectRequest, authenticated_user: str = Depends(_authenticated_user)):
     _assert_owner(request.user_id, authenticated_user)
     stored = get_repository().load(request.user_id, request.project_id)
-    thread_id, state = (
-        stored
-        if stored
-        else get_repository().create_empty(request.user_id, request.project_id, request.project_name)
-    )
+    if stored is None:
+        thread_id, state = get_repository().create_empty(request.user_id, request.project_id, request.project_name)
+        get_repository().record_event(
+            request.user_id,
+            request.project_id,
+            "PROJECT_CREATED",
+            "user",
+            _audit_payload(state, {"project_name": request.project_name or request.project_id}),
+        )
+    else:
+        thread_id, state = stored
     if stored is not None and request.project_name:
         get_repository().save(request.user_id, request.project_id, thread_id, state, request.project_name)
+        get_repository().record_event(
+            request.user_id,
+            request.project_id,
+            "PROJECT_RENAMED",
+            "user",
+            _audit_payload(state, {"project_name": request.project_name}),
+        )
     return _project_response(request.user_id, request.project_id, thread_id, state)
 
 
@@ -293,6 +372,14 @@ def get_project(user_id: str, project_id: str, authenticated_user: str = Depends
     _assert_owner(user_id, authenticated_user)
     thread_id, state = _get_project(user_id, project_id)
     return _project_response(user_id, project_id, thread_id, state)
+
+
+@app.get("/projects/{user_id}/{project_id}/audit-events")
+def list_audit_events(user_id: str, project_id: str, authenticated_user: str = Depends(_authenticated_user)):
+    """Return immutable project events for traceability and operational review."""
+    _assert_owner(user_id, authenticated_user)
+    _get_project(user_id, project_id)
+    return {"events": get_repository().list_events(user_id, project_id)}
 
 
 @app.delete("/projects/{user_id}/{project_id}", status_code=204)
@@ -343,18 +430,26 @@ def chat(request: ChatRequest, authenticated_user: str = Depends(_authenticated_
             detail="The language-model provider could not process this request. Check the selected model and API key.",
         ) from exc
     saved_state = GraphState(**result)
-    get_repository().save(request.user_id, request.project_id, thread_id, saved_state)
+    project_payload = _save_project(
+        request.user_id,
+        request.project_id,
+        thread_id,
+        saved_state,
+        event_type="AGENT_TURN_COMPLETED",
+        actor="llm",
+        extra_audit={"message_length": len(request.message), "tool_output": saved_state.execution.tool_output},
+    )
     messages = result.get("messages", [])
     last_message = messages[-1] if messages else None
 
     return {
         "thread_id": thread_id,
         "project_id": request.project_id,
-        "message": getattr(last_message, "content", ""),
-        "last_tool": result.get("last_tool"),
-        "error": result.get("error"),
+        "message": _message_text(getattr(last_message, "content", "")) if last_message else "",
+        "last_tool": saved_state.execution.last_tool,
+        "error": saved_state.execution.error,
         "presentation": saved_state.presentation.model_dump(mode="json") if saved_state.presentation else None,
-        "project": _project_response(request.user_id, request.project_id, thread_id, saved_state),
+        "project": project_payload,
     }
 
 
@@ -368,6 +463,14 @@ async def upload_pdf_resource(user_id: str, project_id: str, file: UploadFile = 
     if stored is None or stored[1].presentation is None:
         raise HTTPException(status_code=409, detail="Create a presentation before uploading resources.")
     thread_id, state = stored
+    try:
+        WorkflowPolicy.require_status(
+            state.presentation.state.workflow_status,
+            (WorkflowStatus.AWAITING_RESOURCE_UPLOAD, WorkflowStatus.AWAITING_RESOURCE_VALIDATION),
+            "upload a resource",
+        )
+    except ValueError as exc:
+        raise _workflow_conflict(exc) from exc
     content = await file.read()
     if len(content) > 20 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="PDF files are limited to 20 MB.")
@@ -376,7 +479,16 @@ async def upload_pdf_resource(user_id: str, project_id: str, file: UploadFile = 
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     state.presentation.resources.append(resource)
-    get_repository().save(user_id, project_id, thread_id, state)
+    state.presentation.state.workflow_status = WorkflowStatus.AWAITING_RESOURCE_VALIDATION
+    _save_project(
+        user_id,
+        project_id,
+        thread_id,
+        state,
+        event_type="RESOURCE_UPLOADED",
+        actor="user",
+        extra_audit={"resource_id": resource.id, "filename": resource.filename, "pages": len(resource.extracted_pages)},
+    )
     return {"resource_id": resource.id, "filename": resource.filename, "characters_extracted": len(resource.extracted_text or "")}
 
 
@@ -387,8 +499,8 @@ def approve_resources(user_id: str, project_id: str, authenticated_user: str = D
     try:
         state = validate_resources.func(state)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _save_project(user_id, project_id, thread_id, state)
+        raise _workflow_conflict(exc) from exc
+    return _save_project(user_id, project_id, thread_id, state, event_type="RESOURCES_VALIDATED", actor="user")
 
 
 @app.post("/projects/{user_id}/{project_id}/blueprint/items/{index}/approve")
@@ -398,8 +510,8 @@ def approve_blueprint_item(user_id: str, project_id: str, index: int, request: R
     try:
         state = ReviewBlueprintItemUseCase().execute(state, index, request.comments)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _save_project(user_id, project_id, thread_id, state)
+        raise _workflow_conflict(exc) from exc
+    return _save_project(user_id, project_id, thread_id, state, event_type="BLUEPRINT_ITEM_APPROVED", actor="user", extra_audit={"item_index": index})
 
 
 @app.post("/projects/{user_id}/{project_id}/blueprint/items/{index}/reject")
@@ -409,8 +521,8 @@ def reject_blueprint_item(user_id: str, project_id: str, index: int, request: Re
     try:
         state = RejectBlueprintItemUseCase().execute(state, index, request.comments)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _save_project(user_id, project_id, thread_id, state)
+        raise _workflow_conflict(exc) from exc
+    return _save_project(user_id, project_id, thread_id, state, event_type="BLUEPRINT_ITEM_REJECTED", actor="user", extra_audit={"item_index": index})
 
 
 @app.post("/projects/{user_id}/{project_id}/blueprint/approve")
@@ -420,8 +532,8 @@ def approve_blueprint(user_id: str, project_id: str, authenticated_user: str = D
     try:
         state = validate_blueprint.func(state, approved=True)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _save_project(user_id, project_id, thread_id, state)
+        raise _workflow_conflict(exc) from exc
+    return _save_project(user_id, project_id, thread_id, state, event_type="BLUEPRINT_APPROVED", actor="user")
 
 
 @app.put("/projects/{user_id}/{project_id}/agenda")
@@ -431,6 +543,14 @@ def update_agenda(user_id: str, project_id: str, request: AgendaRequest, authent
     thread_id, state = _get_project(user_id, project_id)
     if state.presentation is None or state.presentation.agenda is None:
         raise HTTPException(status_code=409, detail="Generate a blueprint before editing the agenda.")
+    try:
+        WorkflowPolicy.require_status(
+            state.presentation.state.workflow_status,
+            (WorkflowStatus.AWAITING_AGENDA_APPROVAL,),
+            "edit the agenda",
+        )
+    except ValueError as exc:
+        raise _workflow_conflict(exc) from exc
     items = [item.strip() for item in request.items if item.strip()]
     if not items:
         raise HTTPException(status_code=422, detail="Agenda must contain at least one item.")
@@ -441,7 +561,8 @@ def update_agenda(user_id: str, project_id: str, request: AgendaRequest, authent
     state.presentation.state.blueprint_validated = False
     state.presentation.state.slides_validated = False
     state.presentation.state.presentation_validated = False
-    return _save_project(user_id, project_id, thread_id, state)
+    state.presentation.state.workflow_status = WorkflowStatus.AWAITING_AGENDA_APPROVAL
+    return _save_project(user_id, project_id, thread_id, state, event_type="AGENDA_UPDATED", actor="user")
 
 
 @app.post("/projects/{user_id}/{project_id}/agenda/approve")
@@ -450,8 +571,17 @@ def approve_agenda(user_id: str, project_id: str, authenticated_user: str = Depe
     thread_id, state = _get_project(user_id, project_id)
     if state.presentation is None or state.presentation.agenda is None or not state.presentation.agenda.items:
         raise HTTPException(status_code=409, detail="Generate an agenda before approving it.")
+    try:
+        WorkflowPolicy.require_status(
+            state.presentation.state.workflow_status,
+            (WorkflowStatus.AWAITING_AGENDA_APPROVAL,),
+            "approve the agenda",
+        )
+    except ValueError as exc:
+        raise _workflow_conflict(exc) from exc
     state.presentation.agenda.is_validated = True
-    return _save_project(user_id, project_id, thread_id, state)
+    state.presentation.state.workflow_status = WorkflowStatus.AWAITING_BLUEPRINT_APPROVAL
+    return _save_project(user_id, project_id, thread_id, state, event_type="AGENDA_APPROVED", actor="user")
 
 
 @app.put("/projects/{user_id}/{project_id}/theme")
@@ -469,7 +599,7 @@ def update_theme(user_id: str, project_id: str, request: ThemeRequest, authentic
         state.presentation.custom_template_id = None
     else:
         raise HTTPException(status_code=422, detail="Select a built-in or custom template.")
-    return _save_project(user_id, project_id, thread_id, state)
+    return _save_project(user_id, project_id, thread_id, state, event_type="PRESENTATION_THEME_SELECTED", actor="user")
 
 
 @app.post("/projects/{user_id}/{project_id}/blueprint/regenerate")
@@ -479,8 +609,8 @@ def regenerate_blueprint(user_id: str, project_id: str, authenticated_user: str 
     try:
         state = RegenerateBlueprintUseCase().execute(state)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _save_project(user_id, project_id, thread_id, state)
+        raise _workflow_conflict(exc) from exc
+    return _save_project(user_id, project_id, thread_id, state, event_type="BLUEPRINT_REGENERATED", actor="llm")
 
 
 @app.post("/projects/{user_id}/{project_id}/slides/{index}/approve")
@@ -490,8 +620,8 @@ def approve_slide(user_id: str, project_id: str, index: int, request: ReviewRequ
     try:
         state = ReviewSlideUseCase().execute(state, index, request.comments)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _save_project(user_id, project_id, thread_id, state)
+        raise _workflow_conflict(exc) from exc
+    return _save_project(user_id, project_id, thread_id, state, event_type="SLIDE_APPROVED", actor="user", extra_audit={"slide_index": index})
 
 
 @app.post("/projects/{user_id}/{project_id}/slides/{index}/reject")
@@ -501,8 +631,8 @@ def reject_slide(user_id: str, project_id: str, index: int, request: ReviewReque
     try:
         state = RejectSlideUseCase().execute(state, index, request.comments)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _save_project(user_id, project_id, thread_id, state)
+        raise _workflow_conflict(exc) from exc
+    return _save_project(user_id, project_id, thread_id, state, event_type="SLIDE_REJECTED", actor="user", extra_audit={"slide_index": index})
 
 
 @app.post("/projects/{user_id}/{project_id}/slides/{index}/regenerate")
@@ -512,8 +642,8 @@ def regenerate_slide(user_id: str, project_id: str, index: int, authenticated_us
     try:
         state = RegenerateSlideUseCase().execute(state, index)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _save_project(user_id, project_id, thread_id, state)
+        raise _workflow_conflict(exc) from exc
+    return _save_project(user_id, project_id, thread_id, state, event_type="SLIDE_REGENERATED", actor="llm", extra_audit={"slide_index": index})
 
 
 @app.post("/projects/{user_id}/{project_id}/slides/approve")
@@ -523,8 +653,8 @@ def approve_slides(user_id: str, project_id: str, authenticated_user: str = Depe
     try:
         state = validate_slides.func(state, approved=True)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _save_project(user_id, project_id, thread_id, state)
+        raise _workflow_conflict(exc) from exc
+    return _save_project(user_id, project_id, thread_id, state, event_type="SLIDES_APPROVED", actor="user")
 
 
 @app.post("/projects/{user_id}/{project_id}/presentation/approve")
@@ -534,8 +664,8 @@ def approve_final_presentation(user_id: str, project_id: str, authenticated_user
     try:
         state = validate_final_presentation.func(state, approved=True)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _save_project(user_id, project_id, thread_id, state)
+        raise _workflow_conflict(exc) from exc
+    return _save_project(user_id, project_id, thread_id, state, event_type="PRESENTATION_APPROVED", actor="user")
 
 
 @app.get("/presentations/{user_id}/{project_id}/export/pptx")
@@ -545,7 +675,15 @@ def export_powerpoint(user_id: str, project_id: str, authenticated_user: str = D
     stored = get_repository().load(user_id, project_id)
     if stored is None or stored[1].presentation is None:
         raise HTTPException(status_code=404, detail="Presentation not found.")
-    _, state = stored
+    thread_id, state = stored
+    try:
+        WorkflowPolicy.require_status(
+            state.presentation.state.workflow_status,
+            (WorkflowStatus.READY_FOR_EXPORT, WorkflowStatus.EXPORTED),
+            "export the presentation",
+        )
+    except ValueError as exc:
+        raise _workflow_conflict(exc) from exc
     try:
         custom_template = (
             get_repository().presentation_template_path(user_id, state.presentation.custom_template_id)
@@ -554,7 +692,17 @@ def export_powerpoint(user_id: str, project_id: str, authenticated_user: str = D
         )
         path = ExportPowerPointUseCase().execute(state.presentation, _exports_dir, custom_template)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _workflow_conflict(exc) from exc
+    state.presentation.state.workflow_status = WorkflowStatus.EXPORTED
+    _save_project(
+        user_id,
+        project_id,
+        thread_id,
+        state,
+        event_type="PRESENTATION_EXPORTED",
+        actor="user",
+        extra_audit={"filename": path.name},
+    )
     return FileResponse(path, media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation", filename=f"{state.presentation.title}.pptx")
 
 

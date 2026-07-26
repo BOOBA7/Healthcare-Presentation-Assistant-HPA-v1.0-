@@ -21,6 +21,16 @@ class EvidenceChunk:
     terms: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class EvidenceAssessment:
+    """Deterministic retrieval decision used before scientific generation."""
+
+    has_validated_resources: bool
+    is_sufficient: bool
+    best_score: float
+    matched_terms: tuple[str, ...]
+
+
 class EvidenceContextBuilder:
     """Retrieve compact, diverse evidence with deterministic local BM25 scoring."""
 
@@ -42,6 +52,30 @@ class EvidenceContextBuilder:
             [presentation.context.topic, outline.title, outline.objective, outline.key_message]
         )
         return self._select(presentation, query)
+
+    def assess(self, presentation: Presentation, query: str) -> EvidenceAssessment:
+        """Return whether local, validated evidence sufficiently covers a query.
+
+        This is deliberately deterministic: a model cannot turn missing evidence
+        into a supported answer by sounding confident.
+        """
+        chunks = self._chunks_for_presentation(presentation)
+        query_terms = tuple(dict.fromkeys(self._terms(query)))
+        if not chunks:
+            return EvidenceAssessment(False, False, 0.0, ())
+        if not query_terms:
+            return EvidenceAssessment(True, False, 0.0, ())
+
+        scores = self._bm25_scores(chunks, list(query_terms))
+        best_index, best_score = max(enumerate(scores), key=lambda item: item[1])
+        matched_terms = tuple(sorted(set(query_terms).intersection(chunks[best_index].terms)))
+        minimum_matches = 1 if len(query_terms) <= 2 else 2
+        return EvidenceAssessment(
+            has_validated_resources=True,
+            is_sufficient=best_score > 0 and len(matched_terms) >= minimum_matches,
+            best_score=best_score,
+            matched_terms=matched_terms,
+        )
 
     def _select(self, presentation: Presentation, query: str) -> str:
         chunks = self._chunks_for_presentation(presentation)

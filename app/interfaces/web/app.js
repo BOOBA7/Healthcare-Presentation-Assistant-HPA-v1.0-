@@ -5,10 +5,11 @@ const state = {
   projects: [],
   templates: [],
   project: null,
+  chatPending: false,
   profile: { professional_role: "resident_physician", preferred_language: "en" },
 };
 const $ = (selector) => document.querySelector(selector);
-const roles = ["professor_medicine", "assistant_professor", "veterinarian", "biologist", "specialist_physician", "resident_physician"];
+const roles = ["professor_medicine", "assistant_professor", "veterinarian", "biologist", "pharmacist", "specialist_physician", "resident_physician"];
 const translations = {
   en: {
     brandSubtitle:"Healthcare presentation assistant", firstProject:"My first Project",
@@ -29,6 +30,12 @@ Object.assign(translations.ar, { resetPassword:"إعادة تعيين كلمة �
 Object.assign(translations.en, { templateLibrary:"PowerPoint templates", preview:"Preview", useTemplate:"Use", templatePreview:"Template preview", createPresentationFirst:"Create a presentation before applying a template.", pptxOnly:"Only .pptx templates are accepted." });
 Object.assign(translations.fr, { templateLibrary:"Modèles PowerPoint", preview:"Aperçu", useTemplate:"Utiliser", templatePreview:"Aperçu du modèle", createPresentationFirst:"Créez une présentation avant d’appliquer un modèle.", pptxOnly:"Seuls les modèles .pptx sont acceptés." });
 Object.assign(translations.ar, { templateLibrary:"قوالب PowerPoint", preview:"معاينة", useTemplate:"استخدام", templatePreview:"معاينة القالب", createPresentationFirst:"أنشئ عرضًا تقديميًا قبل تطبيق قالب.", pptxOnly:"يتم قبول قوالب .pptx فقط." });
+Object.assign(translations.en, { assistantThinking:"Assistant is thinking…" });
+Object.assign(translations.fr, { assistantThinking:"L’assistant réfléchit…" });
+Object.assign(translations.ar, { assistantThinking:"المساعد يفكّر…" });
+Object.assign(translations.en, { role_pharmacist:"Pharmacist" });
+Object.assign(translations.fr, { role_pharmacist:"Pharmacien" });
+Object.assign(translations.ar, { role_pharmacist:"صيدلي" });
 
 function language() { return state.profile.preferred_language || $("#auth-language")?.value || "en"; }
 function t(key, values = {}) { return (translations[language()]?.[key] || translations.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => values[name] ?? ""); }
@@ -37,6 +44,7 @@ function endpoint(path) { return path.split("/").map(encodeURIComponent).join("/
 function setLoading(value) { $("#loading").hidden = !value; }
 function notify(message, isError = false) { const node = $("#notice"); node.textContent = message; node.hidden = !message; node.className = `notice${isError ? " error" : ""}`; }
 function populateRoleSelect(select, selected) { select.innerHTML = roles.map(role => `<option value="${role}">${escapeHtml(t(`role_${role}`))}</option>`).join(""); select.value = roles.includes(selected) ? selected : "resident_physician"; }
+function applyRoleEmblem() { const emblems = {professor_medicine:"🩺", assistant_professor:"🩺", specialist_physician:"🩺", resident_physician:"🩺", veterinarian:"🐾", biologist:"🧬", pharmacist:"💊"}; const emblem = $("#role-emblem"); if (!emblem) return; emblem.textContent = emblems[state.profile.professional_role] || "✦"; emblem.setAttribute("aria-label", t(`role_${state.profile.professional_role}`)); }
 function applyLanguage() {
   const currentLanguage = language();
   document.documentElement.lang = currentLanguage;
@@ -49,17 +57,19 @@ function applyLanguage() {
   $("#user-language").value = currentLanguage;
   populateRoleSelect($("#auth-role"), $("#auth-role").value || state.profile.professional_role);
   populateRoleSelect($("#user-role"), state.profile.professional_role);
+  applyRoleEmblem();
   if (state.project) render();
 }
 async function api(path, options = {}) {
-  setLoading(true);
+  const {showLoading = true, public: isPublic = false, ...fetchOptions} = options;
+  if (showLoading) setLoading(true);
   try {
-    const headers = new Headers(options.headers || {});
-    if (state.token && !options.public) headers.set("Authorization", `Bearer ${state.token}`);
-    const response = await fetch(path, {...options, headers});
-    if (!response.ok) { const payload = await response.json().catch(() => ({})); throw new Error(payload.detail || t("unexpectedError")); }
+    const headers = new Headers(fetchOptions.headers || {});
+    if (state.token && !isPublic) headers.set("Authorization", `Bearer ${state.token}`);
+    const response = await fetch(path, {...fetchOptions, headers});
+    if (!response.ok) { const payload = await response.json().catch(() => ({})); const detail = payload.detail; const message = typeof detail === "string" ? detail : detail?.message; throw new Error(message || t("unexpectedError")); }
     return response;
-  } finally { setLoading(false); }
+  } finally { if (showLoading) setLoading(false); }
 }
 function projectPath(suffix = "") { return `/projects/${endpoint(state.userId)}/${endpoint(state.projectId)}${suffix}`; }
 function currentPresentation() { return state.project?.presentation; }
@@ -98,7 +108,7 @@ function logout() { sessionStorage.removeItem("hpa_user_id"); sessionStorage.rem
 async function deleteProject() { if (!state.projectId || !window.confirm(t("deleteProjectConfirm"))) return; try { await api(`/projects/${endpoint(state.userId)}/${endpoint(state.projectId)}`, {method:"DELETE"}); state.project = null; state.projectId = ""; await loadProjects(); if (state.projects.length) { state.projectId = state.projects[0].id; await openProject(); } else { render(); notify(t("projectDeleted")); } } catch (error) { notify(error.message, true); } }
 async function deleteUser() { if (!window.confirm(t("deleteAccountConfirm"))) return; try { await api(`/users/${endpoint(state.userId)}`, {method:"DELETE"}); logout(); } catch (error) { notify(error.message, true); } }
 
-function renderMessages(messages = []) { const node = $("#chat-messages"); if (!messages.length) { node.innerHTML = `<div class="empty-chat">${escapeHtml(t("chatEmpty"))}</div>`; return; } node.innerHTML = messages.map(message => `<div class="message ${message.role}">${escapeHtml(message.text)}</div>`).join(""); node.scrollTop = node.scrollHeight; }
+function renderMessages(messages = []) { const node = $("#chat-messages"); const visibleMessages = [...messages]; if (state.chatPending) visibleMessages.push({role:"assistant typing", text:t("assistantThinking"), typing:true}); if (!visibleMessages.length) { node.innerHTML = `<div class="empty-chat">${escapeHtml(t("chatEmpty"))}</div>`; return; } node.innerHTML = visibleMessages.map(message => message.typing ? `<div class="message ${message.role}" aria-live="polite"><span class="typing-label">${escapeHtml(message.text)}</span><span class="typing-dots"><i></i><i></i><i></i></span></div>` : `<div class="message ${message.role}">${escapeHtml(message.text)}</div>`).join(""); node.scrollTop = node.scrollHeight; }
 function render() {
   const presentation = currentPresentation(), workflow = presentation?.state || {}, count = presentation?.resources?.length || 0;
   $("#presentation-title").textContent = presentation?.title || currentProjectName(); $("#resource-count").textContent = t("resourcesCount", {count, plural:count === 1 ? "" : "s"}); $("#workflow-status").textContent = workflow.presentation_validated ? t("readyToExport") : (state.project?.last_tool || t("preparing"));
@@ -115,7 +125,8 @@ function evidenceDetails(references = []) { return references.length ? `<div cla
 function renderAgenda(presentation) { const area = $("#agenda-area"); const agenda = presentation?.agenda; if (!agenda) { area.innerHTML = ""; return; } area.innerHTML = `<section class="review-section"><div class="review-head"><div><p class="eyebrow">${escapeHtml(t("humanReview"))}</p><h2>${escapeHtml(t("agenda"))}</h2></div><span class="pill">${agenda.is_validated ? escapeHtml(t("approved")) : escapeHtml(t("toValidate"))}</span></div><p class="muted">${escapeHtml(t("agendaDescription"))}</p><textarea id="agenda-items" placeholder="${escapeHtml(t("agendaItems"))}">${escapeHtml(agenda.items.join("\n"))}</textarea><textarea id="agenda-comments" placeholder="${escapeHtml(t("agendaComment"))}">${escapeHtml(agenda.reviewer_comments || "")}</textarea><div class="action-row"><button class="outline-button" data-action="agenda-save">${escapeHtml(t("saveAgenda"))}</button><button class="primary" data-action="agenda-approve" ${agenda.is_validated ? "disabled" : ""}>${escapeHtml(t("approveAgenda"))}</button></div></section>`; }
 function renderReview(presentation) { const area = $("#review-area"); if (!presentation) { area.innerHTML = ""; return; } const blueprint = presentation.blueprint; const blueprintHtml = blueprint ? `<section class="review-section"><div class="review-head"><div><p class="eyebrow">${escapeHtml(t("humanReview"))}</p><h2>Blueprint</h2></div><button class="outline-button" data-action="blueprint-regenerate">${escapeHtml(t("regenerateComments"))}</button></div><div class="review-grid">${blueprint.slides.map((item,index) => `<article class="review-item ${item.is_validated ? "approved" : ""}"><h3>${index+1}. ${escapeHtml(item.title)}</h3><p><strong>${escapeHtml(t("objective"))}:</strong> ${escapeHtml(item.objective)}<br><strong>${escapeHtml(t("keyMessage"))}:</strong> ${escapeHtml(item.key_message)}</p><textarea data-comment="blueprint" data-index="${index}" placeholder="${escapeHtml(t("reviewerComment"))}">${escapeHtml(item.reviewer_comments || "")}</textarea>${itemActions("blueprint", index, item.is_validated)}</article>`).join("")}</div></section>` : ""; const slidesHtml = presentation.slides?.length ? `<section class="review-section"><div class="review-head"><div><p class="eyebrow">${escapeHtml(t("humanReview"))}</p><h2>${escapeHtml(t("slides"))}</h2></div></div><div class="review-grid">${presentation.slides.map((slide,index) => `<article class="review-item ${slide.is_validated ? "approved" : ""}"><h3>${index+1}. ${escapeHtml(slide.title)}</h3><p>${escapeHtml(slide.content || slide.key_messages?.join(" · ") || "")}</p>${evidenceDetails(slide.reference_details)}<textarea data-comment="slide" data-index="${index}" placeholder="${escapeHtml(t("reviewerComment"))}">${escapeHtml(slide.reviewer_comments || "")}</textarea>${itemActions("slide", index, slide.is_validated)}</article>`).join("")}</div></section>` : ""; area.innerHTML = blueprintHtml + slidesHtml; }
 
-async function sendChat(event) { event.preventDefault(); const input = $("#chat-input"), message = input.value.trim(); if (!message) return; renderMessages([{role:"user", text:message}]); input.value = ""; try { const response = await api("/chat", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({message, user_id:state.userId, project_id:state.projectId})}); const payload = await response.json(); saveProjectResponse(payload.project); renderMessages([{role:"user",text:message},{role:"assistant",text:formattedMessage(payload.message)}]); if (payload.error) notify(payload.error, true); } catch (error) { notify(error.message, true); } }
+function setChatPending(value) { state.chatPending = value; $("#chat-input").disabled = value; $("#chat-form button").disabled = value; $("#chat-form").setAttribute("aria-busy", String(value)); }
+async function sendChat(event) { event.preventDefault(); if (state.chatPending) return; const input = $("#chat-input"), message = input.value.trim(); if (!message) return; setChatPending(true); renderMessages([...(state.project?.messages || []), {role:"user", text:message}]); input.value = ""; try { const response = await api("/chat", {showLoading:false, method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({message, user_id:state.userId, project_id:state.projectId})}); const payload = await response.json(); setChatPending(false); saveProjectResponse(payload.project); if (payload.error) notify(payload.error, true); } catch (error) { setChatPending(false); notify(error.message, true); await refreshProject(); } }
 async function uploadResource() { const file = $("#pdf-file").files[0]; if (!file) return; if (file.size > 20*1024*1024) return notify(t("resourceLimit"), true); const form = new FormData(); form.append("file", file); try { const response = await api(`/resources/pdf/${endpoint(state.userId)}/${endpoint(state.projectId)}`, {method:"POST", body:form}); const payload = await response.json(); notify(t("resourceAdded", {name:payload.filename})); await refreshProject(); } catch (error) { notify(error.message, true); } }
 async function simpleAction(path) { try { const response = await api(projectPath(path), {method:"POST"}); saveProjectResponse(await response.json()); notify(t("validationSaved")); } catch (error) { notify(error.message, true); } }
 async function reviewAction(button) { const kind = button.dataset.review, index = button.dataset.index, mode = button.dataset.mode, textarea = document.querySelector(`textarea[data-comment="${kind}"][data-index="${index}"]`), comments = textarea?.value || ""; let path = kind === "blueprint" ? `/blueprint/items/${index}/${mode}` : `/slides/${index}/${mode}`; if (mode === "regenerate") path = `/slides/${index}/regenerate`; try { const response = await api(projectPath(path), {method:"POST", headers:mode === "regenerate" ? {} : {"Content-Type":"application/json"}, body:mode === "regenerate" ? undefined : JSON.stringify({comments})}); saveProjectResponse(await response.json()); notify(mode === "reject" ? t("correctionSaved") : t("changeSaved")); } catch (error) { notify(error.message, true); } }

@@ -1,4 +1,5 @@
 from app.ai.workflows.graph_state import GraphState
+from app.domain.enums.workflow_status import WorkflowStatus
 
 
 class StateSummaryBuilder:
@@ -23,6 +24,8 @@ class StateSummaryBuilder:
                 f"- Context complete: {'yes' if context.is_complete() else 'no'}",
                 f"- Missing context fields: {', '.join(context.missing_fields()) or 'none'}",
                 f"- Presentation created: {'yes' if presentation else 'no'}",
+                f"- Business workflow status: {presentation.state.workflow_status.value if presentation else WorkflowStatus.CONTEXT_COLLECTION.value}",
+                f"- Professional scope explanation: {presentation.professional_scope if presentation and presentation.professional_scope else 'not provided'}",
                 f"- Validated resources: {resource_count}",
                 f"- Resources approved: {'yes' if workflow_state and workflow_state.resources_validated else 'no'}",
                 f"- Blueprint generated: {'yes' if blueprint else 'no'}",
@@ -34,6 +37,7 @@ class StateSummaryBuilder:
                 f"- Allowed next tools: {', '.join(self.allowed_tools(state)) or 'none; ask the user for the required information or PDF'}",
                 "- Natural discussion is always allowed and does not require a tool.",
                 "- Resource, blueprint, slide and final validations are human actions performed in the interface, never LLM tools.",
+                "- If scope clarification is required, ask the user for one concise explanation, then call record_professional_scope with that explanation.",
                 "- Call only an allowed next tool after an explicit execution request. Never call a validation tool.",
             ]
         )
@@ -48,18 +52,22 @@ class StateSummaryBuilder:
             return ("validate_context",)
         if presentation is None:
             return ("create_presentation",)
-        if not presentation.resources:
+        status = presentation.state.workflow_status
+        if status in {
+            WorkflowStatus.AWAITING_RESOURCE_UPLOAD,
+            WorkflowStatus.AWAITING_RESOURCE_VALIDATION,
+            WorkflowStatus.AWAITING_AGENDA_APPROVAL,
+            WorkflowStatus.AWAITING_BLUEPRINT_APPROVAL,
+            WorkflowStatus.AWAITING_SLIDE_APPROVAL,
+            WorkflowStatus.AWAITING_FINAL_APPROVAL,
+            WorkflowStatus.READY_FOR_EXPORT,
+            WorkflowStatus.EXPORTED,
+        }:
             return ()
-        if not presentation.state.resources_validated:
-            return ()
-        if presentation.blueprint is None:
+        if status == WorkflowStatus.BLUEPRINT_GENERATION:
             return ("build_blueprint",)
-        if not presentation.state.blueprint_validated:
-            return ()
-        if not presentation.slides:
+        if status == WorkflowStatus.AWAITING_SCOPE_CLARIFICATION:
+            return ("record_professional_scope",)
+        if status == WorkflowStatus.SLIDE_GENERATION:
             return ("generate_slides",)
-        if not presentation.state.slides_validated:
-            return ()
-        if not presentation.state.presentation_validated:
-            return ()
         return ()

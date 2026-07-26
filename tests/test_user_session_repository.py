@@ -68,6 +68,12 @@ def test_passwords_are_hashed_and_tokens_authenticate_users(tmp_path):
     assert repository.get_user_profile("anis") == updated_profile
 
 
+def test_pharmacist_is_a_supported_professional_profile():
+    profile = UserProfile(professional_role="pharmacist", preferred_language="fr")
+
+    assert profile.professional_role == "pharmacist"
+
+
 def test_local_password_reset_and_user_templates(tmp_path):
     repository = UserSessionRepository(tmp_path / "sessions.sqlite3")
     repository.register_user("anis", "old-safe-password")
@@ -83,3 +89,24 @@ def test_local_password_reset_and_user_templates(tmp_path):
     repository.delete_user("anis")
 
     assert repository.presentation_template_path("anis", template["id"]) is None
+
+
+def test_project_audit_events_are_scoped_and_removed_with_the_project(tmp_path):
+    repository = UserSessionRepository(tmp_path / "sessions.sqlite3")
+    repository.create_empty("user-1", "project-a", "Clinical review")
+    repository.record_event(
+        "user-1",
+        "project-a",
+        "RESOURCE_UPLOADED",
+        "user",
+        {"resource_id": "pdf-1", "workflow_version": "business-graph-v1"},
+    )
+
+    events = repository.list_events("user-1", "project-a")
+
+    assert len(events) == 1
+    assert events[0]["event_type"] == "RESOURCE_UPLOADED"
+    assert events[0]["payload"]["resource_id"] == "pdf-1"
+
+    assert repository.delete_project("user-1", "project-a")
+    assert repository.list_events("user-1", "project-a") == []

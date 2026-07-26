@@ -9,6 +9,8 @@ from langgraph.graph import END, START, StateGraph
 
 from app.ai.workflows.graph_state import GraphState
 from app.ai.prompt_builders.state_summary_builder import StateSummaryBuilder
+from app.domain.exceptions.workflow_error import WorkflowError
+from app.domain.models.execution_context import ExecutionContext
 
 logger = logging.getLogger(__name__)
 
@@ -65,21 +67,31 @@ class PresentationGraph:
 
         tool_messages = []
         last_tool = None
-        error = None
+        error: WorkflowError | None = None
         current_state = state
 
-        for tool_call in tool_calls:
+        for position, tool_call in enumerate(tool_calls):
             tool_name = tool_call["name"]
-            last_tool = tool_name
+            if position == 0:
+                last_tool = tool_name
             tool = self.tools.get(tool_name)
             allowed_tools = self.state_summary_builder.allowed_tools(current_state)
 
-            if tool is None:
-                error = f"Unknown tool requested: {tool_name}"
-                content = error
+            if position > 0:
+                error = WorkflowError(
+                    "ONE_ACTION_PER_TURN",
+                    "Only one workflow action can be executed at a time.",
+                )
+                content = f"TOOL_BLOCKED {error.code}: {error.user_message}"
+            elif tool is None:
+                error = WorkflowError("UNKNOWN_TOOL", "The requested workflow action is unavailable.")
+                content = f"TOOL_BLOCKED {error.code}: {error.user_message}"
             elif tool_name not in allowed_tools:
-                error = f"{tool_name} is not allowed at this stage. Allowed next tools: {', '.join(allowed_tools) or 'none'}"
-                content = error
+                error = WorkflowError(
+                    "WORKFLOW_ACTION_NOT_ALLOWED",
+                    "This action is not available at the current workflow stage.",
+                )
+                content = f"TOOL_BLOCKED {error.code}: {error.user_message}"
             else:
                 try:
                     started_at = perf_counter()
@@ -94,10 +106,22 @@ class PresentationGraph:
                         (perf_counter() - started_at) * 1000,
                         current_state.presentation is not None,
                     )
+                except WorkflowError as exc:
+                    error = exc
+                    content = f"TOOL_BLOCKED {error.code}: {error.user_message}"
+                    logger.info("tool_blocked tool=%s code=%s", tool_name, error.code)
+                except ValueError as exc:
+                    error = WorkflowError("WORKFLOW_VALIDATION_FAILED", str(exc))
+                    content = f"TOOL_BLOCKED {error.code}: {error.user_message}"
+                    logger.info("tool_validation_failed tool=%s error=%s", tool_name, exc)
                 except Exception as exc:
-                    error = f"{tool_name} failed: {exc}"
-                    content = error
-                    logger.warning("tool_failed tool=%s error=%s", tool_name, exc)
+                    error = WorkflowError(
+                        "WORKFLOW_EXECUTION_FAILED",
+                        "The workflow action could not be completed. Please retry.",
+                        retryable=True,
+                    )
+                    content = f"TOOL_FAILED {error.code}: {error.user_message}"
+                    logger.exception("tool_failed tool=%s", tool_name)
 
             tool_messages.append(
                 ToolMessage(
@@ -112,9 +136,16 @@ class PresentationGraph:
             "conversation_context": current_state.conversation_context,
             "presentation_context": current_state.presentation_context,
             "presentation": current_state.presentation,
-            "last_tool": last_tool,
-            "tool_output": {"status": "error" if error else "ok", "tool": last_tool},
-            "error": error,
+            "execution": ExecutionContext(
+                last_tool=last_tool,
+                tool_output={
+                    "status": "error" if error else "ok",
+                    "tool": last_tool,
+                    "error_code": error.code if error else None,
+                    "retryable": error.retryable if error else False,
+                },
+                error=error.user_message if error else None,
+            ),
         }
 
     def _should_continue(self, state: GraphState) -> str:

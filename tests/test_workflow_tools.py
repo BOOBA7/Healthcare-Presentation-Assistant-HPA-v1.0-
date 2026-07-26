@@ -1,3 +1,5 @@
+import pytest
+
 from app.ai.workflows.graph_state import GraphState
 from app.ai.workflows.tools import (
     collect_context,
@@ -11,11 +13,17 @@ from app.domain.enums.language import Language
 from app.domain.enums.presentation_type import PresentationType
 from app.domain.models.slide import Slide
 from app.application.use_cases.workflow_steps import ReviewSlideUseCase
+from app.application.use_cases.workflow_steps import (
+    BuildBlueprintWorkflowUseCase,
+    RecordProfessionalScopeUseCase,
+)
 from app.application.use_cases.export_powerpoint import ExportPowerPointUseCase
 from app.domain.enums.resource_type import ResourceType
 from app.domain.models.resource import Resource
 from app.domain.models.agenda import Agenda
 from app.domain.models.user_profile import UserProfile
+from app.domain.enums.workflow_status import WorkflowStatus
+from app.domain.exceptions.workflow_error import WorkflowError
 from pptx import Presentation as PowerPoint
 
 
@@ -40,7 +48,7 @@ def test_context_can_create_a_presentation_without_a_live_llm():
 
 def test_final_approval_requires_slide_approval_first():
     state = GraphState()
-    state.presentation = type("Presentation", (), {"slides": [Slide(slide_number=1, title="Test")], "state": type("State", (), {"slides_validated": False, "presentation_validated": False})()})()
+    state.presentation = type("Presentation", (), {"slides": [Slide(slide_number=1, title="Test")], "state": type("State", (), {"slides_validated": False, "presentation_validated": False, "workflow_status": WorkflowStatus.AWAITING_SLIDE_APPROVAL})()})()
 
     state = ReviewSlideUseCase().execute(state, index=0, comments="Approved")
     state = validate_slides.func(state, approved=True)
@@ -48,6 +56,68 @@ def test_final_approval_requires_slide_approval_first():
 
     assert state.presentation.state.slides_validated
     assert state.presentation.state.presentation_validated
+
+
+def test_veterinarian_profile_requires_scope_clarification_before_blueprint_generation():
+    state = collect_context.func(
+        GraphState(user_profile=UserProfile(professional_role="veterinarian", preferred_language="fr")),
+        topic="Depression",
+        audience=AudienceType.GENERAL_PRACTITIONER,
+        presentation_type=PresentationType.LECTURE,
+        language=Language.FRENCH,
+        duration_minutes=20,
+        objective="Review treatment guidelines",
+    )
+    state = create_presentation.func(validate_context.func(state))
+    state.presentation.resources = [
+        Resource(
+            id="apa-pdf",
+            filename="apa-depression-guideline.pdf",
+            file_type=ResourceType.PDF,
+            extracted_pages=[{"page": 1, "text": "Depression treatment guideline for primary care."}],
+            is_validated=True,
+        )
+    ]
+    state.presentation.state.resources_validated = True
+    state.presentation.state.workflow_status = WorkflowStatus.BLUEPRINT_GENERATION
+
+    with pytest.raises(WorkflowError, match="human healthcare audience"):
+        BuildBlueprintWorkflowUseCase().execute(state)
+
+    assert state.presentation.state.workflow_status == WorkflowStatus.AWAITING_SCOPE_CLARIFICATION
+    state = RecordProfessionalScopeUseCase().execute(
+        state,
+        "I am a medical representative with veterinary training and present human-health information.",
+    )
+
+    assert state.presentation.professional_scope is not None
+    assert state.presentation.state.workflow_status == WorkflowStatus.BLUEPRINT_GENERATION
+
+
+def test_scope_clarification_resumes_slide_generation_when_blueprint_was_already_approved():
+    state = GraphState()
+    state.presentation = type(
+        "Presentation",
+        (),
+        {
+            "state": type(
+                "State",
+                (),
+                {
+                    "workflow_status": WorkflowStatus.AWAITING_SCOPE_CLARIFICATION,
+                    "blueprint_validated": True,
+                },
+            )(),
+            "professional_scope": None,
+        },
+    )()
+
+    state = RecordProfessionalScopeUseCase().execute(
+        state,
+        "I am a medical representative with veterinary training for this human-health topic.",
+    )
+
+    assert state.presentation.state.workflow_status == WorkflowStatus.SLIDE_GENERATION
 
 
 def test_powerpoint_always_ends_with_user_validated_resources(tmp_path):

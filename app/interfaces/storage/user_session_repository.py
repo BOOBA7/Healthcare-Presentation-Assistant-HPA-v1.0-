@@ -60,6 +60,21 @@ class UserSessionRepository:
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )"""
             )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS project_events (
+                    event_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )"""
+            )
+            connection.execute(
+                """CREATE INDEX IF NOT EXISTS idx_project_events_project
+                   ON project_events (user_id, project_id, created_at)"""
+            )
             self._ensure_project_name_column(connection)
             self._ensure_user_profile_columns(connection)
             self._migrate_legacy_user_sessions(connection)
@@ -205,6 +220,10 @@ class UserSessionRepository:
 
     def delete_project(self, user_id: str, project_id: str) -> bool:
         with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM project_events WHERE user_id = ? AND project_id = ?",
+                (user_id, project_id),
+            )
             cursor = connection.execute(
                 "DELETE FROM project_sessions WHERE user_id = ? AND project_id = ?",
                 (user_id, project_id),
@@ -218,6 +237,7 @@ class UserSessionRepository:
             ).fetchall()
             connection.execute("DELETE FROM auth_tokens WHERE user_id = ?", (user_id,))
             connection.execute("DELETE FROM project_sessions WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM project_events WHERE user_id = ?", (user_id,))
             connection.execute("DELETE FROM presentation_templates WHERE user_id = ?", (user_id,))
             connection.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
         for row in rows:
@@ -256,6 +276,49 @@ class UserSessionRepository:
             return None
         path = self.templates_path / row[0]
         return path if path.is_file() else None
+
+    def record_event(
+        self,
+        user_id: str,
+        project_id: str,
+        event_type: str,
+        actor: str,
+        payload: dict[str, object] | None = None,
+    ) -> None:
+        """Append an immutable business/audit event for a Project."""
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO project_events
+                   (event_id, user_id, project_id, event_type, actor, payload_json)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    str(uuid4()),
+                    user_id,
+                    project_id,
+                    event_type,
+                    actor,
+                    json.dumps(payload or {}, default=str),
+                ),
+            )
+
+    def list_events(self, user_id: str, project_id: str, limit: int = 200) -> list[dict[str, object]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT event_id, event_type, actor, payload_json, created_at
+                   FROM project_events WHERE user_id = ? AND project_id = ?
+                   ORDER BY created_at DESC, rowid DESC LIMIT ?""",
+                (user_id, project_id, limit),
+            ).fetchall()
+        return [
+            {
+                "id": row[0],
+                "event_type": row[1],
+                "actor": row[2],
+                "payload": json.loads(row[3]),
+                "created_at": row[4],
+            }
+            for row in rows
+        ]
 
     @staticmethod
     def _serialize_state(state: GraphState) -> dict[str, object]:
