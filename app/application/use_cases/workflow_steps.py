@@ -38,7 +38,11 @@ class CreatePresentationWorkflowUseCase:
             return state
         if state.presentation_context is None:
             raise ValueError("Validate the context before creating the presentation.")
-        presentation = CreatePresentationUseCase().execute(state.presentation_context.topic, state.presentation_context)
+        presentation = CreatePresentationUseCase().execute(
+            state.presentation_context.topic,
+            state.presentation_context,
+            state.user_profile,
+        )
         return state.model_copy(update={"presentation": presentation})
 
 
@@ -66,6 +70,8 @@ class ValidateBlueprintWorkflowUseCase:
             raise ValueError("Generate a blueprint before validating it.")
         if not approved:
             raise ValueError("Blueprint was not approved by the human reviewer.")
+        if state.presentation.agenda is None or not state.presentation.agenda.is_validated:
+            raise ValueError("Review and approve the proposed agenda before approving the blueprint.")
         if not all(outline.is_validated for outline in state.presentation.blueprint.slides):
             raise ValueError("Approve every blueprint item before approving the complete blueprint.")
         state.presentation.blueprint.is_validated = True

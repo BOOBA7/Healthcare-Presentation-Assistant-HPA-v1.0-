@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.models.conversation_context import ConversationContext
 from app.domain.models.presentation import Presentation
+from app.domain.models.user_profile import UserProfile
 from app.domain.value_objects.presentation_context import PresentationContext
 
 
@@ -16,6 +17,7 @@ class GraphState(BaseModel):
     conversation_context: ConversationContext = Field(default_factory=ConversationContext)
     presentation_context: PresentationContext | None = None
     presentation: Presentation | None = None
+    user_profile: UserProfile = Field(default_factory=UserProfile)
     last_tool: str | None = None
     tool_output: Any | None = None
     error: str | None = None

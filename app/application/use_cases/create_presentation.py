@@ -7,6 +7,7 @@ from app.domain.profiles.profile_registry import ProfileRegistry
 from app.domain.value_objects.presentation_context import (
     PresentationContext,
 )
+from app.domain.models.user_profile import UserProfile
 
 
 class CreatePresentationUseCase:
@@ -18,6 +19,7 @@ class CreatePresentationUseCase:
         self,
         title: str,
         context: PresentationContext,
+        owner_profile: UserProfile | None = None,
     ) -> Presentation:
         """
         Create and initialize a Presentation domain object.
@@ -49,6 +51,7 @@ class CreatePresentationUseCase:
             title=title,
             context=context,
             state=presentation_state,
+            owner_profile=owner_profile or UserProfile(),
             created_at=datetime.now(),
             updated_at=datetime.now(),
         )

@@ -42,6 +42,9 @@ def main() -> None:
     while True:
         user_input = input("You > ").strip()
 
+        if not user_input:
+            continue
+
         if user_input.lower() in {"exit", "quit"}:
             break
 

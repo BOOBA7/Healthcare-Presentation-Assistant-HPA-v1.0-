@@ -14,12 +14,14 @@ from app.application.use_cases.workflow_steps import ReviewSlideUseCase
 from app.application.use_cases.export_powerpoint import ExportPowerPointUseCase
 from app.domain.enums.resource_type import ResourceType
 from app.domain.models.resource import Resource
+from app.domain.models.agenda import Agenda
+from app.domain.models.user_profile import UserProfile
 from pptx import Presentation as PowerPoint
 
 
 def test_context_can_create_a_presentation_without_a_live_llm():
     state = collect_context.func(
-        GraphState(),
+        GraphState(user_profile=UserProfile(professional_role="biologist", preferred_language="ar")),
         topic="Depression",
         audience=AudienceType.SPECIALIST,
         presentation_type=PresentationType.LECTURE,
@@ -33,6 +35,7 @@ def test_context_can_create_a_presentation_without_a_live_llm():
 
     assert state.presentation is not None
     assert state.presentation.title == "Depression"
+    assert state.presentation.owner_profile.professional_role == "biologist"
 
 
 def test_final_approval_requires_slide_approval_first():
@@ -88,11 +91,19 @@ def test_powerpoint_always_ends_with_user_validated_resources(tmp_path):
     ]
     presentation.state.resources_validated = True
     presentation.state.presentation_validated = True
+    presentation.agenda = Agenda(items=["Introduction", "Treatment"], is_validated=True)
 
-    path = ExportPowerPointUseCase().execute(presentation, tmp_path)
+    custom_template = tmp_path / "custom-template.pptx"
+    base_deck = PowerPoint()
+    base_deck.slides.add_slide(base_deck.slide_layouts[0])
+    base_deck.save(custom_template)
+
+    path = ExportPowerPointUseCase().execute(presentation, tmp_path, custom_template)
     deck = PowerPoint(path)
     last_slide_text = " ".join(shape.text for shape in deck.slides[-1].shapes if hasattr(shape, "text"))
 
-    assert deck.slides[-1].shapes.title.text == "Ressources et validation"
+    assert len(deck.slides) == 4  # title, mandatory agenda, content, resources
+    assert deck.slides[1].shapes[1].text == "Agenda"
+    assert deck.slides[-1].shapes[1].text == "Ressources et validation"
     assert "guideline" in last_slide_text
     assert "validées par l’utilisateur" in last_slide_text

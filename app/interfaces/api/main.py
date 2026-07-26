@@ -1,9 +1,11 @@
 from functools import lru_cache
+import io
 import logging
 from pathlib import Path
+from zipfile import BadZipFile, ZipFile
 
 import httpx
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from langchain_core.messages import HumanMessage
@@ -15,6 +17,8 @@ from app.application.use_cases.export_powerpoint import ExportPowerPointUseCase
 from app.application.use_cases.extract_pdf_resource import ExtractPdfResourceUseCase
 from app.core.config import get_settings
 from app.interfaces.storage.user_session_repository import UserSessionRepository
+from app.domain.models.user_profile import UserProfile
+from app.domain.enums.presentation_theme import PresentationTheme
 from app.application.use_cases.workflow_steps import (
     RegenerateBlueprintUseCase,
     RegenerateSlideUseCase,
@@ -51,10 +55,36 @@ class ChatRequest(BaseModel):
 class ProjectRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=128)
     project_id: str = Field(min_length=1, max_length=128)
+    project_name: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class CredentialsRequest(BaseModel):
+    user_id: str = Field(min_length=3, max_length=128, pattern=r"^[a-zA-Z0-9_.-]+$")
+    password: str = Field(min_length=8, max_length=256)
+
+
+class RegistrationRequest(CredentialsRequest):
+    professional_role: str = "resident_physician"
+    preferred_language: str = "en"
+
+
+class UserProfileRequest(BaseModel):
+    professional_role: str
+    preferred_language: str
 
 
 class ReviewRequest(BaseModel):
     comments: str = Field(default="", max_length=10_000)
+
+
+class AgendaRequest(BaseModel):
+    items: list[str] = Field(min_length=1, max_length=12)
+    comments: str = Field(default="", max_length=10_000)
+
+
+class ThemeRequest(BaseModel):
+    theme: PresentationTheme | None = None
+    custom_template_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 def _project_response(user_id: str, project_id: str, thread_id: str, state: GraphState) -> dict:
@@ -80,6 +110,7 @@ def _project_response(user_id: str, project_id: str, thread_id: str, state: Grap
         "presentation": presentation,
         "messages": messages,
         "conversation_context": state.conversation_context.model_dump(mode="json"),
+        "user_profile": state.user_profile.model_dump(mode="json"),
         "last_tool": state.last_tool,
         "error": state.error,
     }
@@ -90,6 +121,20 @@ def _get_project(user_id: str, project_id: str) -> tuple[str, GraphState]:
     if stored is None:
         raise HTTPException(status_code=404, detail="Project not found.")
     return stored
+
+
+def _authenticated_user(authorization: str | None = Header(default=None)) -> str:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication is required.")
+    user_id = get_repository().user_for_token(authorization.removeprefix("Bearer "))
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Your session is invalid or expired. Please sign in again.")
+    return user_id
+
+
+def _assert_owner(user_id: str, authenticated_user: str) -> None:
+    if user_id != authenticated_user:
+        raise HTTPException(status_code=403, detail="You cannot access another user's projects.")
 
 
 def _save_project(user_id: str, project_id: str, thread_id: str, state: GraphState) -> dict:
@@ -124,6 +169,73 @@ def health():
     }
 
 
+@app.post("/auth/register")
+def register(credentials: RegistrationRequest):
+    try:
+        profile = UserProfile(
+            professional_role=credentials.professional_role,
+            preferred_language=credentials.preferred_language,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid professional profile or language.") from exc
+    try:
+        get_repository().register_user(credentials.user_id, credentials.password, profile)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    token = get_repository().create_auth_token(credentials.user_id)
+    return {"user_id": credentials.user_id, "token": token, "profile": profile.model_dump()}
+
+
+@app.post("/auth/login")
+def login(credentials: CredentialsRequest):
+    if not get_repository().authenticate_user(credentials.user_id, credentials.password):
+        raise HTTPException(status_code=401, detail="Invalid user ID or password.")
+    token = get_repository().create_auth_token(credentials.user_id)
+    return {
+        "user_id": credentials.user_id,
+        "token": token,
+        "profile": get_repository().get_user_profile(credentials.user_id).model_dump(),
+    }
+
+
+@app.post("/auth/reset-password")
+def reset_password(credentials: CredentialsRequest):
+    """Local-only, deliberately unsecured recovery flow requested for this app."""
+    try:
+        get_repository().reset_password_without_verification(credentials.user_id, credentials.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "user_id": credentials.user_id,
+        "token": get_repository().create_auth_token(credentials.user_id),
+        "profile": get_repository().get_user_profile(credentials.user_id).model_dump(),
+    }
+
+
+@app.get("/users/{user_id}/profile")
+def get_user_profile(user_id: str, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
+    return {"profile": get_repository().get_user_profile(user_id).model_dump()}
+
+
+@app.put("/users/{user_id}/profile")
+def update_user_profile(
+    user_id: str,
+    request: UserProfileRequest,
+    authenticated_user: str = Depends(_authenticated_user),
+):
+    _assert_owner(user_id, authenticated_user)
+    try:
+        profile = UserProfile(
+            professional_role=request.professional_role,
+            preferred_language=request.preferred_language,
+        )
+        get_repository().update_user_profile(user_id, profile)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid professional profile or language.") from exc
+    return {"profile": profile.model_dump()}
+
+
 @app.get("/app", include_in_schema=False)
 def web_app():
     """Serve the local JavaScript interface."""
@@ -134,30 +246,72 @@ app.mount("/web", StaticFiles(directory=_web_dir), name="web")
 
 
 @app.get("/users/{user_id}/projects")
-def list_projects(user_id: str):
-    return {"project_ids": get_repository().list_project_ids(user_id)}
+def list_projects(user_id: str, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
+    return {"projects": get_repository().list_projects(user_id)}
+
+
+@app.get("/users/{user_id}/templates")
+def list_templates(user_id: str, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
+    return {"templates": get_repository().list_presentation_templates(user_id)}
+
+
+@app.post("/users/{user_id}/templates")
+async def upload_template(user_id: str, file: UploadFile = File(...), authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
+    if not (file.filename or "").lower().endswith(".pptx"):
+        raise HTTPException(status_code=415, detail="Only .pptx templates are accepted.")
+    content = await file.read()
+    if not content or len(content) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="PowerPoint templates must be between 1 byte and 20 MB.")
+    try:
+        with ZipFile(io.BytesIO(content)) as archive:
+            if "ppt/presentation.xml" not in archive.namelist():
+                raise BadZipFile("Not a PowerPoint file")
+    except BadZipFile as exc:
+        raise HTTPException(status_code=422, detail="The uploaded file is not a valid .pptx template.") from exc
+    return get_repository().save_presentation_template(user_id, file.filename or "template.pptx", content)
 
 
 @app.post("/projects")
-def create_or_open_project(request: ProjectRequest):
+def create_or_open_project(request: ProjectRequest, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(request.user_id, authenticated_user)
     stored = get_repository().load(request.user_id, request.project_id)
     thread_id, state = (
         stored
         if stored
-        else get_repository().create_empty(request.user_id, request.project_id)
+        else get_repository().create_empty(request.user_id, request.project_id, request.project_name)
     )
+    if stored is not None and request.project_name:
+        get_repository().save(request.user_id, request.project_id, thread_id, state, request.project_name)
     return _project_response(request.user_id, request.project_id, thread_id, state)
 
 
 @app.get("/projects/{user_id}/{project_id}")
-def get_project(user_id: str, project_id: str):
+def get_project(user_id: str, project_id: str, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
     thread_id, state = _get_project(user_id, project_id)
     return _project_response(user_id, project_id, thread_id, state)
 
 
+@app.delete("/projects/{user_id}/{project_id}", status_code=204)
+def delete_project(user_id: str, project_id: str, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
+    if not get_repository().delete_project(user_id, project_id):
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+
+@app.delete("/users/{user_id}", status_code=204)
+def delete_user(user_id: str, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
+    get_repository().delete_user(user_id)
+
+
 @app.post("/chat")
-def chat(request: ChatRequest):
+def chat(request: ChatRequest, authenticated_user: str = Depends(_authenticated_user)):
     """Send a user message to the presentation workflow."""
+    _assert_owner(request.user_id, authenticated_user)
     stored = get_repository().load(request.user_id, request.project_id)
     thread_id, state = (
         stored
@@ -165,6 +319,10 @@ def chat(request: ChatRequest):
         else get_repository().create_empty(request.user_id, request.project_id)
     )
     state.messages.append(HumanMessage(content=request.message))
+    state.user_profile = get_repository().get_user_profile(request.user_id)
+    if state.presentation is not None:
+        # Keep future blueprint/slide generations aligned with a profile update.
+        state.presentation.owner_profile = state.user_profile
     try:
         result = get_agent().invoke(state, thread_id=thread_id)
     except Exception as exc:
@@ -201,8 +359,9 @@ def chat(request: ChatRequest):
 
 
 @app.post("/resources/pdf/{user_id}/{project_id}")
-async def upload_pdf_resource(user_id: str, project_id: str, file: UploadFile = File(...)):
+async def upload_pdf_resource(user_id: str, project_id: str, file: UploadFile = File(...), authenticated_user: str = Depends(_authenticated_user)):
     """Extract a PDF and attach it as validated evidence to a presentation."""
+    _assert_owner(user_id, authenticated_user)
     if file.content_type not in {"application/pdf", "application/x-pdf"}:
         raise HTTPException(status_code=415, detail="Only PDF uploads are accepted.")
     stored = get_repository().load(user_id, project_id)
@@ -222,7 +381,8 @@ async def upload_pdf_resource(user_id: str, project_id: str, file: UploadFile = 
 
 
 @app.post("/projects/{user_id}/{project_id}/resources/validate")
-def approve_resources(user_id: str, project_id: str):
+def approve_resources(user_id: str, project_id: str, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
     thread_id, state = _get_project(user_id, project_id)
     try:
         state = validate_resources.func(state)
@@ -232,7 +392,8 @@ def approve_resources(user_id: str, project_id: str):
 
 
 @app.post("/projects/{user_id}/{project_id}/blueprint/items/{index}/approve")
-def approve_blueprint_item(user_id: str, project_id: str, index: int, request: ReviewRequest):
+def approve_blueprint_item(user_id: str, project_id: str, index: int, request: ReviewRequest, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
     thread_id, state = _get_project(user_id, project_id)
     try:
         state = ReviewBlueprintItemUseCase().execute(state, index, request.comments)
@@ -242,7 +403,8 @@ def approve_blueprint_item(user_id: str, project_id: str, index: int, request: R
 
 
 @app.post("/projects/{user_id}/{project_id}/blueprint/items/{index}/reject")
-def reject_blueprint_item(user_id: str, project_id: str, index: int, request: ReviewRequest):
+def reject_blueprint_item(user_id: str, project_id: str, index: int, request: ReviewRequest, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
     thread_id, state = _get_project(user_id, project_id)
     try:
         state = RejectBlueprintItemUseCase().execute(state, index, request.comments)
@@ -252,7 +414,8 @@ def reject_blueprint_item(user_id: str, project_id: str, index: int, request: Re
 
 
 @app.post("/projects/{user_id}/{project_id}/blueprint/approve")
-def approve_blueprint(user_id: str, project_id: str):
+def approve_blueprint(user_id: str, project_id: str, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
     thread_id, state = _get_project(user_id, project_id)
     try:
         state = validate_blueprint.func(state, approved=True)
@@ -261,8 +424,57 @@ def approve_blueprint(user_id: str, project_id: str):
     return _save_project(user_id, project_id, thread_id, state)
 
 
+@app.put("/projects/{user_id}/{project_id}/agenda")
+def update_agenda(user_id: str, project_id: str, request: AgendaRequest, authenticated_user: str = Depends(_authenticated_user)):
+    """Save a human edit of the model-proposed agenda."""
+    _assert_owner(user_id, authenticated_user)
+    thread_id, state = _get_project(user_id, project_id)
+    if state.presentation is None or state.presentation.agenda is None:
+        raise HTTPException(status_code=409, detail="Generate a blueprint before editing the agenda.")
+    items = [item.strip() for item in request.items if item.strip()]
+    if not items:
+        raise HTTPException(status_code=422, detail="Agenda must contain at least one item.")
+    state.presentation.agenda.items = items
+    state.presentation.agenda.reviewer_comments = request.comments.strip() or None
+    state.presentation.agenda.is_validated = False
+    state.presentation.blueprint.is_validated = False
+    state.presentation.state.blueprint_validated = False
+    state.presentation.state.slides_validated = False
+    state.presentation.state.presentation_validated = False
+    return _save_project(user_id, project_id, thread_id, state)
+
+
+@app.post("/projects/{user_id}/{project_id}/agenda/approve")
+def approve_agenda(user_id: str, project_id: str, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
+    thread_id, state = _get_project(user_id, project_id)
+    if state.presentation is None or state.presentation.agenda is None or not state.presentation.agenda.items:
+        raise HTTPException(status_code=409, detail="Generate an agenda before approving it.")
+    state.presentation.agenda.is_validated = True
+    return _save_project(user_id, project_id, thread_id, state)
+
+
+@app.put("/projects/{user_id}/{project_id}/theme")
+def update_theme(user_id: str, project_id: str, request: ThemeRequest, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
+    thread_id, state = _get_project(user_id, project_id)
+    if state.presentation is None:
+        raise HTTPException(status_code=409, detail="Create a presentation before selecting a theme.")
+    if request.custom_template_id:
+        if get_repository().presentation_template_path(user_id, request.custom_template_id) is None:
+            raise HTTPException(status_code=404, detail="Custom template not found.")
+        state.presentation.custom_template_id = request.custom_template_id
+    elif request.theme is not None:
+        state.presentation.theme = request.theme
+        state.presentation.custom_template_id = None
+    else:
+        raise HTTPException(status_code=422, detail="Select a built-in or custom template.")
+    return _save_project(user_id, project_id, thread_id, state)
+
+
 @app.post("/projects/{user_id}/{project_id}/blueprint/regenerate")
-def regenerate_blueprint(user_id: str, project_id: str):
+def regenerate_blueprint(user_id: str, project_id: str, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
     thread_id, state = _get_project(user_id, project_id)
     try:
         state = RegenerateBlueprintUseCase().execute(state)
@@ -272,7 +484,8 @@ def regenerate_blueprint(user_id: str, project_id: str):
 
 
 @app.post("/projects/{user_id}/{project_id}/slides/{index}/approve")
-def approve_slide(user_id: str, project_id: str, index: int, request: ReviewRequest):
+def approve_slide(user_id: str, project_id: str, index: int, request: ReviewRequest, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
     thread_id, state = _get_project(user_id, project_id)
     try:
         state = ReviewSlideUseCase().execute(state, index, request.comments)
@@ -282,7 +495,8 @@ def approve_slide(user_id: str, project_id: str, index: int, request: ReviewRequ
 
 
 @app.post("/projects/{user_id}/{project_id}/slides/{index}/reject")
-def reject_slide(user_id: str, project_id: str, index: int, request: ReviewRequest):
+def reject_slide(user_id: str, project_id: str, index: int, request: ReviewRequest, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
     thread_id, state = _get_project(user_id, project_id)
     try:
         state = RejectSlideUseCase().execute(state, index, request.comments)
@@ -292,7 +506,8 @@ def reject_slide(user_id: str, project_id: str, index: int, request: ReviewReque
 
 
 @app.post("/projects/{user_id}/{project_id}/slides/{index}/regenerate")
-def regenerate_slide(user_id: str, project_id: str, index: int):
+def regenerate_slide(user_id: str, project_id: str, index: int, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
     thread_id, state = _get_project(user_id, project_id)
     try:
         state = RegenerateSlideUseCase().execute(state, index)
@@ -302,7 +517,8 @@ def regenerate_slide(user_id: str, project_id: str, index: int):
 
 
 @app.post("/projects/{user_id}/{project_id}/slides/approve")
-def approve_slides(user_id: str, project_id: str):
+def approve_slides(user_id: str, project_id: str, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
     thread_id, state = _get_project(user_id, project_id)
     try:
         state = validate_slides.func(state, approved=True)
@@ -312,7 +528,8 @@ def approve_slides(user_id: str, project_id: str):
 
 
 @app.post("/projects/{user_id}/{project_id}/presentation/approve")
-def approve_final_presentation(user_id: str, project_id: str):
+def approve_final_presentation(user_id: str, project_id: str, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
     thread_id, state = _get_project(user_id, project_id)
     try:
         state = validate_final_presentation.func(state, approved=True)
@@ -322,14 +539,20 @@ def approve_final_presentation(user_id: str, project_id: str):
 
 
 @app.get("/presentations/{user_id}/{project_id}/export/pptx")
-def export_powerpoint(user_id: str, project_id: str):
+def export_powerpoint(user_id: str, project_id: str, authenticated_user: str = Depends(_authenticated_user)):
     """Download the generated presentation as a PowerPoint file."""
+    _assert_owner(user_id, authenticated_user)
     stored = get_repository().load(user_id, project_id)
     if stored is None or stored[1].presentation is None:
         raise HTTPException(status_code=404, detail="Presentation not found.")
     _, state = stored
     try:
-        path = ExportPowerPointUseCase().execute(state.presentation, _exports_dir)
+        custom_template = (
+            get_repository().presentation_template_path(user_id, state.presentation.custom_template_id)
+            if state.presentation.custom_template_id
+            else None
+        )
+        path = ExportPowerPointUseCase().execute(state.presentation, _exports_dir, custom_template)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return FileResponse(path, media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation", filename=f"{state.presentation.title}.pptx")

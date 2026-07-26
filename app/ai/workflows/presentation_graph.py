@@ -100,7 +100,11 @@ class PresentationGraph:
                     logger.warning("tool_failed tool=%s error=%s", tool_name, exc)
 
             tool_messages.append(
-                ToolMessage(content=content, tool_call_id=tool_call["id"])
+                ToolMessage(
+                    content=content,
+                    tool_call_id=tool_call["id"],
+                    name=tool_name,
+                )
             )
 
         return {

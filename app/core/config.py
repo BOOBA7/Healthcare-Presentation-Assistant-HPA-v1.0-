@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     )
 
     gemini_model: str = Field(
-        default="gemini-2.5-flash",
+        default="gemini-3.6-flash",
         alias="GEMINI_MODEL",
     )
 

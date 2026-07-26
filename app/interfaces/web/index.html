@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="fr">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -10,72 +10,111 @@
     <link rel="stylesheet" href="/web/styles.css" />
   </head>
   <body>
+    <section id="auth-screen" class="auth-screen">
+      <div class="auth-card">
+        <div class="brand"><span class="brand-mark">✦</span><span>HPA<small data-i18n="brandSubtitle">Healthcare presentation assistant</small></span></div>
+        <p class="eyebrow" data-i18n="secureAccess">Secure local access</p>
+        <h1 data-i18n="authTitle">Sign in / Sign up</h1>
+        <p data-i18n="authDescription">Create an account for your first visit, or sign in to retrieve your Projects and conversations.</p>
+        <label for="auth-user-id" data-i18n="userId">User ID</label>
+        <input id="auth-user-id" maxlength="128" autocomplete="username" placeholder="ex. anis" />
+        <label for="auth-password" data-i18n="password">Password</label>
+        <input id="auth-password" type="password" minlength="8" maxlength="256" autocomplete="current-password" data-i18n-placeholder="passwordHint" placeholder="At least 8 characters" />
+        <label for="auth-role" data-i18n="professionalProfile">Professional profile</label>
+        <select id="auth-role"></select>
+        <label for="auth-language" data-i18n="language">Language</label>
+        <select id="auth-language"><option value="en">English</option><option value="fr">Français</option><option value="ar">العربية</option></select>
+        <div class="auth-actions"><button id="login" class="primary" data-i18n="login">Sign in</button><button id="register" class="outline-button" data-i18n="register">Sign up</button><button id="reset-password" class="outline-button" data-i18n="resetPassword">Reset password</button></div>
+        <p id="auth-error" class="auth-error" hidden></p>
+      </div>
+    </section>
     <div class="app-shell">
       <aside class="sidebar">
-        <a class="brand" href="/app"><span class="brand-mark">✦</span><span>HPA<small>Healthcare presentation assistant</small></span></a>
+        <a class="brand" href="/app"><span class="brand-mark">✦</span><span>HPA<small data-i18n="brandSubtitle">Healthcare presentation assistant</small></span></a>
 
         <section class="side-section">
-          <p class="eyebrow">Espace de travail</p>
-          <label for="user-id">Identifiant utilisateur</label>
-          <input id="user-id" value="demo-user" maxlength="128" autocomplete="username" />
-          <label for="project-id">Projet</label>
+          <p class="eyebrow" data-i18n="workspace">Workspace</p>
+          <label for="user-id" data-i18n="connectedUser">Connected user</label>
+          <input id="user-id" readonly />
+          <button id="logout" class="secondary full" data-i18n="logout">Sign out</button>
+          <button id="delete-user" class="secondary full danger-button" data-i18n="deleteAccount">Delete my account</button>
+          <label for="user-role" data-i18n="professionalProfile">Professional profile</label>
+          <select id="user-role"></select>
+          <label for="user-language" data-i18n="language">Language</label>
+          <select id="user-language"><option value="en">English</option><option value="fr">Français</option><option value="ar">العربية</option></select>
+          <label for="project-id" data-i18n="project">Project</label>
           <select id="project-id"></select>
           <div class="new-project">
-            <input id="new-project-id" placeholder="nouveau-projet" maxlength="128" />
-            <button id="create-project" class="icon-button" title="Créer ou ouvrir le projet">+</button>
+            <input id="new-project-name" data-i18n-placeholder="newProject" placeholder="Name of the new Project" maxlength="128" />
+            <button id="create-project" class="icon-button" title="Create Project">+</button>
           </div>
+          <button id="delete-project" class="secondary full danger-button" data-i18n="deleteProject">Delete this Project</button>
         </section>
 
         <section class="side-section resource-panel">
-          <p class="eyebrow">Sources scientifiques</p>
-          <label class="dropzone" for="pdf-file"><span>↑</span> Déposer un PDF<input id="pdf-file" type="file" accept="application/pdf" /></label>
-          <p id="file-name" class="muted">20 Mo maximum</p>
-          <button id="upload-resource" class="secondary full" disabled>Ajouter la ressource</button>
-          <button id="validate-resources" class="secondary full" hidden>Valider les ressources</button>
+          <p class="eyebrow" data-i18n="scientificSources">Scientific sources</p>
+          <label class="dropzone" for="pdf-file"><span>↑</span> <span data-i18n="uploadPdf">Upload a PDF</span><input id="pdf-file" type="file" accept="application/pdf" /></label>
+          <p id="file-name" class="muted" data-i18n="maxSize">20 MB maximum</p>
+          <button id="upload-resource" class="secondary full" disabled data-i18n="addResource">Add resource</button>
+          <button id="validate-resources" class="secondary full" hidden data-i18n="validateResources">Validate resources</button>
         </section>
 
-        <div class="sidebar-footer"><span class="status-dot"></span><span>Local · données SQLite</span></div>
+        <section class="side-section template-panel">
+          <p class="eyebrow" data-i18n="templateLibrary">PowerPoint templates</p>
+          <div id="presentation-settings" class="presentation-settings"></div>
+        </section>
+
+        <div class="sidebar-footer"><span class="status-dot"></span><span data-i18n="localStorage">Local · SQLite data</span></div>
       </aside>
 
       <main class="main-content">
         <header class="topbar">
-          <div><p class="eyebrow">Projet actif</p><h1 id="presentation-title">Nouveau projet</h1></div>
+          <div><p class="eyebrow" data-i18n="activeProject">Active Project</p><h1 id="presentation-title" data-i18n="newProjectTitle">New Project</h1></div>
           <div class="topbar-actions">
-            <span id="workflow-status" class="pill">Prêt</span>
-            <button id="export-pptx" class="primary" disabled>Télécharger le PowerPoint</button>
+            <span id="workflow-status" class="pill" data-i18n="ready">Ready</span>
+            <button id="export-pptx" class="primary" disabled data-i18n="downloadPptx">Download PowerPoint</button>
           </div>
         </header>
 
         <section id="notice" class="notice" hidden></section>
         <section class="progress-card">
-          <div class="progress-heading"><div><p class="eyebrow">Workflow contrôlé</p><h2>De la source à la présentation</h2></div><span id="resource-count" class="muted">0 ressource</span></div>
+          <div class="progress-heading"><div><p class="eyebrow" data-i18n="controlledWorkflow">Controlled workflow</p><h2 data-i18n="sourceToPresentation">From sources to presentation</h2></div><span id="resource-count" class="muted">0 resources</span></div>
           <div class="steps" id="steps">
-            <div data-step="context" class="step"><span>1</span>Contexte</div>
-            <div data-step="resources" class="step"><span>2</span>Ressources</div>
+            <div data-step="context" class="step"><span>1</span><span data-i18n="context">Context</span></div>
+            <div data-step="resources" class="step"><span>2</span><span data-i18n="resources">Resources</span></div>
             <div data-step="blueprint" class="step"><span>3</span>Blueprint</div>
-            <div data-step="slides" class="step"><span>4</span>Slides</div>
-            <div data-step="final" class="step"><span>5</span>Validation finale</div>
+            <div data-step="slides" class="step"><span>4</span><span data-i18n="slides">Slides</span></div>
+            <div data-step="final" class="step"><span>5</span><span data-i18n="finalApproval">Final approval</span></div>
           </div>
         </section>
 
         <div class="workspace-grid">
           <section class="chat-card card">
-            <div class="card-heading"><div><p class="eyebrow">Assistant de production</p><h2>Discuter, imaginer, puis produire</h2></div><span class="assistant-orb">✦</span></div>
-            <div id="chat-messages" class="chat-messages"><div class="empty-chat">Explorez une idée, demandez des conseils de structure, ou demandez explicitement de créer votre présentation.</div></div>
-            <form id="chat-form" class="chat-form"><textarea id="chat-input" rows="2" placeholder="Ex. Quelles approches narratives sont pertinentes ? Puis : crée une présentation de 10 minutes…"></textarea><button class="send-button" type="submit" aria-label="Envoyer">↑</button></form>
+            <div class="card-heading"><div><p class="eyebrow" data-i18n="productionAssistant">Production assistant</p><h2 data-i18n="discussImagineProduce">Discuss, imagine, then produce</h2></div><span class="assistant-orb">✦</span></div>
+            <div id="chat-messages" class="chat-messages"><div class="empty-chat" data-i18n="chatEmpty">Explore an idea, ask for structure advice, or explicitly ask to create your presentation.</div></div>
+            <form id="chat-form" class="chat-form"><textarea id="chat-input" rows="2" data-i18n-placeholder="chatPlaceholder" placeholder="Example: Which narrative approaches are relevant? Then: create a 10-minute presentation…"></textarea><button class="send-button" type="submit" aria-label="Send" data-i18n-aria-label="send">↑</button></form>
           </section>
 
           <section class="overview-card card">
-            <div class="card-heading"><div><p class="eyebrow">Vue d’ensemble</p><h2>État du projet</h2></div></div>
-            <div id="overview" class="overview empty-state">Commencez par décrire votre présentation à l’assistant.</div>
+            <div class="card-heading"><div><p class="eyebrow" data-i18n="overview">Overview</p><h2 data-i18n="projectStatus">Project status</h2></div></div>
+            <div id="overview" class="overview empty-state" data-i18n="overviewEmpty">Start by describing your presentation to the assistant.</div>
             <div id="final-actions" class="final-actions"></div>
           </section>
         </div>
 
+        <section id="agenda-area" class="review-area"></section>
         <section id="review-area" class="review-area"></section>
       </main>
     </div>
-    <div id="loading" class="loading" hidden><div class="spinner"></div><p>Traitement en cours…</p></div>
+    <div id="loading" class="loading" hidden><div class="spinner"></div><p data-i18n="processing">Processing…</p></div>
+    <div id="template-modal" class="template-modal" hidden>
+      <div class="template-modal-card" role="dialog" aria-modal="true" aria-labelledby="template-modal-title">
+        <button id="close-template-modal" class="modal-close" aria-label="Close">×</button>
+        <p class="eyebrow" data-i18n="templatePreview">Template preview</p>
+        <h2 id="template-modal-title">Clinical clarity</h2>
+        <div id="template-modal-preview" class="template-large-preview clinical"><span>HPA</span><strong>Healthcare presentation</strong><small>Scientific evidence · Human review</small></div>
+      </div>
+    </div>
     <script src="/web/app.js" defer></script>
   </body>
 </html>

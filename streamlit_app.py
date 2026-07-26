@@ -24,6 +24,8 @@ from app.ai.workflows.tools import (
     validate_slides,
 )
 from app.interfaces.storage.user_session_repository import UserSessionRepository
+from app.domain.models.user_profile import UserProfile
+from app.domain.enums.presentation_theme import PresentationTheme
 
 
 st.set_page_config(page_title="Healthcare Presentation Assistant", page_icon="🩺", layout="wide")
@@ -40,7 +42,7 @@ def get_repository() -> UserSessionRepository:
 
 
 def authenticated_user_id() -> str:
-    """Use OIDC identity when configured; keep a local-development fallback."""
+    """Use OIDC identity when configured, otherwise require a local password."""
     auth_required = bool(st.secrets.get("AUTH_REQUIRED", False))
     if auth_required:
         if not st.user.is_logged_in:
@@ -49,11 +51,36 @@ def authenticated_user_id() -> str:
             st.stop()
         st.sidebar.button("Se déconnecter", on_click=st.logout)
         return str(st.user.get("sub") or st.user.get("email"))
-    return st.sidebar.text_input(
-        "Identifiant utilisateur",
-        value=st.session_state.get("active_user_id", "demo-user"),
-        help="Mode local sans authentification. Activez OIDC avant exposition publique.",
-    ).strip() or "demo-user"
+
+    if local_user_id := st.session_state.get("local_authenticated_user_id"):
+        st.caption(f"Connecté : {local_user_id}")
+        if st.button("Se déconnecter"):
+            st.session_state.pop("local_authenticated_user_id", None)
+            st.rerun()
+        return str(local_user_id)
+
+    st.caption("Local sign in")
+    with st.form("local_login"):
+        user_id = st.text_input("User ID", max_chars=128).strip()
+        password = st.text_input("Password", type="password", max_chars=256)
+        login, register = st.columns(2)
+        login_clicked = login.form_submit_button("Sign in")
+        register_clicked = register.form_submit_button("Create account")
+    if login_clicked:
+        if get_repository().authenticate_user(user_id, password):
+            st.session_state.local_authenticated_user_id = user_id
+            st.rerun()
+        st.error("Invalid user ID or password.")
+    if register_clicked:
+        try:
+            if len(password) < 8:
+                raise ValueError("Password must contain at least 8 characters.")
+            get_repository().register_user(user_id, password)
+            st.session_state.local_authenticated_user_id = user_id
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
+    st.stop()
 
 
 def load_project_state(user_id: str, project_id: str) -> GraphState:
@@ -86,7 +113,7 @@ def open_or_create_project(user_id: str) -> None:
     """Callback used before widgets render, so changing the selected project is safe."""
     project_id = str(st.session_state.get("new_project_id_input", "")).strip()
     if not project_id:
-        st.session_state.project_error = "Saisissez un identifiant de projet."
+        st.session_state.project_error = "Enter a Project ID."
         return
     if get_repository().load(user_id, project_id) is None:
         get_repository().create_empty(user_id, project_id)
@@ -136,39 +163,53 @@ def message_text(message) -> str:
 
 
 st.title("🩺 Healthcare Presentation Assistant")
-st.caption("Discutez vos idées, puis créez une présentation scientifique à partir de ressources PDF validées.")
+st.caption("Discuss ideas, then create a scientific presentation from validated PDF resources.")
 
 with st.sidebar:
-    st.header("Utilisateur")
+    st.header("User")
     user_id = authenticated_user_id()
     if st.session_state.get("active_user_id") != user_id:
         st.session_state.pop("project_selector", None)
 
     project_ids = get_repository().list_project_ids(user_id)
     if not project_ids:
-        project_ids = ["projet-1"]
+        project_ids = ["project-1"]
     default_project = st.session_state.get("project_selector", project_ids[0])
     if default_project not in project_ids:
         default_project = project_ids[0]
     project_id = st.selectbox(
-        "Projet",
+        "Project",
         options=project_ids,
         index=project_ids.index(default_project),
         key="project_selector",
-        help="Chaque projet conserve sa propre conversation, ses ressources et sa présentation.",
+        help="Each Project retains its own conversation, resources and presentation.",
     )
     st.text_input(
-        "Nouvel identifiant de projet",
+        "New Project ID",
         placeholder="ex. depression-medecine-generale",
         max_chars=128,
         key="new_project_id_input",
     )
-    st.button("Créer / ouvrir ce projet", on_click=open_or_create_project, args=(user_id,))
+    st.button("Create / open Project", on_click=open_or_create_project, args=(user_id,))
     if project_error := st.session_state.pop("project_error", None):
         st.error(project_error)
 
+    profile = get_repository().get_user_profile(user_id)
+    role = st.selectbox(
+        "Professional profile",
+        options=["professor_medicine", "assistant_professor", "veterinarian", "biologist", "specialist_physician", "resident_physician"],
+        index=["professor_medicine", "assistant_professor", "veterinarian", "biologist", "specialist_physician", "resident_physician"].index(profile.professional_role),
+        format_func=lambda value: value.replace("_", " ").title(),
+    )
+    language = st.selectbox("Language", options=["en", "fr", "ar"], index=["en", "fr", "ar"].index(profile.preferred_language))
+    selected_profile = UserProfile(professional_role=role, preferred_language=language)
+    if selected_profile != profile:
+        get_repository().update_user_profile(user_id, selected_profile)
+        profile = selected_profile
     state = load_project_state(user_id, project_id)
-    st.caption(f"Projet : {project_id} · Session : {st.session_state.thread_id[:8]}")
+    state.user_profile = profile
+    save_state()
+    st.caption(f"Project : {project_id} · Session : {st.session_state.thread_id[:8]}")
     st.divider()
     st.header("Ressource scientifique")
     uploaded_pdf = st.file_uploader("Déposez un PDF", type=["pdf"])
@@ -188,6 +229,20 @@ with st.sidebar:
 
     st.divider()
     if state.presentation:
+        selected_theme = st.selectbox(
+            "PowerPoint template",
+            options=list(PresentationTheme),
+            index=list(PresentationTheme).index(state.presentation.theme),
+            format_func=lambda theme: {
+                PresentationTheme.CLINICAL: "Clinical clarity",
+                PresentationTheme.ACADEMIC: "Academic prestige",
+                PresentationTheme.EXECUTIVE: "Executive impact",
+                PresentationTheme.MIDNIGHT: "Midnight focus",
+            }[theme],
+        )
+        if selected_theme != state.presentation.theme:
+            state.presentation.theme = selected_theme
+            save_state()
         st.write(f"**Présentation :** {state.presentation.title}")
         st.write(f"**Ressources :** {len(state.presentation.resources)}")
         st.write(f"**Slides :** {len(state.presentation.slides)}")
@@ -214,6 +269,38 @@ with st.sidebar:
 
 if state.presentation and state.presentation.blueprint:
     st.divider()
+    if state.presentation.agenda:
+        st.subheader("Agenda — slide 2")
+        st.caption("Proposed from the AI blueprint. Save your changes, then approve the agenda before approving the blueprint.")
+        agenda_items = st.text_area(
+            "Agenda items (one per line)",
+            value="\n".join(state.presentation.agenda.items),
+            key="agenda_items",
+        )
+        agenda_comments = st.text_area(
+            "Agenda review comment",
+            value=state.presentation.agenda.reviewer_comments or "",
+            key="agenda_comments",
+        )
+        save_agenda, approve_agenda = st.columns(2)
+        if save_agenda.button("Save agenda"):
+            items = [item.strip() for item in agenda_items.splitlines() if item.strip()]
+            if not items:
+                st.error("Agenda must contain at least one item.")
+            else:
+                state.presentation.agenda.items = items
+                state.presentation.agenda.reviewer_comments = agenda_comments.strip() or None
+                state.presentation.agenda.is_validated = False
+                state.presentation.blueprint.is_validated = False
+                state.presentation.state.blueprint_validated = False
+                state.presentation.state.slides_validated = False
+                state.presentation.state.presentation_validated = False
+                save_state()
+                st.success("Agenda saved. Approve it when ready.")
+        if approve_agenda.button("Approve agenda", disabled=state.presentation.agenda.is_validated):
+            state.presentation.agenda.is_validated = True
+            save_state()
+            st.success("Agenda approved.")
     if st.toggle("Afficher et réviser le blueprint", key="show_blueprint"):
         outlines = state.presentation.blueprint.slides
         index = min(st.session_state.get("blueprint_index", 0), len(outlines) - 1)
@@ -282,6 +369,9 @@ if prompt := st.chat_input("Discutez d’une idée ou demandez explicitement de 
     with st.chat_message("user"):
         st.write(prompt)
     state.messages.append(HumanMessage(content=prompt))
+    state.user_profile = get_repository().get_user_profile(user_id)
+    if state.presentation is not None:
+        state.presentation.owner_profile = state.user_profile
     with st.chat_message("assistant"):
         with st.spinner("Analyse en cours..."):
             try:
