@@ -6,7 +6,7 @@
     <title>HPA — Healthcare Presentation Assistant</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/web/styles.css" />
   </head>
   <body>
@@ -65,7 +65,8 @@
           <label class="dropzone" for="pdf-file"><span>↑</span> <span data-i18n="uploadPdf">Upload a PDF</span><input id="pdf-file" type="file" accept="application/pdf" /></label>
           <p id="file-name" class="muted" data-i18n="maxSize">20 MB maximum</p>
           <button id="upload-resource" class="secondary full" disabled data-i18n="addResource">Add resource</button>
-          <button id="validate-resources" class="secondary full" hidden data-i18n="validateResources">Validate resources</button>
+          <button id="validate-resources" class="secondary full" hidden>Validate resources and continue</button>
+          <button id="analyze-resources" class="secondary full" hidden data-i18n="analyzeResources">Analyze uploaded resources</button>
           <div id="resource-list" class="resource-list"></div>
         </section>
 
@@ -108,11 +109,13 @@
           <section class="overview-card card">
             <div class="card-heading"><div><p class="eyebrow" data-i18n="overview">Overview</p><h2 data-i18n="projectStatus">Project status</h2></div></div>
             <div id="overview" class="overview empty-state" data-i18n="overviewEmpty">Start by describing your presentation to the assistant.</div>
+            <div id="next-action" class="final-actions"></div>
             <div id="final-actions" class="final-actions"></div>
           </section>
         </div>
 
         <section id="agenda-area" class="review-area"></section>
+        <section id="resource-analysis-area" class="review-area"></section>
         <section id="review-area" class="review-area"></section>
       </main>
     </div>

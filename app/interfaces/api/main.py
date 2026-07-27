@@ -15,8 +15,17 @@ from app.ai.agents.healthcare_presentation_agent import HealthcarePresentationAg
 from app.ai.workflows.graph_state import GraphState
 from app.application.use_cases.export_powerpoint import ExportPowerPointUseCase
 from app.application.use_cases.extract_pdf_resource import ExtractPdfResourceUseCase
-from app.application.use_cases.remove_resource import RemoveResourceUseCase
+from app.application.use_cases.summarize_resources import SummarizeResourcesUseCase
+from app.application.use_cases.discuss_resources import DiscussResourcesUseCase
+from app.application.use_cases.manage_project_resources import (
+    AddProjectResourceUseCase,
+    AttachResourceToPresentationUseCase,
+    DetachResourceFromPresentationUseCase,
+    RemoveProjectResourceUseCase,
+)
 from app.application.services.workflow_policy import WorkflowPolicy
+from app.application.services.conversation_history import add_turn, ensure_history
+from app.application.services.resource_library import ensure_resource_library
 from app.core.config import get_settings
 from app.core.versioning import HARNESS_VERSION, RETRIEVAL_VERSION, WORKFLOW_VERSION
 from app.interfaces.storage.user_session_repository import UserSessionRepository
@@ -24,9 +33,12 @@ from app.domain.models.user_profile import UserProfile
 from app.domain.enums.presentation_theme import PresentationTheme
 from app.domain.enums.workflow_status import WorkflowStatus
 from app.domain.exceptions.workflow_error import WorkflowError
+from app.domain.models.execution_context import ExecutionContext
 from app.application.use_cases.workflow_steps import (
     RegenerateBlueprintUseCase,
     RegenerateSlideUseCase,
+    EditBlueprintItemUseCase,
+    EditSlideUseCase,
     RejectBlueprintItemUseCase,
     RejectSlideUseCase,
     ReviewBlueprintItemUseCase,
@@ -82,6 +94,22 @@ class ReviewRequest(BaseModel):
     comments: str = Field(default="", max_length=10_000)
 
 
+class BlueprintItemEditRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+    objective: str = Field(min_length=1, max_length=4_000)
+    key_message: str = Field(min_length=1, max_length=4_000)
+    content_origin: str = Field(pattern=r"^(user_edited|user_authored)$")
+
+
+class SlideEditRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+    objective: str = Field(default="", max_length=4_000)
+    key_messages: list[str] = Field(default_factory=list, max_length=24)
+    content: str = Field(default="", max_length=20_000)
+    speaker_notes: str = Field(default="", max_length=20_000)
+    content_origin: str = Field(pattern=r"^(user_edited|user_authored)$")
+
+
 class AgendaRequest(BaseModel):
     items: list[str] = Field(min_length=1, max_length=12)
     comments: str = Field(default="", max_length=10_000)
@@ -90,6 +118,10 @@ class AgendaRequest(BaseModel):
 class ThemeRequest(BaseModel):
     theme: PresentationTheme | None = None
     custom_template_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class ResourceDiscussionRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=20_000)
 
 
 def _message_text(content: object) -> str:
@@ -107,25 +139,17 @@ def _message_text(content: object) -> str:
 
 def _project_response(user_id: str, project_id: str, thread_id: str, state: GraphState) -> dict:
     """Return only JSON-safe state needed by the browser interface."""
+    ensure_history(state)
+    ensure_resource_library(state)
     presentation = state.presentation.model_dump(mode="json") if state.presentation else None
-    messages = []
-    for message in state.messages:
-        if getattr(message, "type", "") not in {"human", "ai"}:
-            continue
-        content = _message_text(getattr(message, "content", ""))
-        if not content:
-            continue
-        messages.append(
-            {
-                "role": "user" if isinstance(message, HumanMessage) else "assistant",
-                "text": content,
-            }
-        )
+    messages = [turn.model_dump(mode="json") for turn in state.conversation_history]
     return {
         "user_id": user_id,
         "project_id": project_id,
         "thread_id": thread_id,
         "presentation": presentation,
+        "resource_library": [resource.model_dump(mode="json") for resource in state.resource_library],
+        "resource_analysis": state.resource_analysis.model_dump(mode="json") if state.resource_analysis else None,
         "messages": messages,
         "conversation_context": state.conversation_context.model_dump(mode="json"),
         "user_profile": state.user_profile.model_dump(mode="json"),
@@ -134,7 +158,19 @@ def _project_response(user_id: str, project_id: str, thread_id: str, state: Grap
             state.presentation.state.workflow_status.value if state.presentation is not None else None
         ),
         "error": state.execution.error,
+        "required_human_action": _required_human_action(state),
     }
+
+
+def _required_human_action(state: GraphState) -> dict[str, str] | None:
+    """Expose deterministic UI actions only when the workflow requests one."""
+    output = state.execution.tool_output or {}
+    if output.get("error_code") == "RESOURCES_VALIDATION_REQUIRED":
+        return {
+            "action": "validate_resources",
+            "message": "Validate the uploaded resources before generating the blueprint.",
+        }
+    return None
 
 
 def _get_project(user_id: str, project_id: str) -> tuple[str, GraphState]:
@@ -204,6 +240,8 @@ def _save_project(
     extra_audit: dict[str, object] | None = None,
 ) -> dict:
     repository = get_repository()
+    ensure_history(state)
+    ensure_resource_library(state)
     repository.save(user_id, project_id, thread_id, state)
     repository.record_event(user_id, project_id, event_type, actor, _audit_payload(state, extra_audit))
     return _project_response(user_id, project_id, thread_id, state)
@@ -406,7 +444,9 @@ def chat(request: ChatRequest, authenticated_user: str = Depends(_authenticated_
         if stored
         else get_repository().create_empty(request.user_id, request.project_id)
     )
+    ensure_history(state)
     state.messages.append(HumanMessage(content=request.message))
+    add_turn(state, "user", request.message)
     state.user_profile = get_repository().get_user_profile(request.user_id)
     if state.presentation is not None:
         # Keep future blueprint/slide generations aligned with a profile update.
@@ -431,6 +471,21 @@ def chat(request: ChatRequest, authenticated_user: str = Depends(_authenticated_
             detail="The language-model provider could not process this request. Check the selected model and API key.",
         ) from exc
     saved_state = GraphState(**result)
+    ensure_history(saved_state)
+    last_assistant_message = next(
+        (
+            _message_text(getattr(message, "content", ""))
+            for message in reversed(saved_state.messages)
+            if getattr(message, "type", "") == "ai" and _message_text(getattr(message, "content", ""))
+        ),
+        "",
+    )
+    if last_assistant_message and (
+        not saved_state.conversation_history
+        or saved_state.conversation_history[-1].role != "assistant"
+        or saved_state.conversation_history[-1].text != last_assistant_message
+    ):
+        add_turn(saved_state, "assistant", last_assistant_message)
     project_payload = _save_project(
         request.user_id,
         request.project_id,
@@ -440,13 +495,10 @@ def chat(request: ChatRequest, authenticated_user: str = Depends(_authenticated_
         actor="llm",
         extra_audit={"message_length": len(request.message), "tool_output": saved_state.execution.tool_output},
     )
-    messages = result.get("messages", [])
-    last_message = messages[-1] if messages else None
-
     return {
         "thread_id": thread_id,
         "project_id": request.project_id,
-        "message": _message_text(getattr(last_message, "content", "")) if last_message else "",
+        "message": last_assistant_message,
         "last_tool": saved_state.execution.last_tool,
         "error": saved_state.execution.error,
         "presentation": saved_state.presentation.model_dump(mode="json") if saved_state.presentation else None,
@@ -458,29 +510,26 @@ def chat(request: ChatRequest, authenticated_user: str = Depends(_authenticated_
 async def upload_pdf_resource(user_id: str, project_id: str, file: UploadFile = File(...), authenticated_user: str = Depends(_authenticated_user)):
     """Extract a PDF and attach it as validated evidence to a presentation."""
     _assert_owner(user_id, authenticated_user)
-    if file.content_type not in {"application/pdf", "application/x-pdf"}:
+    filename = Path(file.filename or "resource.pdf").name
+    # Some browsers/local proxies send application/octet-stream for a valid
+    # PDF. The extension is accepted here; PyMuPDF below remains the actual
+    # content validation boundary.
+    if file.content_type not in {"application/pdf", "application/x-pdf"} and not filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=415, detail="Only PDF uploads are accepted.")
     stored = get_repository().load(user_id, project_id)
-    if stored is None or stored[1].presentation is None:
-        raise HTTPException(status_code=409, detail="Create a presentation before uploading resources.")
+    if stored is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
     thread_id, state = stored
-    try:
-        WorkflowPolicy.require_status(
-            state.presentation.state.workflow_status,
-            (WorkflowStatus.AWAITING_RESOURCE_UPLOAD, WorkflowStatus.AWAITING_RESOURCE_VALIDATION),
-            "upload a resource",
-        )
-    except ValueError as exc:
-        raise _workflow_conflict(exc) from exc
     content = await file.read()
     if len(content) > 20 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="PDF files are limited to 20 MB.")
     try:
-        resource = ExtractPdfResourceUseCase().execute(Path(file.filename or "resource.pdf").name, content)
+        resource = ExtractPdfResourceUseCase().execute(filename, content)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    state.presentation.resources.append(resource)
-    state.presentation.state.workflow_status = WorkflowStatus.AWAITING_RESOURCE_VALIDATION
+    ensure_resource_library(state)
+    AddProjectResourceUseCase().execute(state, resource)
+    state.execution = ExecutionContext()
     _save_project(
         user_id,
         project_id,
@@ -493,6 +542,64 @@ async def upload_pdf_resource(user_id: str, project_id: str, file: UploadFile = 
     return {"resource_id": resource.id, "filename": resource.filename, "characters_extracted": len(resource.extracted_text or "")}
 
 
+@app.post("/projects/{user_id}/{project_id}/resources/summary")
+def summarize_resources(user_id: str, project_id: str, authenticated_user: str = Depends(_authenticated_user)):
+    """Generate a separate, source-only overview to support discussion before production."""
+    _assert_owner(user_id, authenticated_user)
+    thread_id, state = _get_project(user_id, project_id)
+    try:
+        ensure_resource_library(state)
+        language = state.user_profile.preferred_language
+        analysis = SummarizeResourcesUseCase().execute(state.resource_library, language=language)
+    except ValueError as exc:
+        raise _workflow_conflict(exc) from exc
+    except Exception as exc:
+        logger.exception("Resource analysis failed for user=%s project=%s", user_id, project_id)
+        raise HTTPException(status_code=502, detail="The model could not analyze the uploaded resources. Please retry.") from exc
+    state.resource_analysis = analysis
+    ensure_history(state)
+    add_turn(state, "assistant", f"Resource overview:\n{analysis.summary}")
+    return _save_project(
+        user_id,
+        project_id,
+        thread_id,
+        state,
+        event_type="RESOURCE_ANALYSIS_GENERATED",
+        actor="llm",
+        extra_audit={"resource_ids": analysis.resource_ids},
+    )
+
+
+@app.post("/projects/{user_id}/{project_id}/resources/discuss")
+def discuss_resources(
+    user_id: str,
+    project_id: str,
+    request: ResourceDiscussionRequest,
+    authenticated_user: str = Depends(_authenticated_user),
+):
+    """Discuss project PDFs independently from the presentation workflow."""
+    _assert_owner(user_id, authenticated_user)
+    thread_id, state = _get_project(user_id, project_id)
+    try:
+        ensure_resource_library(state)
+        answer = DiscussResourcesUseCase().execute(
+            state.resource_library, request.question, language=state.user_profile.preferred_language
+        )
+    except ValueError as exc:
+        raise _workflow_conflict(exc) from exc
+    except Exception as exc:
+        logger.exception("Resource discussion failed for user=%s project=%s", user_id, project_id)
+        raise HTTPException(status_code=502, detail="The model could not discuss the uploaded resources. Please retry.") from exc
+    ensure_history(state)
+    add_turn(state, "user", request.question)
+    add_turn(state, "assistant", answer)
+    return _save_project(
+        user_id, project_id, thread_id, state,
+        event_type="RESOURCE_DISCUSSION_COMPLETED", actor="llm",
+        extra_audit={"resource_count": len(state.resource_library), "question_length": len(request.question)},
+    )
+
+
 @app.post("/projects/{user_id}/{project_id}/resources/validate")
 def approve_resources(user_id: str, project_id: str, authenticated_user: str = Depends(_authenticated_user)):
     _assert_owner(user_id, authenticated_user)
@@ -501,6 +608,7 @@ def approve_resources(user_id: str, project_id: str, authenticated_user: str = D
         state = validate_resources.func(state)
     except ValueError as exc:
         raise _workflow_conflict(exc) from exc
+    state.execution = ExecutionContext()
     return _save_project(user_id, project_id, thread_id, state, event_type="RESOURCES_VALIDATED", actor="user")
 
 
@@ -514,10 +622,9 @@ def delete_resource(
     """Remove a PDF and safely reset content that could depend on it."""
     _assert_owner(user_id, authenticated_user)
     thread_id, state = _get_project(user_id, project_id)
-    if state.presentation is None:
-        raise HTTPException(status_code=404, detail="Presentation not found.")
     try:
-        state.presentation = RemoveResourceUseCase().execute(state.presentation, resource_id)
+        ensure_resource_library(state)
+        RemoveProjectResourceUseCase().execute(state, resource_id)
     except ValueError as exc:
         raise _workflow_conflict(exc) from exc
     return _save_project(
@@ -529,6 +636,35 @@ def delete_resource(
         actor="user",
         extra_audit={"resource_id": resource_id},
     )
+
+
+@app.post("/projects/{user_id}/{project_id}/resources/{resource_id}/attach")
+def attach_resource_to_presentation(
+    user_id: str, project_id: str, resource_id: str, authenticated_user: str = Depends(_authenticated_user)
+):
+    _assert_owner(user_id, authenticated_user)
+    thread_id, state = _get_project(user_id, project_id)
+    try:
+        ensure_resource_library(state)
+        AttachResourceToPresentationUseCase().execute(state, resource_id)
+    except ValueError as exc:
+        raise _workflow_conflict(exc) from exc
+    state.execution = ExecutionContext()
+    return _save_project(user_id, project_id, thread_id, state, event_type="RESOURCE_ATTACHED_TO_PRESENTATION", actor="user", extra_audit={"resource_id": resource_id})
+
+
+@app.delete("/projects/{user_id}/{project_id}/resources/{resource_id}/attach")
+def detach_resource_from_presentation(
+    user_id: str, project_id: str, resource_id: str, authenticated_user: str = Depends(_authenticated_user)
+):
+    _assert_owner(user_id, authenticated_user)
+    thread_id, state = _get_project(user_id, project_id)
+    try:
+        DetachResourceFromPresentationUseCase().execute(state, resource_id)
+    except ValueError as exc:
+        raise _workflow_conflict(exc) from exc
+    state.execution = ExecutionContext()
+    return _save_project(user_id, project_id, thread_id, state, event_type="RESOURCE_DETACHED_FROM_PRESENTATION", actor="user", extra_audit={"resource_id": resource_id})
 
 
 @app.post("/projects/{user_id}/{project_id}/blueprint/items/{index}/approve")
@@ -551,6 +687,32 @@ def reject_blueprint_item(user_id: str, project_id: str, index: int, request: Re
     except ValueError as exc:
         raise _workflow_conflict(exc) from exc
     return _save_project(user_id, project_id, thread_id, state, event_type="BLUEPRINT_ITEM_REJECTED", actor="user", extra_audit={"item_index": index})
+
+
+@app.put("/projects/{user_id}/{project_id}/blueprint/items/{index}")
+def edit_blueprint_item(
+    user_id: str,
+    project_id: str,
+    index: int,
+    request: BlueprintItemEditRequest,
+    authenticated_user: str = Depends(_authenticated_user),
+):
+    """Save direct user-authored or user-edited blueprint content."""
+    _assert_owner(user_id, authenticated_user)
+    thread_id, state = _get_project(user_id, project_id)
+    try:
+        state = EditBlueprintItemUseCase().execute(state, index, **request.model_dump())
+    except ValueError as exc:
+        raise _workflow_conflict(exc) from exc
+    return _save_project(
+        user_id,
+        project_id,
+        thread_id,
+        state,
+        event_type="BLUEPRINT_ITEM_EDITED_BY_USER",
+        actor="user",
+        extra_audit={"item_index": index, "content_origin": request.content_origin},
+    )
 
 
 @app.post("/projects/{user_id}/{project_id}/blueprint/approve")
@@ -661,6 +823,32 @@ def reject_slide(user_id: str, project_id: str, index: int, request: ReviewReque
     except ValueError as exc:
         raise _workflow_conflict(exc) from exc
     return _save_project(user_id, project_id, thread_id, state, event_type="SLIDE_REJECTED", actor="user", extra_audit={"slide_index": index})
+
+
+@app.put("/projects/{user_id}/{project_id}/slides/{index}")
+def edit_slide(
+    user_id: str,
+    project_id: str,
+    index: int,
+    request: SlideEditRequest,
+    authenticated_user: str = Depends(_authenticated_user),
+):
+    """Save direct slide edits while retaining the original model snapshot."""
+    _assert_owner(user_id, authenticated_user)
+    thread_id, state = _get_project(user_id, project_id)
+    try:
+        state = EditSlideUseCase().execute(state, index, **request.model_dump())
+    except ValueError as exc:
+        raise _workflow_conflict(exc) from exc
+    return _save_project(
+        user_id,
+        project_id,
+        thread_id,
+        state,
+        event_type="SLIDE_EDITED_BY_USER",
+        actor="user",
+        extra_audit={"slide_index": index, "content_origin": request.content_origin},
+    )
 
 
 @app.post("/projects/{user_id}/{project_id}/slides/{index}/regenerate")

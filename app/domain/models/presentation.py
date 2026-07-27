@@ -12,6 +12,7 @@ from app.domain.models.resource import Resource
 from app.domain.models.slide import Slide
 from app.domain.models.user_profile import UserProfile
 from app.domain.models.generation_record import GenerationRecord
+from app.domain.models.resource_analysis import ResourceAnalysis
 from app.domain.value_objects.presentation_context import PresentationContext
 
 
@@ -52,6 +53,11 @@ class Presentation(BaseModel):
     resources: List[Resource] = Field(
         default_factory=list,
         description="Scientific resources attached to the presentation.",
+    )
+
+    resource_analysis: ResourceAnalysis | None = Field(
+        default=None,
+        description="Optional AI overview of the uploaded resource set, shown before slide production.",
     )
 
     blueprint: Optional[Blueprint] = Field(

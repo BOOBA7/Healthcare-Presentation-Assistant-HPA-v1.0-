@@ -22,7 +22,12 @@ class EvidenceProvenanceValidator:
 
     def validate_presentation(self, slides: list[Slide], resources: list[Resource]) -> None:
         for slide in slides:
-            self.validate_slide(slide, resources)
+            if slide.content_origin == "ai_generated":
+                self.validate_slide(slide, resources)
+            else:
+                # A user can author or alter a slide, but its new assertions
+                # cannot inherit the model's evidence-verification label.
+                slide.evidence_verified = False
 
     def _validate_reference(
         self,

@@ -15,6 +15,7 @@ class RemoveResourceUseCase:
         # A generated artefact may cite the deleted PDF. Reset downstream work
         # rather than leaving unsupported slides or approvals in the project.
         presentation.agenda = None
+        presentation.resource_analysis = None
         presentation.blueprint = None
         presentation.slides = []
         presentation.state.current_slide = 0

@@ -10,10 +10,19 @@ from app.ai.agents.healthcare_presentation_agent import HealthcarePresentationAg
 from app.ai.workflows.graph_state import GraphState
 from app.application.use_cases.export_powerpoint import ExportPowerPointUseCase
 from app.application.use_cases.extract_pdf_resource import ExtractPdfResourceUseCase
-from app.application.use_cases.remove_resource import RemoveResourceUseCase
+from app.application.use_cases.summarize_resources import SummarizeResourcesUseCase
+from app.application.use_cases.discuss_resources import DiscussResourcesUseCase
+from app.application.use_cases.manage_project_resources import (
+    AddProjectResourceUseCase,
+    AttachResourceToPresentationUseCase,
+    DetachResourceFromPresentationUseCase,
+    RemoveProjectResourceUseCase,
+)
 from app.application.use_cases.workflow_steps import (
     RejectBlueprintItemUseCase,
     RejectSlideUseCase,
+    EditBlueprintItemUseCase,
+    EditSlideUseCase,
     RegenerateBlueprintUseCase,
     RegenerateSlideUseCase,
     ReviewBlueprintItemUseCase,
@@ -28,6 +37,9 @@ from app.ai.workflows.tools import (
 from app.interfaces.storage.user_session_repository import UserSessionRepository
 from app.domain.models.user_profile import UserProfile
 from app.domain.enums.presentation_theme import PresentationTheme
+from app.domain.models.execution_context import ExecutionContext
+from app.application.services.conversation_history import add_turn, ensure_history, message_text as transcript_message_text
+from app.application.services.resource_library import ensure_resource_library
 
 
 st.set_page_config(page_title="Healthcare Presentation Assistant", page_icon="🩺", layout="wide")
@@ -131,6 +143,8 @@ def load_project_state(user_id: str, project_id: str) -> GraphState:
         st.session_state.active_project_id = project_id
         st.session_state.thread_id = thread_id
         st.session_state.state = state
+        if ensure_resource_library(state):
+            get_repository().save(user_id, project_id, thread_id, state)
         st.session_state.pop("pptx_data", None)
         st.session_state.pop("pptx_name", None)
     return st.session_state.state
@@ -185,10 +199,10 @@ def delete_account(user_id: str) -> None:
 
 def remove_resource(resource_id: str) -> None:
     state = st.session_state.get("state")
-    if state is None or state.presentation is None:
+    if state is None:
         return
     try:
-        RemoveResourceUseCase().execute(state.presentation, resource_id)
+        RemoveProjectResourceUseCase().execute(state, resource_id)
         save_state()
         st.session_state.pop("pending_resource_delete", None)
         st.session_state.resource_deleted = True
@@ -199,6 +213,7 @@ def remove_resource(resource_id: str) -> None:
 def run_validation(tool, **arguments: object) -> None:
     try:
         st.session_state.state = tool.func(st.session_state.state, **arguments)
+        st.session_state.state.execution = ExecutionContext()
         save_state()
         st.success("Validation enregistrée.")
     except ValueError as exc:
@@ -221,6 +236,81 @@ def run_action(use_case, *arguments: object) -> None:
         st.success("Demande exécutée.")
     except ValueError as exc:
         st.error(str(exc))
+
+
+def save_blueprint_edit(index: int, title: str, objective: str, key_message: str, origin: str) -> None:
+    try:
+        st.session_state.state = EditBlueprintItemUseCase().execute(
+            st.session_state.state,
+            index,
+            title=title,
+            objective=objective,
+            key_message=key_message,
+            content_origin=origin,
+        )
+        save_state()
+        st.success("Blueprint item saved as user content. Re-approve the agenda and blueprint before generating slides.")
+    except ValueError as exc:
+        st.error(str(exc))
+
+
+def save_slide_edit(
+    index: int,
+    title: str,
+    objective: str,
+    key_messages: str,
+    content: str,
+    speaker_notes: str,
+    origin: str,
+) -> None:
+    try:
+        st.session_state.state = EditSlideUseCase().execute(
+            st.session_state.state,
+            index,
+            title=title,
+            objective=objective,
+            key_messages=key_messages.splitlines(),
+            content=content,
+            speaker_notes=speaker_notes,
+            content_origin=origin,
+        )
+        save_state()
+        st.success("Slide saved as user content. It must be approved again before final export.")
+    except ValueError as exc:
+        st.error(str(exc))
+
+
+def analyze_uploaded_resources() -> None:
+    state = st.session_state.state
+    try:
+        analysis = SummarizeResourcesUseCase().execute(
+            state.resource_library, language=state.user_profile.preferred_language
+        )
+        state.resource_analysis = analysis
+        ensure_history(state)
+        add_turn(state, "assistant", f"Resource overview:\n{analysis.summary}")
+        save_state()
+        st.success("Resource overview generated. You can now discuss it in the chat before creating slides.")
+    except ValueError as exc:
+        st.error(str(exc))
+    except Exception:
+        st.error("The model could not analyze the uploaded resources. Please retry.")
+
+
+def discuss_uploaded_resources(question: str) -> None:
+    state = st.session_state.state
+    try:
+        answer = DiscussResourcesUseCase().execute(
+            state.resource_library, question, language=state.user_profile.preferred_language
+        )
+        add_turn(state, "user", question)
+        add_turn(state, "assistant", answer)
+        save_state()
+        st.session_state.resource_discussion_answer = answer
+    except ValueError as exc:
+        st.session_state.resource_error = str(exc)
+    except Exception:
+        st.session_state.resource_error = "The model could not discuss the uploaded resources. Please retry."
 
 
 def message_text(message) -> str:
@@ -338,6 +428,8 @@ with st.sidebar:
                 st.rerun()
 
     state = load_project_state(user_id, project_id)
+    if ensure_history(state):
+        save_state()
     state.user_profile = profile
     save_state()
     st.caption(f"Project · Session {st.session_state.thread_id[:8]}")
@@ -345,27 +437,47 @@ with st.sidebar:
     st.header("Scientific sources")
     uploaded_pdf = st.file_uploader("Upload a PDF", type=["pdf"])
     if st.button("Add resource", disabled=uploaded_pdf is None, use_container_width=True):
-        if state.presentation is None:
-            st.warning("Describe the presentation in the conversation before adding a PDF.")
-        elif uploaded_pdf.size > 20 * 1024 * 1024:
+        if uploaded_pdf.size > 20 * 1024 * 1024:
             st.error("PDF files are limited to 20 MB.")
         else:
             try:
                 resource = ExtractPdfResourceUseCase().execute(uploaded_pdf.name, uploaded_pdf.getvalue())
-                state.presentation.resources.append(resource)
+                AddProjectResourceUseCase().execute(state, resource)
                 save_state()
-                st.success(f"{resource.filename} added ({len(resource.extracted_text or '')} extracted characters).")
+                st.success(
+                    f"{resource.filename} added to the Project library "
+                    f"({len(resource.extracted_text or '')} extracted characters)."
+                )
             except ValueError as exc:
                 st.error(str(exc))
 
-    if state.presentation and state.presentation.resources:
-        st.caption("Project resources")
-        for resource in state.presentation.resources:
-            label, remove = st.columns([5, 1])
+    if state.resource_library:
+        st.caption("Project resource library")
+        attached_ids = {resource.id for resource in state.presentation.resources} if state.presentation else set()
+        for resource in state.resource_library:
+            label, action, remove = st.columns([5, 2, 1])
             label.markdown(
-                f"<div class=\"resource-row\"><div><strong>{resource.filename}</strong><small>{'Approved' if resource.is_validated else 'Pending approval'}</small></div></div>",
+                f"<div class=\"resource-row\"><div><strong>{resource.filename}</strong>"
+                f"<small>{'Selected for production' if resource.id in attached_ids else 'Library only'}</small></div></div>",
                 unsafe_allow_html=True,
             )
+            if state.presentation:
+                if resource.id in attached_ids:
+                    if action.button("Detach", key=f"detach_resource_{resource.id}", use_container_width=True):
+                        try:
+                            DetachResourceFromPresentationUseCase().execute(state, resource.id)
+                            save_state()
+                            st.rerun()
+                        except ValueError as exc:
+                            st.error(str(exc))
+                elif action.button("Use in presentation", key=f"attach_resource_{resource.id}", use_container_width=True):
+                    try:
+                        AttachResourceToPresentationUseCase().execute(state, resource.id)
+                        save_state()
+                        st.success("Resource selected. Validate selected resources when you request a blueprint.")
+                        st.rerun()
+                    except ValueError as exc:
+                        st.error(str(exc))
             if remove.button("×", key=f"remove_resource_{resource.id}", help="Remove resource"):
                 st.session_state.pending_resource_delete = resource.id
         pending_resource = st.session_state.get("pending_resource_delete")
@@ -382,6 +494,9 @@ with st.sidebar:
         st.success("Resource removed. Dependent generated content and approvals were reset.")
     if resource_error := st.session_state.pop("resource_error", None):
         st.error(resource_error)
+
+    if state.resource_library:
+        st.button("Analyze uploaded resources", on_click=analyze_uploaded_resources, use_container_width=True)
 
     st.divider()
     if state.presentation:
@@ -402,8 +517,6 @@ with st.sidebar:
         st.write(f"**Présentation :** {state.presentation.title}")
         st.write(f"**Ressources :** {len(state.presentation.resources)}")
         st.write(f"**Slides :** {len(state.presentation.slides)}")
-        if state.presentation.resources and not state.presentation.state.resources_validated:
-            st.button("Valider les ressources", on_click=run_validation, args=(validate_resources,))
         if state.presentation.blueprint and not state.presentation.state.blueprint_validated:
             all_blueprint_items_validated = all(item.is_validated for item in state.presentation.blueprint.slides)
             st.button("Approuver le blueprint complet", disabled=not all_blueprint_items_validated, on_click=run_validation, args=(validate_blueprint,), kwargs={"approved": True})
@@ -422,6 +535,38 @@ with st.sidebar:
                 st.error(str(exc))
     if "pptx_data" in st.session_state:
         st.download_button("Télécharger le PowerPoint", st.session_state.pptx_data, st.session_state.pptx_name, "application/vnd.openxmlformats-officedocument.presentationml.presentation")
+
+if state.resource_analysis:
+    st.divider()
+    st.subheader("Resource overview")
+    st.caption("AI-generated discussion starter based only on the uploaded PDF resources.")
+    st.write(state.resource_analysis.summary)
+
+if state.resource_library:
+    st.subheader("Discuss the PDF library")
+    resource_question = st.text_area(
+        "Ask a question answered only from the uploaded PDFs",
+        key="resource_discussion_question",
+        placeholder="What is the central idea of these resources?",
+    )
+    if st.button("Ask about resources", disabled=not resource_question.strip(), use_container_width=True):
+        discuss_uploaded_resources(resource_question)
+        st.rerun()
+
+if (
+    state.presentation
+    and state.execution.tool_output.get("error_code") == "RESOURCES_VALIDATION_REQUIRED"
+):
+    st.divider()
+    st.subheader("Human validation required")
+    st.info("The assistant needs your validation before it can generate the blueprint.")
+    st.button(
+        "Validate resources and continue",
+        type="primary",
+        on_click=run_validation,
+        args=(validate_resources,),
+        key="contextual_validate_resources",
+    )
 
 if state.presentation and state.presentation.blueprint:
     st.divider()
@@ -473,6 +618,27 @@ if state.presentation and state.presentation.blueprint:
         st.subheader(outline.title)
         st.write(f"**Objectif :** {outline.objective}")
         st.write(f"**Message clé :** {outline.key_message}")
+        st.caption(
+            {
+                "ai_generated": "AI-generated content",
+                "user_edited": "User-edited content",
+                "user_authored": "User-authored content",
+            }[outline.content_origin]
+        )
+        with st.expander("Edit this blueprint item", expanded=False):
+            edited_title = st.text_input("Title", value=outline.title, key=f"blueprint_edit_title_{index}_{outline.content_origin}")
+            edited_objective = st.text_area("Objective", value=outline.objective, key=f"blueprint_edit_objective_{index}_{outline.content_origin}")
+            edited_key_message = st.text_area("Key message", value=outline.key_message, key=f"blueprint_edit_message_{index}_{outline.content_origin}")
+            origin = st.radio(
+                "Content origin",
+                options=["user_edited", "user_authored"],
+                index=0 if outline.content_origin != "user_authored" else 1,
+                format_func=lambda value: "Edited from AI content" if value == "user_edited" else "Written by user",
+                key=f"blueprint_edit_origin_{index}_{outline.content_origin}",
+            )
+            if st.button("Save user edit", key=f"blueprint_edit_save_{index}"):
+                save_blueprint_edit(index, edited_title, edited_objective, edited_key_message, origin)
+                st.rerun()
         comments = st.text_area("Commentaire du relecteur", value=outline.reviewer_comments or "", key=f"blueprint_comment_{index}")
         approve, reject = st.columns(2)
         approve.button("Valider cet élément", disabled=outline.is_validated, on_click=review_item, args=(ReviewBlueprintItemUseCase(), index, comments), key=f"blueprint_validate_{index}")
@@ -500,7 +666,34 @@ if state.presentation and state.presentation.slides:
         st.write(slide.content)
         st.markdown("**Messages clés**")
         st.write(slide.key_messages)
-        if slide.reference_details:
+        st.caption(
+            {
+                "ai_generated": "AI-generated content",
+                "user_edited": "User-edited content",
+                "user_authored": "User-authored content",
+            }[slide.content_origin]
+        )
+        with st.expander("Edit this slide", expanded=False):
+            edited_title = st.text_input("Title", value=slide.title, key=f"slide_edit_title_{index}_{slide.content_origin}")
+            edited_objective = st.text_area("Objective", value=slide.objective or "", key=f"slide_edit_objective_{index}_{slide.content_origin}")
+            edited_messages = st.text_area(
+                "Key messages (one per line)",
+                value="\n".join(slide.key_messages),
+                key=f"slide_edit_messages_{index}_{slide.content_origin}",
+            )
+            edited_content = st.text_area("Slide content", value=slide.content, key=f"slide_edit_content_{index}_{slide.content_origin}")
+            edited_notes = st.text_area("Speaker notes", value=slide.speaker_notes or "", key=f"slide_edit_notes_{index}_{slide.content_origin}")
+            origin = st.radio(
+                "Content origin",
+                options=["user_edited", "user_authored"],
+                index=0 if slide.content_origin != "user_authored" else 1,
+                format_func=lambda value: "Edited from AI content" if value == "user_edited" else "Written by user",
+                key=f"slide_edit_origin_{index}_{slide.content_origin}",
+            )
+            if st.button("Save user edit", key=f"slide_edit_save_{index}"):
+                save_slide_edit(index, edited_title, edited_objective, edited_messages, edited_content, edited_notes, origin)
+                st.rerun()
+        if slide.reference_details and slide.content_origin == "ai_generated":
             st.markdown("**Preuves vérifiées**")
             for reference in slide.reference_details:
                 st.caption(
@@ -516,15 +709,15 @@ if state.presentation and state.presentation.slides:
         if slide.is_validated:
             st.success("Slide validée.")
 
-for message in state.messages:
-    role = "user" if isinstance(message, HumanMessage) else "assistant"
-    with st.chat_message(role):
-        st.write(message_text(message))
+for turn in state.conversation_history:
+    with st.chat_message(turn.role):
+        st.write(turn.text)
 
 if prompt := st.chat_input("Discutez d’une idée ou demandez explicitement de créer/générer votre présentation..."):
     with st.chat_message("user"):
         st.write(prompt)
     state.messages.append(HumanMessage(content=prompt))
+    add_turn(state, "user", prompt)
     state.user_profile = get_repository().get_user_profile(user_id)
     if state.presentation is not None:
         state.presentation.owner_profile = state.user_profile
@@ -533,9 +726,24 @@ if prompt := st.chat_input("Discutez d’une idée ou demandez explicitement de 
             try:
                 result = get_agent().invoke(state, st.session_state.thread_id)
                 st.session_state.state = GraphState(**result)
+                state = st.session_state.state
+                ensure_history(state)
+                assistant_text = next(
+                    (
+                        transcript_message_text(message)
+                        for message in reversed(state.messages)
+                        if getattr(message, "type", "") == "ai" and transcript_message_text(message)
+                    ),
+                    "",
+                )
+                if assistant_text and (
+                    not state.conversation_history
+                    or state.conversation_history[-1].role != "assistant"
+                    or state.conversation_history[-1].text != assistant_text
+                ):
+                    add_turn(state, "assistant", assistant_text)
                 save_state()
-                messages = result.get("messages", [])
-                st.write(message_text(messages[-1]) if messages else "Aucune réponse reçue.")
+                st.write(assistant_text or "Aucune réponse reçue.")
             except Exception as exc:
                 text = str(exc)
                 if "RESOURCE_EXHAUSTED" in text or "429" in text:

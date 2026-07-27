@@ -1,4 +1,5 @@
 import logging
+import re
 
 from langchain_core.messages import AIMessage
 
@@ -58,6 +59,21 @@ class HealthcarePresentationAgent:
             )
             return blocked_state.model_dump()
 
+        if self._needs_resource_validation_for_blueprint(state, latest_user_message):
+            message = self._resource_validation_message(state.user_profile.preferred_language)
+            action_state = state.model_copy(deep=True)
+            action_state.messages.append(AIMessage(content=message))
+            action_state.execution = ExecutionContext(
+                tool_output={
+                    "status": "action_required",
+                    "action": "validate_resources",
+                    "error_code": "RESOURCES_VALIDATION_REQUIRED",
+                    "retryable": False,
+                },
+                error=message,
+            )
+            return action_state.model_dump()
+
         return self.workflow.invoke(
             state,
             config={
@@ -66,3 +82,29 @@ class HealthcarePresentationAgent:
                 }
             },
         )
+
+    @staticmethod
+    def _needs_resource_validation_for_blueprint(state: GraphState, message: str) -> bool:
+        presentation = state.presentation
+        if presentation is None or presentation.state.resources_validated or not presentation.resources:
+            return False
+        wants_generation = re.search(
+            r"\b(generate|create|build|produce|g[ée]n[éeèe]rer|g[ée]n[éeèe]re|cr[ée]er|cr[ée]e|construire|construis|أنشئ|انشئ|ول[ّ]?د)\b",
+            message,
+            re.IGNORECASE,
+        )
+        wants_blueprint = re.search(
+            r"\b(blueprint|outline|plan|structure|plan de pr[ée]sentation|مخطط|هيكل)\b",
+            message,
+            re.IGNORECASE,
+        )
+        return bool(wants_generation and wants_blueprint)
+
+    @staticmethod
+    def _resource_validation_message(language: str) -> str:
+        messages = {
+            "fr": "Avant de générer le blueprint, validez les ressources PDF importées. Utilisez le bouton « Valider les ressources et continuer », puis demandez-moi de générer le blueprint.",
+            "ar": "قبل إنشاء المخطط، اعتمد ملفات PDF المرفوعة. استخدم زر «اعتماد المصادر والمتابعة» ثم اطلب مني إنشاء المخطط.",
+            "en": "Before generating the blueprint, validate the uploaded PDF resources. Use the “Validate resources and continue” button, then ask me to generate the blueprint.",
+        }
+        return messages.get(language, messages["en"])

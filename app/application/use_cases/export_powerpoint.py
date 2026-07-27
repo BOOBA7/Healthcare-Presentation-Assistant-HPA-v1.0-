@@ -121,16 +121,22 @@ class ExportPowerPointUseCase:
             paragraph.font.size = Pt(22)
             paragraph.font.color.rgb = self._rgb(palette["ink"])
             paragraph.space_after = Pt(13)
-        self._add_evidence_box(slide, source_slide.reference_details, palette)
-        self._footer(slide, palette)
+        if source_slide.content_origin == "ai_generated" and source_slide.evidence_verified:
+            self._add_evidence_box(slide, source_slide.reference_details, palette)
+        else:
+            self._add_authorship_box(slide, source_slide, palette)
+        self._footer(slide, palette, self._content_origin_label(source_slide))
 
     def _header(self, slide, title: str, palette: dict[str, tuple[int, int, int]]) -> None:
         bar = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0), Inches(0), Inches(13.333), Inches(1.05))
         bar.fill.solid(); bar.fill.fore_color.rgb = self._rgb(palette["primary"]); bar.line.fill.background()
         self._textbox(slide, title, 0.8, 0.29, 11.9, 0.47, size=26, color=(255, 255, 255), bold=True)
 
-    def _footer(self, slide, palette: dict[str, tuple[int, int, int]]) -> None:
-        self._textbox(slide, "HPA  ·  Human-reviewed scientific presentation", 0.8, 7.08, 7.0, 0.18, size=8, color=palette["ink"])
+    def _footer(self, slide, palette: dict[str, tuple[int, int, int]], provenance: str | None = None) -> None:
+        text = "HPA  ·  Human-reviewed scientific presentation"
+        if provenance:
+            text = f"{text}  ·  {provenance}"
+        self._textbox(slide, text, 0.8, 7.08, 11.7, 0.18, size=8, color=palette["ink"])
 
     def _add_evidence_box(self, slide, references: list[dict[str, object]], palette: dict[str, tuple[int, int, int]]) -> None:
         if not references:
@@ -146,6 +152,25 @@ class ExportPowerPointUseCase:
             paragraph.font.size = Pt(7)
             paragraph.font.color.rgb = self._rgb(palette["ink"])
 
+    def _add_authorship_box(self, slide, source_slide, palette: dict[str, tuple[int, int, int]]) -> None:
+        box = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(0.8), Inches(5.82), Inches(11.7), Inches(0.72))
+        box.fill.solid(); box.fill.fore_color.rgb = self._rgb((255, 247, 237)); box.line.color.rgb = self._rgb(palette["accent"])
+        message = (
+            "User-authored content · Human-approved"
+            if source_slide.content_origin == "user_authored"
+            else "User-edited content · Human-approved"
+        )
+        self._textbox(slide, message, 1.0, 6.04, 11.2, 0.22, size=9, color=palette["ink"], bold=True)
+
+    @staticmethod
+    def _content_origin_label(source_slide) -> str:
+        # Kept short because it appears on every content slide's footer.
+        if source_slide.content_origin == "user_authored":
+            return "User-authored · Human-approved"
+        if source_slide.content_origin == "user_edited":
+            return "User-edited · Human-approved"
+        return "AI-generated · Human-approved"
+
     def _add_resources_slide(self, deck: PowerPoint, presentation: Presentation, palette: dict[str, tuple[int, int, int]]) -> None:
         slide = deck.slides.add_slide(self._blank_layout(deck))
         self._background(slide, palette["paper"])
@@ -153,12 +178,22 @@ class ExportPowerPointUseCase:
         validated = self._label(presentation, "All resources below were validated by the user.", "Toutes les ressources ci-dessous ont été validées par l’utilisateur.", "تم اعتماد جميع المصادر التالية من قبل المستخدم.")
         self._header(slide, title, palette)
         self._textbox(slide, validated, 0.85, 1.42, 11.5, 0.45, size=18, color=palette["ink"], bold=True)
+        origins = {
+            "ai_generated": sum(item.content_origin == "ai_generated" for item in presentation.slides),
+            "user_edited": sum(item.content_origin == "user_edited" for item in presentation.slides),
+            "user_authored": sum(item.content_origin == "user_authored" for item in presentation.slides),
+        }
+        provenance = (
+            f"Content provenance: {origins['ai_generated']} AI-generated, "
+            f"{origins['user_edited']} user-edited, {origins['user_authored']} user-authored."
+        )
+        self._textbox(slide, provenance, 0.85, 1.9, 11.5, 0.48, size=10, color=palette["ink"])
         for index, resource in enumerate(presentation.resources):
             details = [resource.title or resource.filename]
             if resource.source:
                 details.append(resource.source)
             details.append(f"ID: {resource.id}")
-            self._textbox(slide, f"{index + 1}. " + " — ".join(details), 0.95, 2.05 + index * 0.53, 11.1, 0.4, size=14, color=palette["ink"])
+            self._textbox(slide, f"{index + 1}. " + " — ".join(details), 0.95, 2.48 + index * 0.53, 11.1, 0.4, size=14, color=palette["ink"])
         self._footer(slide, palette)
 
     @staticmethod

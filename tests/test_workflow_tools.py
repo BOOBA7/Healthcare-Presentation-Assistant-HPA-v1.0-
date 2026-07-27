@@ -12,13 +12,17 @@ from app.domain.enums.audience_type import AudienceType
 from app.domain.enums.language import Language
 from app.domain.enums.presentation_type import PresentationType
 from app.domain.models.slide import Slide
-from app.application.use_cases.workflow_steps import ReviewSlideUseCase
+from app.domain.models.slide_outline import SlideOutline
+from app.domain.models.blueprint import Blueprint
+from app.application.use_cases.workflow_steps import EditBlueprintItemUseCase, EditSlideUseCase, ReviewSlideUseCase
 from app.application.use_cases.workflow_steps import (
     BuildBlueprintWorkflowUseCase,
     RecordProfessionalScopeUseCase,
 )
 from app.application.use_cases.export_powerpoint import ExportPowerPointUseCase
 from app.application.use_cases.remove_resource import RemoveResourceUseCase
+from app.application.use_cases.add_resource import AddResourceUseCase
+from app.ai.agents.healthcare_presentation_agent import HealthcarePresentationAgent
 from app.domain.enums.resource_type import ResourceType
 from app.domain.models.resource import Resource
 from app.domain.models.agenda import Agenda
@@ -156,6 +160,180 @@ def test_deleting_a_resource_resets_generated_content_and_approvals():
     assert presentation.state.workflow_status == WorkflowStatus.AWAITING_RESOURCE_UPLOAD
 
 
+def test_adding_a_resource_is_allowed_late_and_resets_dependent_output():
+    state = collect_context.func(
+        GraphState(),
+        topic="Depression",
+        audience=AudienceType.SPECIALIST,
+        presentation_type=PresentationType.LECTURE,
+        language=Language.FRENCH,
+        duration_minutes=20,
+        objective="Review treatment guidelines",
+    )
+    presentation = create_presentation.func(validate_context.func(state)).presentation
+    presentation.blueprint = Blueprint(
+        title="Blueprint",
+        learning_objective="Objective",
+        target_number_of_slides=1,
+        storytelling="Story",
+        slides=[SlideOutline(slide_number=1, title="Evidence", objective="Review", key_message="Message")],
+    )
+    presentation.agenda = Agenda(items=["Evidence"], is_validated=True)
+    presentation.slides = [Slide(slide_number=1, title="Generated slide")]
+    presentation.state.resources_validated = True
+    presentation.state.blueprint_validated = True
+    presentation.state.slides_validated = True
+    presentation.state.presentation_validated = True
+    presentation.state.workflow_status = WorkflowStatus.READY_FOR_EXPORT
+
+    AddResourceUseCase().execute(
+        presentation,
+        Resource(
+            id="resource-new",
+            filename="new-guideline.pdf",
+            file_type=ResourceType.PDF,
+            extracted_pages=[{"page": 1, "text": "New evidence."}],
+            is_validated=True,
+        ),
+    )
+
+    assert [resource.id for resource in presentation.resources] == ["resource-new"]
+    assert presentation.blueprint is None
+    assert presentation.agenda is None
+    assert presentation.slides == []
+    assert not presentation.state.resources_validated
+    assert presentation.state.workflow_status == WorkflowStatus.AWAITING_RESOURCE_VALIDATION
+
+
+def test_blueprint_request_surfaces_human_resource_validation_only_when_needed():
+    state = collect_context.func(
+        GraphState(),
+        topic="Depression",
+        audience=AudienceType.SPECIALIST,
+        presentation_type=PresentationType.LECTURE,
+        language=Language.FRENCH,
+        duration_minutes=20,
+        objective="Review treatment guidelines",
+    )
+    state = create_presentation.func(validate_context.func(state))
+    state.presentation.resources = [
+        Resource(
+            id="resource-1",
+            filename="guideline.pdf",
+            file_type=ResourceType.PDF,
+            extracted_pages=[{"page": 1, "text": "Guideline evidence."}],
+            is_validated=True,
+        )
+    ]
+    state.presentation.state.workflow_status = WorkflowStatus.AWAITING_RESOURCE_VALIDATION
+
+    assert HealthcarePresentationAgent._needs_resource_validation_for_blueprint(
+        state, "Génère le blueprint de ma présentation"
+    )
+    assert not HealthcarePresentationAgent._needs_resource_validation_for_blueprint(
+        state, "Résume les points clés de cette ressource"
+    )
+
+    state.presentation.state.resources_validated = True
+    assert not HealthcarePresentationAgent._needs_resource_validation_for_blueprint(
+        state, "Génère le blueprint de ma présentation"
+    )
+
+
+def test_user_blueprint_edit_is_traced_and_invalidates_dependent_workflow_steps():
+    state = collect_context.func(
+        GraphState(),
+        topic="Depression",
+        audience=AudienceType.SPECIALIST,
+        presentation_type=PresentationType.LECTURE,
+        language=Language.FRENCH,
+        duration_minutes=20,
+        objective="Review treatment guidelines",
+    )
+    state = create_presentation.func(validate_context.func(state))
+    presentation = state.presentation
+    presentation.blueprint = Blueprint(
+        title="Blueprint",
+        learning_objective="Objective",
+        target_number_of_slides=1,
+        storytelling="Story",
+        slides=[SlideOutline(slide_number=1, title="AI title", objective="AI objective", key_message="AI message", is_validated=True)],
+        is_validated=True,
+    )
+    presentation.agenda = Agenda(items=["AI title"], is_validated=True)
+    presentation.slides = [Slide(slide_number=1, title="Old generated slide")]
+    presentation.state.blueprint_validated = True
+    presentation.state.slides_validated = True
+    presentation.state.presentation_validated = True
+    presentation.state.workflow_status = WorkflowStatus.AWAITING_BLUEPRINT_APPROVAL
+
+    EditBlueprintItemUseCase().execute(
+        state,
+        0,
+        title="User title",
+        objective="User objective",
+        key_message="User message",
+        content_origin="user_authored",
+    )
+
+    item = presentation.blueprint.slides[0]
+    assert item.content_origin == "user_authored"
+    assert item.original_ai_snapshot["title"] == "AI title"
+    assert not item.is_validated
+    assert not presentation.agenda.is_validated
+    assert presentation.agenda.items == ["User title"]
+    assert presentation.slides == []
+    assert presentation.state.workflow_status == WorkflowStatus.AWAITING_AGENDA_APPROVAL
+
+
+def test_user_slide_edit_requires_new_human_approval_without_inheriting_ai_evidence():
+    state = GraphState()
+    state.presentation = type(
+        "Presentation",
+        (),
+        {
+            "slides": [
+                Slide(
+                    slide_number=1,
+                    title="AI title",
+                    key_messages=["AI message"],
+                    content="AI content",
+                    evidence_verified=True,
+                    is_validated=True,
+                )
+            ],
+            "state": type(
+                "State",
+                (),
+                {
+                    "slides_validated": True,
+                    "presentation_validated": True,
+                    "workflow_status": WorkflowStatus.AWAITING_SLIDE_APPROVAL,
+                },
+            )(),
+        },
+    )()
+
+    EditSlideUseCase().execute(
+        state,
+        0,
+        title="Human title",
+        objective="",
+        key_messages=["Human message"],
+        content="Human content",
+        speaker_notes="",
+        content_origin="user_edited",
+    )
+
+    slide = state.presentation.slides[0]
+    assert slide.content_origin == "user_edited"
+    assert slide.original_ai_snapshot["content"] == "AI content"
+    assert not slide.evidence_verified
+    assert slide.evidence_review_required
+    assert not slide.is_validated
+    assert not state.presentation.state.slides_validated
+
+
 def test_powerpoint_always_ends_with_user_validated_resources(tmp_path):
     state = collect_context.func(
         GraphState(),
@@ -213,3 +391,46 @@ def test_powerpoint_always_ends_with_user_validated_resources(tmp_path):
     assert deck.slides[-1].shapes[1].text == "Ressources et validation"
     assert "guideline" in last_slide_text
     assert "validées par l’utilisateur" in last_slide_text
+
+
+def test_powerpoint_labels_user_authored_slide_without_claiming_verified_evidence(tmp_path):
+    state = collect_context.func(
+        GraphState(),
+        topic="Depression",
+        audience=AudienceType.SPECIALIST,
+        presentation_type=PresentationType.LECTURE,
+        language=Language.ENGLISH,
+        duration_minutes=10,
+        objective="Review treatment options",
+    )
+    presentation = create_presentation.func(validate_context.func(state)).presentation
+    presentation.slides = [
+        Slide(
+            slide_number=1,
+            title="Clinical reflection",
+            key_messages=["Human-authored message"],
+            content_origin="user_authored",
+            is_validated=True,
+        )
+    ]
+    presentation.resources = [
+        Resource(
+            id="resource-1",
+            filename="guideline.pdf",
+            file_type=ResourceType.PDF,
+            extracted_pages=[{"page": 1, "text": "Evidence."}],
+            is_validated=True,
+        )
+    ]
+    presentation.agenda = Agenda(items=["Clinical reflection"], is_validated=True)
+    presentation.state.resources_validated = True
+    presentation.state.presentation_validated = True
+
+    path = ExportPowerPointUseCase().execute(presentation, tmp_path)
+    deck = PowerPoint(path)
+    content_text = " ".join(shape.text for shape in deck.slides[2].shapes if hasattr(shape, "text"))
+    resources_text = " ".join(shape.text for shape in deck.slides[-1].shapes if hasattr(shape, "text"))
+
+    assert "User-authored content" in content_text
+    assert "Human-approved" in content_text
+    assert "1 user-authored" in resources_text

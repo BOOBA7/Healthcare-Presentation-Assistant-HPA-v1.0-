@@ -194,6 +194,131 @@ class ReviewSlideUseCase:
         return state
 
 
+class EditBlueprintItemUseCase:
+    """Persist a human rewrite of one blueprint item and reset dependent approvals."""
+
+    _origins = {"user_edited", "user_authored"}
+
+    def execute(
+        self,
+        state: GraphState,
+        index: int,
+        *,
+        title: str,
+        objective: str,
+        key_message: str,
+        content_origin: str,
+    ) -> GraphState:
+        if state.presentation is None or state.presentation.blueprint is None:
+            raise ValueError("Generate a blueprint before editing it.")
+        WorkflowPolicy.require_status(
+            state.presentation.state.workflow_status,
+            (WorkflowStatus.AWAITING_AGENDA_APPROVAL, WorkflowStatus.AWAITING_BLUEPRINT_APPROVAL),
+            "edit a blueprint item",
+        )
+        if not 0 <= index < len(state.presentation.blueprint.slides):
+            raise ValueError("Blueprint item index is invalid.")
+        values = {"title": title.strip(), "objective": objective.strip(), "key_message": key_message.strip()}
+        if not all(values.values()):
+            raise ValueError("Title, objective and key message are required.")
+        if content_origin not in self._origins:
+            raise ValueError("Choose whether the item was edited from AI content or written by the user.")
+
+        presentation = state.presentation
+        item = presentation.blueprint.slides[index]
+        previous_title = item.title
+        if item.original_ai_snapshot is None:
+            item.original_ai_snapshot = {
+                "title": item.title,
+                "objective": item.objective,
+                "key_message": item.key_message,
+            }
+        item.title = values["title"]
+        item.objective = values["objective"]
+        item.key_message = values["key_message"]
+        item.content_origin = content_origin
+        item.is_validated = False
+        presentation.blueprint.is_validated = False
+        presentation.state.blueprint_validated = False
+        presentation.state.slides_validated = False
+        presentation.state.presentation_validated = False
+        # An agenda is a separate approval artefact. Keep its order but require
+        # the reviewer to approve it again after any blueprint edit.
+        if presentation.agenda is not None:
+            presentation.agenda.items = [
+                item.title if agenda_item == previous_title else agenda_item
+                for agenda_item in presentation.agenda.items
+            ]
+            presentation.agenda.is_validated = False
+        # Existing slides are based on the former blueprint and must not be
+        # presented as current after a structural/content change.
+        presentation.slides = []
+        presentation.state.current_slide = 0
+        presentation.state.total_slides = 0
+        presentation.state.workflow_status = WorkflowStatus.AWAITING_AGENDA_APPROVAL
+        return state
+
+
+class EditSlideUseCase:
+    """Persist a human slide edit without falsely claiming verified AI evidence."""
+
+    _origins = {"user_edited", "user_authored"}
+
+    def execute(
+        self,
+        state: GraphState,
+        index: int,
+        *,
+        title: str,
+        objective: str | None,
+        key_messages: list[str],
+        content: str,
+        speaker_notes: str | None,
+        content_origin: str,
+    ) -> GraphState:
+        if state.presentation is None or not state.presentation.slides:
+            raise ValueError("Generate slides before editing one.")
+        WorkflowPolicy.require_status(
+            state.presentation.state.workflow_status,
+            (WorkflowStatus.AWAITING_SLIDE_APPROVAL,),
+            "edit a slide",
+        )
+        if not 0 <= index < len(state.presentation.slides):
+            raise ValueError("Slide index is invalid.")
+        normalized_messages = [message.strip() for message in key_messages if message.strip()]
+        if not title.strip() or (not normalized_messages and not content.strip()):
+            raise ValueError("A slide needs a title and at least one key message or content.")
+        if content_origin not in self._origins:
+            raise ValueError("Choose whether the slide was edited from AI content or written by the user.")
+
+        slide = state.presentation.slides[index]
+        if slide.original_ai_snapshot is None:
+            slide.original_ai_snapshot = {
+                "title": slide.title,
+                "objective": slide.objective,
+                "key_messages": list(slide.key_messages),
+                "content": slide.content,
+                "speaker_notes": slide.speaker_notes,
+                "references": list(slide.references),
+                "reference_details": list(slide.reference_details),
+            }
+        slide.title = title.strip()
+        slide.objective = objective.strip() if objective and objective.strip() else None
+        slide.key_messages = normalized_messages
+        slide.content = content.strip()
+        slide.speaker_notes = speaker_notes.strip() if speaker_notes and speaker_notes.strip() else None
+        slide.content_origin = content_origin
+        slide.is_validated = False
+        # Citations can still be displayed as provenance, but the system must
+        # not imply that they prove newly human-written statements.
+        slide.evidence_verified = False
+        slide.evidence_review_required = True
+        state.presentation.state.slides_validated = False
+        state.presentation.state.presentation_validated = False
+        state.presentation.state.workflow_status = WorkflowStatus.AWAITING_SLIDE_APPROVAL
+        return state
+
+
 class RejectBlueprintItemUseCase:
     def execute(self, state: GraphState, index: int, comments: str) -> GraphState:
         if state.presentation is None or state.presentation.blueprint is None:

@@ -1,6 +1,7 @@
 from app.ai.workflows.graph_state import GraphState
 from app.domain.models.user_profile import UserProfile
 from app.interfaces.storage.user_session_repository import UserSessionRepository
+from app.application.services.conversation_history import add_turn, ensure_history
 from langchain_core.messages import AIMessage, HumanMessage
 
 
@@ -44,6 +45,22 @@ def test_message_types_are_preserved_after_sqlite_reload(tmp_path):
     assert isinstance(restored.messages[0], HumanMessage)
     assert isinstance(restored.messages[1], AIMessage)
     assert repository.list_projects("user-1") == [{"id": "project-a", "name": "My project"}]
+
+
+def test_ui_conversation_history_is_restored_independently_from_model_messages(tmp_path):
+    repository = UserSessionRepository(tmp_path / "sessions.sqlite3")
+    state = GraphState(messages=[HumanMessage(content="Hello"), AIMessage(content="Hi")])
+    assert ensure_history(state)
+    add_turn(state, "user", "Can we discuss the uploaded guideline first?")
+
+    repository.save("user-1", "project-a", "thread-1", state)
+    _, restored = repository.load("user-1", "project-a")
+
+    assert [(turn.role, turn.text) for turn in restored.conversation_history] == [
+        ("user", "Hello"),
+        ("assistant", "Hi"),
+        ("user", "Can we discuss the uploaded guideline first?"),
+    ]
 
 
 def test_passwords_are_hashed_and_tokens_authenticate_users(tmp_path):
