@@ -15,6 +15,7 @@ from app.ai.agents.healthcare_presentation_agent import HealthcarePresentationAg
 from app.ai.workflows.graph_state import GraphState
 from app.application.use_cases.export_powerpoint import ExportPowerPointUseCase
 from app.application.use_cases.extract_pdf_resource import ExtractPdfResourceUseCase
+from app.application.use_cases.remove_resource import RemoveResourceUseCase
 from app.application.services.workflow_policy import WorkflowPolicy
 from app.core.config import get_settings
 from app.core.versioning import HARNESS_VERSION, RETRIEVAL_VERSION, WORKFLOW_VERSION
@@ -501,6 +502,33 @@ def approve_resources(user_id: str, project_id: str, authenticated_user: str = D
     except ValueError as exc:
         raise _workflow_conflict(exc) from exc
     return _save_project(user_id, project_id, thread_id, state, event_type="RESOURCES_VALIDATED", actor="user")
+
+
+@app.delete("/projects/{user_id}/{project_id}/resources/{resource_id}")
+def delete_resource(
+    user_id: str,
+    project_id: str,
+    resource_id: str,
+    authenticated_user: str = Depends(_authenticated_user),
+):
+    """Remove a PDF and safely reset content that could depend on it."""
+    _assert_owner(user_id, authenticated_user)
+    thread_id, state = _get_project(user_id, project_id)
+    if state.presentation is None:
+        raise HTTPException(status_code=404, detail="Presentation not found.")
+    try:
+        state.presentation = RemoveResourceUseCase().execute(state.presentation, resource_id)
+    except ValueError as exc:
+        raise _workflow_conflict(exc) from exc
+    return _save_project(
+        user_id,
+        project_id,
+        thread_id,
+        state,
+        event_type="RESOURCE_DELETED",
+        actor="user",
+        extra_audit={"resource_id": resource_id},
+    )
 
 
 @app.post("/projects/{user_id}/{project_id}/blueprint/items/{index}/approve")

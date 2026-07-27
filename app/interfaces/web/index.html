@@ -34,21 +34,30 @@
 
         <section class="side-section">
           <p class="eyebrow" data-i18n="workspace">Workspace</p>
-          <label for="user-id" data-i18n="connectedUser">Connected user</label>
-          <input id="user-id" readonly />
-          <button id="logout" class="secondary full" data-i18n="logout">Sign out</button>
-          <button id="delete-user" class="secondary full danger-button" data-i18n="deleteAccount">Delete my account</button>
-          <label for="user-role" data-i18n="professionalProfile">Professional profile</label>
-          <select id="user-role"></select>
-          <label for="user-language" data-i18n="language">Language</label>
-          <select id="user-language"><option value="en">English</option><option value="fr">Français</option><option value="ar">العربية</option></select>
-          <label for="project-id" data-i18n="project">Project</label>
-          <select id="project-id"></select>
-          <div class="new-project">
-            <input id="new-project-name" data-i18n-placeholder="newProject" placeholder="Name of the new Project" maxlength="128" />
-            <button id="create-project" class="icon-button" title="Create Project">+</button>
-          </div>
-          <button id="delete-project" class="secondary full danger-button" data-i18n="deleteProject">Delete this Project</button>
+          <input id="user-id" type="hidden" />
+          <details class="workspace-menu">
+            <summary><span class="menu-label" data-i18n="connectedUser">Connected user</span><strong id="user-display">—</strong></summary>
+            <div class="workspace-menu-content">
+              <label for="user-role" data-i18n="professionalProfile">Professional profile</label>
+              <select id="user-role"></select>
+              <label for="user-language" data-i18n="language">Language</label>
+              <select id="user-language"><option value="en">English</option><option value="fr">Français</option><option value="ar">العربية</option></select>
+              <button id="logout" class="secondary full" data-i18n="logout">Sign out</button>
+              <button id="delete-user" class="secondary full danger-button" data-i18n="deleteAccount">Delete my account</button>
+            </div>
+          </details>
+          <details class="workspace-menu">
+            <summary><span class="menu-label" data-i18n="project">Project</span><strong id="project-display">—</strong></summary>
+            <div class="workspace-menu-content">
+              <label for="project-id" data-i18n="project">Project</label>
+              <select id="project-id"></select>
+              <div class="new-project">
+                <input id="new-project-name" data-i18n-placeholder="newProject" placeholder="Name of the new Project" maxlength="128" />
+                <button id="create-project" class="icon-button" title="Create Project">+</button>
+              </div>
+              <button id="delete-project" class="secondary full danger-button" data-i18n="deleteProject">Delete this Project</button>
+            </div>
+          </details>
         </section>
 
         <section class="side-section resource-panel">
@@ -57,6 +66,7 @@
           <p id="file-name" class="muted" data-i18n="maxSize">20 MB maximum</p>
           <button id="upload-resource" class="secondary full" disabled data-i18n="addResource">Add resource</button>
           <button id="validate-resources" class="secondary full" hidden data-i18n="validateResources">Validate resources</button>
+          <div id="resource-list" class="resource-list"></div>
         </section>
 
         <section class="side-section template-panel">

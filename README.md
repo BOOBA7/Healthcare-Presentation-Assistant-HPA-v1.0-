@@ -96,8 +96,7 @@ State is separated by responsibility:
 - `PresentationState`: durable business workflow and approvals.
 - `ExecutionContext`: last tool outcome and safe technical error.
 
-See [ADR.txt](ADR.txt) for the current architectural decisions and
-[docs/PROMPT_REVIEW.md](docs/PROMPT_REVIEW.md) for the historical prompt review.
+See [ADR.txt](ADR.txt) for the current architectural decisions.
 
 ## Local setup
 

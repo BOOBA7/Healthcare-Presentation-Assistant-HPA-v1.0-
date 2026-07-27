@@ -1,6 +1,7 @@
 """Streamlit user interface for the Healthcare Presentation Assistant."""
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from uuid import uuid4
 
 import streamlit as st
 from langchain_core.messages import HumanMessage
@@ -9,6 +10,7 @@ from app.ai.agents.healthcare_presentation_agent import HealthcarePresentationAg
 from app.ai.workflows.graph_state import GraphState
 from app.application.use_cases.export_powerpoint import ExportPowerPointUseCase
 from app.application.use_cases.extract_pdf_resource import ExtractPdfResourceUseCase
+from app.application.use_cases.remove_resource import RemoveResourceUseCase
 from app.application.use_cases.workflow_steps import (
     RejectBlueprintItemUseCase,
     RejectSlideUseCase,
@@ -31,6 +33,45 @@ from app.domain.enums.presentation_theme import PresentationTheme
 st.set_page_config(page_title="Healthcare Presentation Assistant", page_icon="🩺", layout="wide")
 
 
+ROLE_OPTIONS = [
+    "professor_medicine",
+    "assistant_professor",
+    "veterinarian",
+    "biologist",
+    "pharmacist",
+    "specialist_physician",
+    "resident_physician",
+]
+
+
+def role_label(role: str) -> str:
+    return {
+        "professor_medicine": "Professor of Medicine",
+        "assistant_professor": "Assistant Professor",
+        "veterinarian": "Veterinarian",
+        "biologist": "Biologist",
+        "pharmacist": "Pharmacist",
+        "specialist_physician": "Specialist Physician",
+        "resident_physician": "Resident Physician",
+    }.get(role, role.replace("_", " ").title())
+
+
+def role_emblem(role: str) -> str:
+    """Return the same clear professional emblems used by the web application."""
+    asclepius = """<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3v26M12 6c-5 1-5 7-1 8 6 1 6-6 1-4-4 2-1 8 4 8 5 0 7-6 3-10-2-2-5-2-7-1"/><path d="M12 3h8"/></svg>"""
+    emblems = {
+        "professor_medicine": asclepius,
+        "assistant_professor": asclepius,
+        "specialist_physician": asclepius,
+        "resident_physician": asclepius,
+        # Veterinary medicine: a recognisable V combined with the Rod of Asclepius.
+        "veterinarian": """<svg viewBox="0 0 40 32" aria-hidden="true"><path d="M3 4 12 28 21 4"/><path d="M28 3v26M25 7c-4 1-4 6-1 7 5 1 5-5 1-4-3 1-1 6 3 6 4 0 6-5 3-8-2-2-5-2-6-1"/><path d="M24 3h8"/></svg>""",
+        "biologist": """<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M8 4c12 7 4 17 16 24M24 4C12 11 20 21 8 28M10 8h12M8 16h16M10 24h12"/></svg>""",
+        "pharmacist": """<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M6 20h20M9 20c1 6 13 6 14 0M12 25h8M17 5c7-2 9 6 4 8-5 2-7-4-3-6 3-2 6 3 2 6-3 3-8 0-8-4"/><path d="M13 14h8l-2 6h-4z"/></svg>""",
+    }
+    return emblems.get(role, asclepius)
+
+
 @st.cache_resource
 def get_agent() -> HealthcarePresentationAgent:
     return HealthcarePresentationAgent()
@@ -47,16 +88,11 @@ def authenticated_user_id() -> str:
     if auth_required:
         if not st.user.is_logged_in:
             st.title("Healthcare Presentation Assistant")
-            st.button("Se connecter avec Google", on_click=st.login)
+            st.button("Sign in with Google", on_click=st.login)
             st.stop()
-        st.sidebar.button("Se déconnecter", on_click=st.logout)
         return str(st.user.get("sub") or st.user.get("email"))
 
     if local_user_id := st.session_state.get("local_authenticated_user_id"):
-        st.caption(f"Connecté : {local_user_id}")
-        if st.button("Se déconnecter"):
-            st.session_state.pop("local_authenticated_user_id", None)
-            st.rerun()
         return str(local_user_id)
 
     st.caption("Local sign in")
@@ -110,16 +146,54 @@ def save_state() -> None:
 
 
 def open_or_create_project(user_id: str) -> None:
-    """Callback used before widgets render, so changing the selected project is safe."""
-    project_id = str(st.session_state.get("new_project_id_input", "")).strip()
-    if not project_id:
-        st.session_state.project_error = "Enter a Project ID."
+    """Create a human-named Project with an internal, stable identifier."""
+    project_name = str(st.session_state.get("new_project_name_input", "")).strip()
+    if not project_name:
+        st.session_state.project_error = "Enter a Project name."
         return
-    if get_repository().load(user_id, project_id) is None:
-        get_repository().create_empty(user_id, project_id)
+    project_id = f"project-{uuid4()}"
+    get_repository().create_empty(user_id, project_id, project_name)
     st.session_state.project_selector = project_id
     st.session_state.active_project_id = None
+    st.session_state.new_project_name_input = ""
     st.session_state.pop("project_error", None)
+
+
+def sign_out() -> None:
+    if bool(st.secrets.get("AUTH_REQUIRED", False)):
+        st.logout()
+        return
+    st.session_state.pop("local_authenticated_user_id", None)
+
+
+def delete_active_project(user_id: str, project_id: str) -> None:
+    get_repository().delete_project(user_id, project_id)
+    remaining_projects = get_repository().list_projects(user_id)
+    if remaining_projects:
+        st.session_state.project_selector = remaining_projects[0]["id"]
+    else:
+        st.session_state.pop("project_selector", None)
+    st.session_state.active_project_id = None
+    st.session_state.pop("confirm_project_delete", None)
+
+
+def delete_account(user_id: str) -> None:
+    """Delete local data only after the user confirms in the sidebar."""
+    get_repository().delete_user(user_id)
+    sign_out()
+
+
+def remove_resource(resource_id: str) -> None:
+    state = st.session_state.get("state")
+    if state is None or state.presentation is None:
+        return
+    try:
+        RemoveResourceUseCase().execute(state.presentation, resource_id)
+        save_state()
+        st.session_state.pop("pending_resource_delete", None)
+        st.session_state.resource_deleted = True
+    except ValueError as exc:
+        st.session_state.resource_error = str(exc)
 
 
 def run_validation(tool, **arguments: object) -> None:
@@ -166,66 +240,148 @@ st.title("🩺 Healthcare Presentation Assistant")
 st.caption("Discuss ideas, then create a scientific presentation from validated PDF resources.")
 
 with st.sidebar:
-    st.header("User")
     user_id = authenticated_user_id()
     if st.session_state.get("active_user_id") != user_id:
         st.session_state.pop("project_selector", None)
 
-    project_ids = get_repository().list_project_ids(user_id)
-    if not project_ids:
-        project_ids = ["project-1"]
-    default_project = st.session_state.get("project_selector", project_ids[0])
-    if default_project not in project_ids:
-        default_project = project_ids[0]
-    project_id = st.selectbox(
-        "Project",
-        options=project_ids,
-        index=project_ids.index(default_project),
-        key="project_selector",
-        help="Each Project retains its own conversation, resources and presentation.",
-    )
-    st.text_input(
-        "New Project ID",
-        placeholder="ex. depression-medecine-generale",
-        max_chars=128,
-        key="new_project_id_input",
-    )
-    st.button("Create / open Project", on_click=open_or_create_project, args=(user_id,))
-    if project_error := st.session_state.pop("project_error", None):
-        st.error(project_error)
-
     profile = get_repository().get_user_profile(user_id)
-    role = st.selectbox(
-        "Professional profile",
-        options=["professor_medicine", "assistant_professor", "veterinarian", "biologist", "specialist_physician", "resident_physician"],
-        index=["professor_medicine", "assistant_professor", "veterinarian", "biologist", "specialist_physician", "resident_physician"].index(profile.professional_role),
-        format_func=lambda value: value.replace("_", " ").title(),
+    st.markdown(
+        """<style>
+        .profile-summary {display:flex; align-items:center; gap:.55rem; margin:.2rem 0 .45rem;}
+        .profile-emblem {width:2.35rem;height:2.35rem;display:grid;place-items:center;border-radius:.7rem;background:#e7f4f1;color:#087f73;}
+        .profile-emblem svg {width:1.65rem;height:1.65rem;fill:none;stroke:currentColor;stroke-width:2.15;stroke-linecap:round;stroke-linejoin:round;}
+        .profile-summary strong {font-size:.96rem;}
+        .resource-row {display:flex;align-items:center;justify-content:space-between;gap:.45rem;padding:.35rem 0;border-bottom:1px solid #edf0f2;}
+        .resource-row small {display:block;color:#64748b;overflow-wrap:anywhere;}
+        </style>""",
+        unsafe_allow_html=True,
     )
-    language = st.selectbox("Language", options=["en", "fr", "ar"], index=["en", "fr", "ar"].index(profile.preferred_language))
-    selected_profile = UserProfile(professional_role=role, preferred_language=language)
-    if selected_profile != profile:
-        get_repository().update_user_profile(user_id, selected_profile)
-        profile = selected_profile
+    st.markdown(
+        f'<div class="profile-summary"><span class="profile-emblem">{role_emblem(profile.professional_role)}</span><strong>{role_label(profile.professional_role)}</strong></div>',
+        unsafe_allow_html=True,
+    )
+    with st.expander(f"User · {user_id}", expanded=False):
+        role = st.selectbox(
+            "Professional profile",
+            options=ROLE_OPTIONS,
+            index=ROLE_OPTIONS.index(profile.professional_role),
+            format_func=role_label,
+        )
+        language = st.selectbox(
+            "Language",
+            options=["en", "fr", "ar"],
+            index=["en", "fr", "ar"].index(profile.preferred_language),
+        )
+        selected_profile = UserProfile(professional_role=role, preferred_language=language)
+        if selected_profile != profile:
+            get_repository().update_user_profile(user_id, selected_profile)
+            profile = selected_profile
+            st.rerun()
+        if st.button("Sign out", use_container_width=True):
+            sign_out()
+            st.rerun()
+        if not bool(st.secrets.get("AUTH_REQUIRED", False)):
+            if st.button("Delete my account", type="secondary", use_container_width=True):
+                st.session_state.confirm_account_delete = True
+            if st.session_state.get("confirm_account_delete"):
+                st.warning("This permanently deletes your account, Projects and conversation history.")
+                confirm, cancel = st.columns(2)
+                if confirm.button("Delete permanently", type="primary", use_container_width=True):
+                    delete_account(user_id)
+                    st.rerun()
+                if cancel.button("Cancel", use_container_width=True):
+                    st.session_state.pop("confirm_account_delete", None)
+                    st.rerun()
+
+    projects = get_repository().list_projects(user_id)
+    if not projects:
+        first_project_id = f"project-{uuid4()}"
+        get_repository().create_empty(user_id, first_project_id, "My first Project")
+        projects = get_repository().list_projects(user_id)
+    project_ids = [project["id"] for project in projects]
+    project_names = {project["id"]: project["name"] for project in projects}
+    default_project = st.session_state.get("project_selector", project_ids[0])
+    if default_project not in project_names:
+        default_project = project_ids[0]
+    with st.expander(f"Project · {project_names[default_project]}", expanded=True):
+        project_id = st.selectbox(
+            "Project",
+            options=project_ids,
+            index=project_ids.index(default_project),
+            key="project_selector",
+            format_func=lambda item: project_names[item],
+            help="Each Project retains its own conversation, resources and presentation.",
+        )
+        st.text_input(
+            "Name of the new Project",
+            placeholder="e.g. Depression for general practice",
+            max_chars=128,
+            key="new_project_name_input",
+        )
+        st.button("Create Project", on_click=open_or_create_project, args=(user_id,), use_container_width=True)
+        if project_error := st.session_state.pop("project_error", None):
+            st.error(project_error)
+        if st.button("Delete this Project", type="secondary", use_container_width=True):
+            st.session_state.confirm_project_delete = project_id
+        if st.session_state.get("confirm_project_delete") == project_id:
+            st.warning("This permanently deletes this Project and its conversation history.")
+            confirm, cancel = st.columns(2)
+            confirm.button(
+                "Delete Project",
+                type="primary",
+                use_container_width=True,
+                on_click=delete_active_project,
+                args=(user_id, project_id),
+            )
+            if cancel.button("Cancel", use_container_width=True):
+                st.session_state.pop("confirm_project_delete", None)
+                st.rerun()
+
     state = load_project_state(user_id, project_id)
     state.user_profile = profile
     save_state()
-    st.caption(f"Project : {project_id} · Session : {st.session_state.thread_id[:8]}")
+    st.caption(f"Project · Session {st.session_state.thread_id[:8]}")
     st.divider()
-    st.header("Ressource scientifique")
-    uploaded_pdf = st.file_uploader("Déposez un PDF", type=["pdf"])
-    if st.button("Ajouter le PDF", disabled=uploaded_pdf is None):
+    st.header("Scientific sources")
+    uploaded_pdf = st.file_uploader("Upload a PDF", type=["pdf"])
+    if st.button("Add resource", disabled=uploaded_pdf is None, use_container_width=True):
         if state.presentation is None:
-            st.warning("Créez d’abord la présentation dans la conversation.")
+            st.warning("Describe the presentation in the conversation before adding a PDF.")
         elif uploaded_pdf.size > 20 * 1024 * 1024:
-            st.error("Les PDF sont limités à 20 Mo.")
+            st.error("PDF files are limited to 20 MB.")
         else:
             try:
                 resource = ExtractPdfResourceUseCase().execute(uploaded_pdf.name, uploaded_pdf.getvalue())
                 state.presentation.resources.append(resource)
                 save_state()
-                st.success(f"{resource.filename} ajouté ({len(resource.extracted_text or '')} caractères extraits).")
+                st.success(f"{resource.filename} added ({len(resource.extracted_text or '')} extracted characters).")
             except ValueError as exc:
                 st.error(str(exc))
+
+    if state.presentation and state.presentation.resources:
+        st.caption("Project resources")
+        for resource in state.presentation.resources:
+            label, remove = st.columns([5, 1])
+            label.markdown(
+                f"<div class=\"resource-row\"><div><strong>{resource.filename}</strong><small>{'Approved' if resource.is_validated else 'Pending approval'}</small></div></div>",
+                unsafe_allow_html=True,
+            )
+            if remove.button("×", key=f"remove_resource_{resource.id}", help="Remove resource"):
+                st.session_state.pending_resource_delete = resource.id
+        pending_resource = st.session_state.get("pending_resource_delete")
+        if pending_resource:
+            st.warning("Removing a resource resets generated content and approvals based on the resources.")
+            confirm, cancel = st.columns(2)
+            if confirm.button("Remove resource", type="primary", use_container_width=True):
+                remove_resource(pending_resource)
+                st.rerun()
+            if cancel.button("Cancel", use_container_width=True):
+                st.session_state.pop("pending_resource_delete", None)
+                st.rerun()
+    if st.session_state.pop("resource_deleted", False):
+        st.success("Resource removed. Dependent generated content and approvals were reset.")
+    if resource_error := st.session_state.pop("resource_error", None):
+        st.error(resource_error)
 
     st.divider()
     if state.presentation:

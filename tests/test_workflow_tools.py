@@ -18,6 +18,7 @@ from app.application.use_cases.workflow_steps import (
     RecordProfessionalScopeUseCase,
 )
 from app.application.use_cases.export_powerpoint import ExportPowerPointUseCase
+from app.application.use_cases.remove_resource import RemoveResourceUseCase
 from app.domain.enums.resource_type import ResourceType
 from app.domain.models.resource import Resource
 from app.domain.models.agenda import Agenda
@@ -118,6 +119,41 @@ def test_scope_clarification_resumes_slide_generation_when_blueprint_was_already
     )
 
     assert state.presentation.state.workflow_status == WorkflowStatus.SLIDE_GENERATION
+
+
+def test_deleting_a_resource_resets_generated_content_and_approvals():
+    state = collect_context.func(
+        GraphState(),
+        topic="Depression",
+        audience=AudienceType.SPECIALIST,
+        presentation_type=PresentationType.LECTURE,
+        language=Language.FRENCH,
+        duration_minutes=20,
+        objective="Review treatment guidelines",
+    )
+    presentation = create_presentation.func(validate_context.func(state)).presentation
+    presentation.resources = [
+        Resource(
+            id="resource-1",
+            filename="guideline.pdf",
+            file_type=ResourceType.PDF,
+            extracted_pages=[{"page": 1, "text": "Guideline evidence."}],
+            is_validated=True,
+        )
+    ]
+    presentation.state.resources_validated = True
+    presentation.state.blueprint_validated = True
+    presentation.state.slides_validated = True
+    presentation.state.presentation_validated = True
+    presentation.slides = [Slide(slide_number=1, title="Evidence")]
+
+    RemoveResourceUseCase().execute(presentation, "resource-1")
+
+    assert presentation.resources == []
+    assert presentation.blueprint is None
+    assert presentation.slides == []
+    assert not presentation.state.resources_validated
+    assert presentation.state.workflow_status == WorkflowStatus.AWAITING_RESOURCE_UPLOAD
 
 
 def test_powerpoint_always_ends_with_user_validated_resources(tmp_path):
