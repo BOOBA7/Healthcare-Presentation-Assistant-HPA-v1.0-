@@ -22,6 +22,7 @@ class UserSessionRepository:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.templates_path.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
+            connection.execute("PRAGMA journal_mode=WAL")
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS project_sessions (
                     user_id TEXT NOT NULL,
@@ -72,12 +73,32 @@ class UserSessionRepository:
                 )"""
             )
             connection.execute(
+                """CREATE TABLE IF NOT EXISTS project_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    domain TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    progress INTEGER NOT NULL DEFAULT 0,
+                    stage TEXT NOT NULL DEFAULT 'queued',
+                    result_json TEXT,
+                    error_message TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )"""
+            )
+            connection.execute(
+                """CREATE INDEX IF NOT EXISTS idx_project_jobs_project
+                   ON project_jobs (user_id, project_id, created_at DESC)"""
+            )
+            connection.execute(
                 """CREATE INDEX IF NOT EXISTS idx_project_events_project
                    ON project_events (user_id, project_id, created_at)"""
             )
             self._ensure_project_name_column(connection)
             self._ensure_user_profile_columns(connection)
             self._migrate_legacy_user_sessions(connection)
+            self._recover_interrupted_jobs(connection)
 
     def load(self, user_id: str, project_id: str) -> tuple[str, GraphState] | None:
         with self._connect() as connection:
@@ -98,25 +119,37 @@ class UserSessionRepository:
         state: GraphState,
         project_name: str | None = None,
     ) -> None:
-        payload = json.dumps(self._serialize_state(state))
         with self._connect() as connection:
-            connection.execute(
-                """INSERT INTO project_sessions (user_id, project_id, project_name, thread_id, state_json, updated_at)
-                   VALUES (?, ?, COALESCE(NULLIF(?, ''), ?), ?, ?, CURRENT_TIMESTAMP)
-                   ON CONFLICT(user_id, project_id) DO UPDATE SET
-                   project_name = CASE
-                       WHEN ? = '' THEN project_sessions.project_name
-                       ELSE excluded.project_name
-                   END,
-                   thread_id = excluded.thread_id,
-                   state_json = excluded.state_json,
-                   updated_at = CURRENT_TIMESTAMP""",
-                (user_id, project_id, project_name or "", project_id, thread_id, payload, project_name or ""),
-            )
+            self._save_project_row(connection, user_id, project_id, thread_id, state, project_name)
+
+    def save_with_event(
+        self,
+        user_id: str,
+        project_id: str,
+        thread_id: str,
+        state: GraphState,
+        event_type: str,
+        actor: str,
+        payload: dict[str, object] | None = None,
+        project_name: str | None = None,
+    ) -> None:
+        """Persist workflow state and its audit event in one transaction."""
+        with self._connect() as connection:
+            self._save_project_row(connection, user_id, project_id, thread_id, state, project_name)
+            self._insert_event(connection, user_id, project_id, event_type, actor, payload)
 
     def create_empty(self, user_id: str, project_id: str, project_name: str | None = None) -> tuple[str, GraphState]:
         thread_id, state = str(uuid4()), GraphState()
-        self.save(user_id, project_id, thread_id, state, project_name)
+        self.save_with_event(
+            user_id,
+            project_id,
+            thread_id,
+            state,
+            "PROJECT_CREATED",
+            "system",
+            {"project_name": project_name or project_id},
+            project_name,
+        )
         return thread_id, state
 
     def list_projects(self, user_id: str) -> list[dict[str, str]]:
@@ -287,19 +320,7 @@ class UserSessionRepository:
     ) -> None:
         """Append an immutable business/audit event for a Project."""
         with self._connect() as connection:
-            connection.execute(
-                """INSERT INTO project_events
-                   (event_id, user_id, project_id, event_type, actor, payload_json)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (
-                    str(uuid4()),
-                    user_id,
-                    project_id,
-                    event_type,
-                    actor,
-                    json.dumps(payload or {}, default=str),
-                ),
-            )
+            self._insert_event(connection, user_id, project_id, event_type, actor, payload)
 
     def list_events(self, user_id: str, project_id: str, limit: int = 200) -> list[dict[str, object]]:
         with self._connect() as connection:
@@ -320,6 +341,57 @@ class UserSessionRepository:
             for row in rows
         ]
 
+    def create_job(self, user_id: str, project_id: str, domain: str) -> dict[str, object]:
+        """Create a durable asynchronous job record before scheduling work."""
+        job_id = str(uuid4())
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO project_jobs (job_id, user_id, project_id, domain, status, progress, stage)
+                   VALUES (?, ?, ?, ?, 'queued', 0, 'queued')""",
+                (job_id, user_id, project_id, domain),
+            )
+        return self.get_job(user_id, job_id) or {}
+
+    def update_job(
+        self,
+        user_id: str,
+        job_id: str,
+        *,
+        status: str,
+        progress: int,
+        stage: str,
+        result: dict[str, object] | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        """Persist monotonic job progress and terminal result metadata."""
+        if not 0 <= progress <= 100:
+            raise ValueError("Job progress must be between 0 and 100.")
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE project_jobs SET status = ?, progress = ?, stage = ?, result_json = ?,
+                   error_message = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE job_id = ? AND user_id = ?""",
+                (status, progress, stage, json.dumps(result, default=str) if result is not None else None,
+                 error_message, job_id, user_id),
+            )
+        if cursor.rowcount == 0:
+            raise ValueError("Job not found.")
+
+    def get_job(self, user_id: str, job_id: str) -> dict[str, object] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT job_id, project_id, domain, status, progress, stage, result_json, error_message,
+                   created_at, updated_at FROM project_jobs WHERE job_id = ? AND user_id = ?""",
+                (job_id, user_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "job_id": row[0], "project_id": row[1], "domain": row[2], "status": row[3],
+            "progress": row[4], "stage": row[5], "result": json.loads(row[6]) if row[6] else None,
+            "error": row[7], "created_at": row[8], "updated_at": row[9],
+        }
+
     @staticmethod
     def _serialize_state(state: GraphState) -> dict[str, object]:
         payload = state.model_dump(mode="json", exclude={"messages"})
@@ -328,6 +400,13 @@ class UserSessionRepository:
 
     @staticmethod
     def _deserialize_state(payload: dict[str, object]) -> GraphState:
+        # Projects saved before the library split embed source PDF text in the
+        # presentation. Preserve it once so migration can safely normalize it.
+        presentation = payload.get("presentation")
+        if isinstance(presentation, dict) and not payload.get("resource_library"):
+            resources = presentation.get("resources")
+            if isinstance(resources, list):
+                payload["resource_library"] = resources
         raw_messages = payload.get("messages", [])
         if isinstance(raw_messages, list):
             try:
@@ -380,6 +459,16 @@ class UserSessionRepository:
         )
 
     @staticmethod
+    def _recover_interrupted_jobs(connection: sqlite3.Connection) -> None:
+        """Do not leave browser polling stuck after a local server restart."""
+        connection.execute(
+            """UPDATE project_jobs SET status = 'failed', stage = 'interrupted',
+               error_message = 'The local server restarted before this job completed.',
+               updated_at = CURRENT_TIMESTAMP
+               WHERE status IN ('queued', 'running')"""
+        )
+
+    @staticmethod
     def _hash_password(password: str, salt: bytes) -> bytes:
         return hashlib.scrypt(password.encode("utf-8"), salt=salt, n=16_384, r=8, p=1)
 
@@ -392,4 +481,49 @@ class UserSessionRepository:
         return base64.b64decode(value.encode("ascii"))
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.database_path)
+        connection = sqlite3.connect(self.database_path, timeout=10)
+        connection.execute("PRAGMA busy_timeout = 10000")
+        return connection
+
+    def _save_project_row(
+        self,
+        connection: sqlite3.Connection,
+        user_id: str,
+        project_id: str,
+        thread_id: str,
+        state: GraphState,
+        project_name: str | None,
+    ) -> None:
+        payload = json.dumps(self._serialize_state(state))
+        connection.execute(
+            """INSERT INTO project_sessions (user_id, project_id, project_name, thread_id, state_json, updated_at)
+               VALUES (?, ?, COALESCE(NULLIF(?, ''), ?), ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(user_id, project_id) DO UPDATE SET
+               project_name = CASE
+                   WHEN ? = '' THEN project_sessions.project_name
+                   ELSE excluded.project_name
+               END,
+               thread_id = excluded.thread_id,
+               state_json = excluded.state_json,
+               updated_at = CURRENT_TIMESTAMP""",
+            (user_id, project_id, project_name or "", project_id, thread_id, payload, project_name or ""),
+        )
+
+    @staticmethod
+    def _insert_event(
+        connection: sqlite3.Connection,
+        user_id: str,
+        project_id: str,
+        event_type: str,
+        actor: str,
+        payload: dict[str, object] | None,
+    ) -> None:
+        connection.execute(
+            """INSERT INTO project_events
+               (event_id, user_id, project_id, event_type, actor, payload_json)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                str(uuid4()), user_id, project_id, event_type, actor,
+                json.dumps(payload or {}, default=str),
+            ),
+        )

@@ -11,6 +11,7 @@ from app.core.config import get_settings
 from app.core.versioning import HARNESS_VERSION, PROMPT_VERSION, RETRIEVAL_VERSION, WORKFLOW_VERSION
 from app.application.services.production_evidence_gate import ProductionEvidenceGate
 from app.domain.exceptions.workflow_error import WorkflowError
+from app.domain.models.resource import Resource
 
 
 class BuildBlueprintUseCase:
@@ -27,6 +28,7 @@ class BuildBlueprintUseCase:
     def execute(
         self,
         presentation: Presentation,
+        resources: list[Resource] | None = None,
     ) -> Presentation:
         """
         Generate the blueprint for a presentation.
@@ -44,12 +46,14 @@ class BuildBlueprintUseCase:
         evidence_error = ProductionEvidenceGate.generation_error(
             presentation,
             f"{presentation.context.topic} {presentation.context.objective}",
+            resources,
         )
         if evidence_error:
             raise WorkflowError("INSUFFICIENT_EVIDENCE", evidence_error)
 
         blueprint_schema = self.chain.invoke(
             presentation,
+            resources,
         )
 
         presentation.blueprint = self.mapper.to_domain(

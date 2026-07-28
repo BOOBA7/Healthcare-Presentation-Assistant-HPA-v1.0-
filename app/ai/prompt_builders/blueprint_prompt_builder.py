@@ -1,6 +1,7 @@
 from app.ai.harness.healthcare_harness import HEALTHCARE_HARNESS
 from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuilder
 from app.domain.models.presentation import Presentation
+from app.domain.models.resource import Resource
 
 
 class BlueprintPromptBuilder:
@@ -9,14 +10,14 @@ class BlueprintPromptBuilder:
     the presentation blueprint.
     """
 
-    def build(self, presentation: Presentation) -> str:
+    def build(self, presentation: Presentation, resources: list[Resource] | None = None) -> str:
         """
         Build the complete prompt for blueprint generation.
         """
 
         context = presentation.context
 
-        resources = EvidenceContextBuilder().for_presentation(presentation)
+        evidence_context = EvidenceContextBuilder().for_presentation(presentation, resources)
         review_comments = "\n".join(
             f"- Slide {item.slide_number}: {item.reviewer_comments}"
             for item in (presentation.blueprint.slides if presentation.blueprint else [])
@@ -68,7 +69,7 @@ examples, and teaching style to the professional role.
 VALIDATED RESOURCES
 ========================
 
-{resources}
+{evidence_context}
 
 REVIEWER REVISION REQUESTS:
 {review_comments}

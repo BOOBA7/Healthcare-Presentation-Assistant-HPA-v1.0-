@@ -5,6 +5,7 @@ from app.ai.prompts.loop_engineering import LOOP_ENGINEERING
 from app.ai.prompts.system_prompt import SYSTEM_PROMPT
 from app.application.use_cases.create_presentation import CreatePresentationUseCase
 from app.application.services.production_evidence_gate import ProductionEvidenceGate
+from app.ai.agents.healthcare_presentation_agent import HealthcarePresentationAgent
 from app.ai.workflows.graph_state import GraphState
 from app.domain.enums.audience_type import AudienceType
 from app.domain.enums.language import Language
@@ -13,6 +14,7 @@ from app.domain.enums.resource_type import ResourceType
 from app.domain.models.resource import Resource
 from app.domain.models.user_profile import UserProfile
 from app.domain.value_objects.presentation_context import PresentationContext
+from app.domain.enums.conversation_mode import ConversationMode
 
 
 def _presentation():
@@ -83,3 +85,25 @@ def test_production_evidence_gate_allows_a_question_supported_by_validated_pdf()
         state,
         "Que réduit l'antimicrobial stewardship ?",
     ) is None
+
+
+def test_general_mode_refuses_scientific_chat_without_user_pdf():
+    state = GraphState(conversation_mode=ConversationMode.GENERAL)
+
+    answer = ProductionEvidenceGate().block_reason(state, "What is the treatment for depression?")
+
+    assert answer is not None
+    assert "PDF" in answer
+
+
+def test_production_chat_receives_the_same_retrieved_pdf_context():
+    presentation = _presentation()
+    presentation.state.resources_validated = True
+    state = GraphState(presentation=presentation, user_profile=presentation.owner_profile)
+
+    context = HealthcarePresentationAgent._conversation_retrieval_context(
+        state, "What does antimicrobial stewardship reduce?"
+    )
+
+    assert context is not None
+    assert "BEGIN UNTRUSTED SOURCE EXCERPT" in context

@@ -1,6 +1,6 @@
 from app.ai.workflows.graph_state import GraphState
 from app.ai.workflows.tools import collect_context, create_presentation, validate_context
-from app.application.services.resource_library import ensure_resource_library
+from app.application.services.resource_library import ensure_resource_library, resolve_presentation_resources
 from app.application.use_cases.manage_project_resources import (
     AddProjectResourceUseCase,
     AttachResourceToPresentationUseCase,
@@ -52,6 +52,9 @@ def test_explicit_attachment_and_detachment_reset_only_production_state():
     AttachResourceToPresentationUseCase().execute(state, "pdf-1")
 
     assert [resource.id for resource in state.presentation.resources] == ["pdf-1"]
+    assert state.presentation.resources[0].extracted_text is None
+    assert state.presentation.resources[0].extracted_pages == []
+    assert resolve_presentation_resources(state)[0].extracted_pages == [{"page": 1, "text": "Evidence text."}]
     assert state.presentation.state.workflow_status == WorkflowStatus.AWAITING_RESOURCE_VALIDATION
     DetachResourceFromPresentationUseCase().execute(state, "pdf-1")
     assert not state.presentation.resources
@@ -64,4 +67,5 @@ def test_legacy_presentation_resources_are_migrated_to_library_once():
 
     assert ensure_resource_library(state) is True
     assert [resource.id for resource in state.resource_library] == ["pdf-1"]
+    assert state.presentation.resources[0].extracted_pages == []
     assert ensure_resource_library(state) is False

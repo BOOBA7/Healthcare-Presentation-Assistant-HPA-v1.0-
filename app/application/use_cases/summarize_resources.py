@@ -5,21 +5,19 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from app.ai.llm.llm import get_llm
 from app.domain.models.resource_analysis import ResourceAnalysis
 from app.domain.models.resource import Resource
+from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuilder
+from app.application.services.observability import observe_llm_call
 
 
 class SummarizeResourcesUseCase:
     """Create a discussion starter without creating clinical slide content."""
 
-    max_characters = 18_000
-    max_characters_per_resource = 6_000
-
     def execute(self, resources: list[Resource], language: str = "en") -> ResourceAnalysis:
         if not resources:
             raise ValueError("Upload at least one PDF before requesting a resource overview.")
 
-        context = self.build_context(resources)
-        response = get_llm().invoke(
-            [
+        context = EvidenceContextBuilder().for_overview(resources)
+        prompt = [
                 SystemMessage(
                     content=(
                         "You summarize only the PDF passages supplied in the user message. "
@@ -32,7 +30,7 @@ class SummarizeResourcesUseCase:
                 ),
                 HumanMessage(content=f"USER-UPLOADED PDF PASSAGES:\n{context}"),
             ]
-        )
+        response = observe_llm_call("resource_overview", prompt, lambda: get_llm().invoke(prompt))
         summary = self._message_text(response).strip()
         if not summary:
             raise ValueError("The model returned an empty resource overview. Please retry.")
@@ -43,31 +41,10 @@ class SummarizeResourcesUseCase:
         return analysis
 
     def build_context(self, resources: list[Resource]) -> str:
-        blocks: list[str] = []
-        remaining = self.max_characters
-        for resource in resources:
-            if remaining <= 0:
-                break
-            parts: list[str] = []
-            used = 0
-            for page in resource.extracted_pages:
-                page_number = page.get("page")
-                text = str(page.get("text") or "").strip()
-                if not text:
-                    continue
-                budget = min(self.max_characters_per_resource - used, remaining - used)
-                if budget <= 0:
-                    break
-                excerpt = text[:budget]
-                parts.append(f"[resource_id={resource.id}; page={page_number}]\n{excerpt}")
-                used += len(excerpt)
-            if parts:
-                block = f"RESOURCE: {resource.filename} (ID: {resource.id})\n" + "\n".join(parts)
-                blocks.append(block)
-                remaining -= len(block)
-        if not blocks:
+        context = EvidenceContextBuilder().for_overview(resources)
+        if context.startswith("No relevant"):
             raise ValueError("No readable text is available in the uploaded PDFs.")
-        return "\n\n---\n\n".join(blocks)[: self.max_characters]
+        return context
 
     @staticmethod
     def _message_text(response: object) -> str:

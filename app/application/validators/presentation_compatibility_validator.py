@@ -2,6 +2,7 @@
 
 from app.domain.enums.audience_type import AudienceType
 from app.domain.models.presentation import Presentation
+from app.domain.models.resource import Resource
 
 
 class PresentationCompatibilityValidator:
@@ -18,7 +19,9 @@ class PresentationCompatibilityValidator:
         AudienceType.MIXED_AUDIENCE,
     }
 
-    def clarification_message(self, presentation: Presentation) -> str | None:
+    def clarification_message(
+        self, presentation: Presentation, resources: list[Resource] | None = None
+    ) -> str | None:
         """Return the one clarification required before scientific production."""
         if presentation.professional_scope and presentation.professional_scope.strip():
             return None
@@ -34,7 +37,7 @@ class PresentationCompatibilityValidator:
             )
         if (
             presentation.context.audience in self.human_clinical_audiences
-            and self._has_veterinary_resource_signal(presentation)
+            and self._has_veterinary_resource_signal(resources if resources is not None else presentation.resources)
         ):
             return (
                 "At least one validated resource appears to concern veterinary or animal health, while "
@@ -44,9 +47,9 @@ class PresentationCompatibilityValidator:
         return None
 
     @staticmethod
-    def _has_veterinary_resource_signal(presentation: Presentation) -> bool:
+    def _has_veterinary_resource_signal(resources: list[Resource]) -> bool:
         signals = ("veterinary", "veterinarian", "canine", "feline", "equine", "animal health")
-        for resource in presentation.resources:
+        for resource in resources:
             if not resource.is_validated:
                 continue
             metadata = " ".join(filter(None, [resource.filename, resource.title, resource.source])).casefold()

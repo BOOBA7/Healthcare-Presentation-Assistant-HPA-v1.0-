@@ -10,6 +10,7 @@ from pptx.util import Inches, Pt
 from app.application.validators.evidence_provenance_validator import EvidenceProvenanceValidator
 from app.domain.enums.presentation_theme import PresentationTheme
 from app.domain.models.presentation import Presentation
+from app.domain.models.resource import Resource
 
 
 THEMES: dict[PresentationTheme, dict[str, tuple[int, int, int]]] = {
@@ -23,18 +24,25 @@ THEMES: dict[PresentationTheme, dict[str, tuple[int, int, int]]] = {
 class ExportPowerPointUseCase:
     """Export a human-approved presentation in a professional visual theme."""
 
-    def execute(self, presentation: Presentation, output_dir: Path, custom_template_path: Path | None = None) -> Path:
+    def execute(
+        self,
+        presentation: Presentation,
+        output_dir: Path,
+        custom_template_path: Path | None = None,
+        resources: list[Resource] | None = None,
+    ) -> Path:
+        resources = resources if resources is not None else presentation.resources
         if not presentation.slides:
             raise ValueError("Generate presentation slides before exporting PowerPoint.")
         if not presentation.state.presentation_validated:
             raise ValueError("Human approval of the final presentation is required before export.")
-        if not presentation.resources or not presentation.state.resources_validated:
+        if not resources or not presentation.state.resources_validated:
             raise ValueError("Validated user resources are required before exporting PowerPoint.")
-        if not all(resource.is_validated for resource in presentation.resources):
+        if not all(resource.is_validated for resource in resources):
             raise ValueError("Every resource must be validated by the user before export.")
         if presentation.agenda is None or not presentation.agenda.is_validated:
             raise ValueError("A user-approved agenda is required before exporting PowerPoint.")
-        EvidenceProvenanceValidator().validate_presentation(presentation.slides, presentation.resources)
+        EvidenceProvenanceValidator().validate_presentation(presentation.slides, resources)
 
         output_dir.mkdir(parents=True, exist_ok=True)
         deck = PowerPoint(custom_template_path) if custom_template_path else PowerPoint()
@@ -48,7 +56,7 @@ class ExportPowerPointUseCase:
         self._add_agenda_slide(deck, presentation, palette)
         for slide in presentation.slides:
             self._add_content_slide(deck, slide, palette)
-        self._add_resources_slide(deck, presentation, palette)
+        self._add_resources_slide(deck, presentation, resources, palette)
 
         path = output_dir / f"{presentation.id}-{uuid4().hex[:8]}.pptx"
         deck.save(path)
@@ -171,7 +179,13 @@ class ExportPowerPointUseCase:
             return "User-edited · Human-approved"
         return "AI-generated · Human-approved"
 
-    def _add_resources_slide(self, deck: PowerPoint, presentation: Presentation, palette: dict[str, tuple[int, int, int]]) -> None:
+    def _add_resources_slide(
+        self,
+        deck: PowerPoint,
+        presentation: Presentation,
+        resources: list[Resource],
+        palette: dict[str, tuple[int, int, int]],
+    ) -> None:
         slide = deck.slides.add_slide(self._blank_layout(deck))
         self._background(slide, palette["paper"])
         title = self._label(presentation, "Resources and validation", "Ressources et validation", "المصادر والاعتماد")
@@ -188,7 +202,7 @@ class ExportPowerPointUseCase:
             f"{origins['user_edited']} user-edited, {origins['user_authored']} user-authored."
         )
         self._textbox(slide, provenance, 0.85, 1.9, 11.5, 0.48, size=10, color=palette["ink"])
-        for index, resource in enumerate(presentation.resources):
+        for index, resource in enumerate(resources):
             details = [resource.title or resource.filename]
             if resource.source:
                 details.append(resource.source)

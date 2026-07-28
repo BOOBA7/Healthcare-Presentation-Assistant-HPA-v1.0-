@@ -16,6 +16,8 @@ from app.domain.exceptions.workflow_error import WorkflowError
 from app.application.services.workflow_policy import WorkflowPolicy
 from app.application.services.production_evidence_gate import ProductionEvidenceGate
 from app.application.validators.presentation_compatibility_validator import PresentationCompatibilityValidator
+from app.application.services.resource_library import resolve_presentation_resources
+from app.domain.enums.conversation_mode import ConversationMode
 
 
 class CollectPresentationContextUseCase:
@@ -48,14 +50,15 @@ class CreatePresentationWorkflowUseCase:
             state.presentation_context,
             state.user_profile,
         )
-        return state.model_copy(update={"presentation": presentation})
+        return state.model_copy(update={"presentation": presentation, "conversation_mode": ConversationMode.PRODUCTION})
 
 
 class ValidateResourcesWorkflowUseCase:
     def execute(self, state: GraphState) -> GraphState:
         if state.presentation is None:
             raise WorkflowError("PRESENTATION_NOT_CREATED", "Create the presentation before validating resources.")
-        presentation = ValidateResourcesUseCase().execute(state.presentation)
+        resources = resolve_presentation_resources(state)
+        presentation = ValidateResourcesUseCase().execute(state.presentation, resources)
         return state.model_copy(update={"presentation": presentation})
 
 
@@ -70,11 +73,12 @@ class BuildBlueprintWorkflowUseCase:
             (WorkflowStatus.BLUEPRINT_GENERATION,),
             "generate the blueprint",
         )
-        clarification = PresentationCompatibilityValidator().clarification_message(state.presentation)
+        resources = resolve_presentation_resources(state)
+        clarification = PresentationCompatibilityValidator().clarification_message(state.presentation, resources)
         if clarification:
             state.presentation.state.workflow_status = WorkflowStatus.AWAITING_SCOPE_CLARIFICATION
             raise WorkflowError("PRESENTATION_SCOPE_CLARIFICATION_REQUIRED", clarification)
-        presentation = BuildBlueprintUseCase().execute(state.presentation)
+        presentation = BuildBlueprintUseCase().execute(state.presentation, resources)
         return state.model_copy(update={"presentation": presentation})
 
 
@@ -134,11 +138,12 @@ class GenerateSlidesWorkflowUseCase:
             (WorkflowStatus.SLIDE_GENERATION,),
             "generate slides",
         )
-        clarification = PresentationCompatibilityValidator().clarification_message(state.presentation)
+        resources = resolve_presentation_resources(state)
+        clarification = PresentationCompatibilityValidator().clarification_message(state.presentation, resources)
         if clarification:
             state.presentation.state.workflow_status = WorkflowStatus.AWAITING_SCOPE_CLARIFICATION
             raise WorkflowError("PRESENTATION_SCOPE_CLARIFICATION_REQUIRED", clarification)
-        presentation = GenerateSlidesUseCase().execute(state.presentation)
+        presentation = GenerateSlidesUseCase().execute(state.presentation, resources)
         return state.model_copy(update={"presentation": presentation})
 
 
@@ -368,11 +373,12 @@ class RegenerateBlueprintUseCase:
             (WorkflowStatus.AWAITING_AGENDA_APPROVAL, WorkflowStatus.AWAITING_BLUEPRINT_APPROVAL),
             "regenerate the blueprint",
         )
-        clarification = PresentationCompatibilityValidator().clarification_message(state.presentation)
+        resources = resolve_presentation_resources(state)
+        clarification = PresentationCompatibilityValidator().clarification_message(state.presentation, resources)
         if clarification:
             state.presentation.state.workflow_status = WorkflowStatus.AWAITING_SCOPE_CLARIFICATION
             raise WorkflowError("PRESENTATION_SCOPE_CLARIFICATION_REQUIRED", clarification)
-        presentation = BuildBlueprintUseCase().execute(state.presentation)
+        presentation = BuildBlueprintUseCase().execute(state.presentation, resources)
         presentation.state.blueprint_validated = False
         presentation.state.slides_validated = False
         presentation.state.presentation_validated = False
@@ -395,17 +401,19 @@ class RegenerateSlideUseCase:
         from app.application.validators.evidence_provenance_validator import EvidenceProvenanceValidator
 
         outline = state.presentation.blueprint.slides[index]
+        resources = resolve_presentation_resources(state)
         evidence_error = ProductionEvidenceGate.generation_error(
             state.presentation,
             f"{state.presentation.context.topic} {outline.title} {outline.objective} {outline.key_message}",
+            resources,
         )
         if evidence_error:
             raise WorkflowError("INSUFFICIENT_EVIDENCE", evidence_error)
 
         replacement = SlideMapper().to_domain(
-            SlideChain().invoke(state.presentation, outline)
+            SlideChain().invoke(state.presentation, outline, resources)
         )
-        EvidenceProvenanceValidator().validate_slide(replacement, state.presentation.resources)
+        EvidenceProvenanceValidator().validate_slide(replacement, resources)
         replacement.reviewer_comments = state.presentation.slides[index].reviewer_comments
         state.presentation.slides[index] = replacement
         state.presentation.state.slides_validated = False

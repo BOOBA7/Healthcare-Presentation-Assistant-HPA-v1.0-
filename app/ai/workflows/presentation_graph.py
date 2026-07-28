@@ -11,6 +11,7 @@ from app.ai.workflows.graph_state import GraphState
 from app.ai.prompt_builders.state_summary_builder import StateSummaryBuilder
 from app.domain.exceptions.workflow_error import WorkflowError
 from app.domain.models.execution_context import ExecutionContext
+from app.application.services.observability import observe_llm_call
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +51,11 @@ class PresentationGraph:
         self.builder.add_edge("tool", "agent")
 
     def _agent_node(self, state: GraphState) -> dict[str, list]:
-        response = self.agent.invoke(
-            {
-                "messages": state.messages,
-                "state_summary": self.state_summary_builder.build(state),
-            }
-        )
+        prompt_inputs = {
+            "messages": state.messages,
+            "state_summary": self.state_summary_builder.build(state),
+        }
+        response = observe_llm_call("agent_conversation", prompt_inputs, lambda: self.agent.invoke(prompt_inputs))
         return {"messages": [response]}
 
     def _tool_node(self, state: GraphState) -> dict[str, Any]:

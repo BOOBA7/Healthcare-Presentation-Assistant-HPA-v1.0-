@@ -39,7 +39,7 @@ from app.domain.models.user_profile import UserProfile
 from app.domain.enums.presentation_theme import PresentationTheme
 from app.domain.models.execution_context import ExecutionContext
 from app.application.services.conversation_history import add_turn, ensure_history, message_text as transcript_message_text
-from app.application.services.resource_library import ensure_resource_library
+from app.application.services.resource_library import ensure_resource_library, resolve_presentation_resources
 
 
 st.set_page_config(page_title="Healthcare Presentation Assistant", page_icon="🩺", layout="wide")
@@ -144,18 +144,24 @@ def load_project_state(user_id: str, project_id: str) -> GraphState:
         st.session_state.thread_id = thread_id
         st.session_state.state = state
         if ensure_resource_library(state):
-            get_repository().save(user_id, project_id, thread_id, state)
+            get_repository().save_with_event(
+                user_id, project_id, thread_id, state,
+                "PROJECT_STATE_MIGRATED", "system", {"reason": "resource_library_normalization"},
+            )
         st.session_state.pop("pptx_data", None)
         st.session_state.pop("pptx_name", None)
     return st.session_state.state
 
 
 def save_state() -> None:
-    get_repository().save(
+    get_repository().save_with_event(
         st.session_state.active_user_id,
         st.session_state.active_project_id,
         st.session_state.thread_id,
         st.session_state.state,
+        "PROJECT_STATE_SAVED",
+        "user",
+        {},
     )
 
 
@@ -528,7 +534,11 @@ with st.sidebar:
         if st.button("Préparer le PowerPoint", disabled=not state.presentation.state.presentation_validated):
             try:
                 with TemporaryDirectory() as directory:
-                    path = ExportPowerPointUseCase().execute(state.presentation, Path(directory))
+                    path = ExportPowerPointUseCase().execute(
+                        state.presentation,
+                        Path(directory),
+                        resources=resolve_presentation_resources(state),
+                    )
                     st.session_state.pptx_data = path.read_bytes()
                     st.session_state.pptx_name = f"{state.presentation.title}.pptx"
             except ValueError as exc:

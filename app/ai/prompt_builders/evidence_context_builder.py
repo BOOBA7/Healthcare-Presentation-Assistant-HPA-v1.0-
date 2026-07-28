@@ -8,7 +8,9 @@ from math import log
 import re
 
 from app.domain.models.presentation import Presentation
+from app.domain.models.resource import Resource
 from app.domain.models.slide_outline import SlideOutline
+from app.application.services.observability import record
 
 
 @dataclass(frozen=True)
@@ -41,25 +43,35 @@ class EvidenceContextBuilder:
     bm25_k1 = 1.2
     bm25_b = 0.75
 
-    def for_presentation(self, presentation: Presentation) -> str:
+    def for_presentation(self, presentation: Presentation, resources: list[Resource] | None = None) -> str:
         query = " ".join(
             [presentation.context.topic, presentation.context.objective, presentation.context.audience.value]
         )
-        return self._select(presentation, query)
+        return self._select(resources or presentation.resources, query)
 
-    def for_slide(self, presentation: Presentation, outline: SlideOutline) -> str:
+    def for_slide(
+        self,
+        presentation: Presentation,
+        outline: SlideOutline,
+        resources: list[Resource] | None = None,
+    ) -> str:
         query = " ".join(
             [presentation.context.topic, outline.title, outline.objective, outline.key_message]
         )
-        return self._select(presentation, query)
+        return self._select(resources or presentation.resources, query)
 
-    def assess(self, presentation: Presentation, query: str) -> EvidenceAssessment:
+    def assess(
+        self,
+        presentation: Presentation,
+        query: str,
+        resources: list[Resource] | None = None,
+    ) -> EvidenceAssessment:
         """Return whether local, validated evidence sufficiently covers a query.
 
         This is deliberately deterministic: a model cannot turn missing evidence
         into a supported answer by sounding confident.
         """
-        chunks = self._chunks_for_presentation(presentation)
+        chunks = self._chunks_for_resources(resources or presentation.resources)
         query_terms = tuple(dict.fromkeys(self._terms(query)))
         if not chunks:
             return EvidenceAssessment(False, False, 0.0, ())
@@ -77,8 +89,41 @@ class EvidenceContextBuilder:
             matched_terms=matched_terms,
         )
 
-    def _select(self, presentation: Presentation, query: str) -> str:
-        chunks = self._chunks_for_presentation(presentation)
+    def for_resources(self, resources: list[Resource], query: str) -> str:
+        """Retrieve bounded, cited passages for Project-library exploration."""
+        return self._select(resources, query)
+
+    def for_overview(self, resources: list[Resource]) -> str:
+        """Build a balanced bounded context for a resource-library overview."""
+        chunks = self._chunks_for_resources(resources)
+        selected: list[str] = []
+        selected_chunks: list[EvidenceChunk] = []
+        total = 0
+        # One first chunk and one middle chunk per resource avoids the old
+        # first-page-only bias while keeping the prompt bounded.
+        by_resource: dict[str, list[EvidenceChunk]] = {}
+        for chunk in chunks:
+            by_resource.setdefault(chunk.resource_id, []).append(chunk)
+        for resource_id in sorted(by_resource):
+            candidates = by_resource[resource_id]
+            for chunk in (candidates[0], candidates[len(candidates) // 2]):
+                entry = self._format_chunk(chunk)
+                if entry not in selected and total + len(entry) <= self.max_characters:
+                    selected.append(entry)
+                    selected_chunks.append(chunk)
+                    total += len(entry)
+        context = "\n\n".join(selected) or "No relevant validated PDF passages are available."
+        record(
+            "bm25_retrieval",
+            purpose="overview",
+            selected_passages=len(selected_chunks),
+            resource_ids=sorted(by_resource),
+            context_characters=len(context),
+        )
+        return context
+
+    def _select(self, resources: list[Resource], query: str) -> str:
+        chunks = self._chunks_for_resources(resources)
         query_terms = self._terms(query)
         if not chunks or not query_terms:
             return "No relevant validated PDF passages are available."
@@ -90,6 +135,7 @@ class EvidenceContextBuilder:
         )
 
         selected: list[str] = []
+        selected_chunks: list[EvidenceChunk] = []
         selected_per_resource: Counter[str] = Counter()
         total_characters = 0
         for score, chunk in ranked:
@@ -99,16 +145,26 @@ class EvidenceContextBuilder:
             if total_characters + len(entry) > self.max_characters:
                 continue
             selected.append(entry)
+            selected_chunks.append(chunk)
             selected_per_resource[chunk.resource_id] += 1
             total_characters += len(entry)
             if len(selected) >= self.max_chunks:
                 break
 
-        return "\n\n".join(selected) or "No relevant validated PDF passages are available."
+        context = "\n\n".join(selected) or "No relevant validated PDF passages are available."
+        record(
+            "bm25_retrieval",
+            purpose="query",
+            query_terms=len(set(query_terms)),
+            selected_passages=len(selected_chunks),
+            selected_locations=[f"{chunk.resource_id}:p{chunk.page}" for chunk in selected_chunks],
+            context_characters=len(context),
+        )
+        return context
 
-    def _chunks_for_presentation(self, presentation: Presentation) -> list[EvidenceChunk]:
+    def _chunks_for_resources(self, resources: list[Resource]) -> list[EvidenceChunk]:
         chunks: list[EvidenceChunk] = []
-        for resource in presentation.resources:
+        for resource in resources:
             if not resource.is_validated:
                 continue
             for page in resource.extracted_pages:

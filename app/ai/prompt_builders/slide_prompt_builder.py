@@ -2,6 +2,7 @@ from app.ai.harness.healthcare_harness import HEALTHCARE_HARNESS
 from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuilder
 from app.domain.models.presentation import Presentation
 from app.domain.models.slide_outline import SlideOutline
+from app.domain.models.resource import Resource
 
 
 class SlidePromptBuilder:
@@ -14,6 +15,7 @@ class SlidePromptBuilder:
         self,
         presentation: Presentation,
         outline: SlideOutline,
+        resources: list[Resource] | None = None,
     ) -> str:
         """
         Build the complete prompt for slide generation.
@@ -21,7 +23,7 @@ class SlidePromptBuilder:
 
         context = presentation.context
 
-        resources = EvidenceContextBuilder().for_slide(presentation, outline)
+        evidence_context = EvidenceContextBuilder().for_slide(presentation, outline, resources)
 
         blueprint = presentation.blueprint
 
@@ -81,7 +83,7 @@ Estimated Slides:
 VALIDATED RESOURCES
 ========================
 
-{resources}
+{evidence_context}
 
 ========================
 CURRENT SLIDE

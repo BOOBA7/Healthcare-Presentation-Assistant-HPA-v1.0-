@@ -5,6 +5,8 @@ from app.ai.prompt_builders.slide_prompt_builder import (
 from app.ai.schemas.slide_schema import SlideSchema
 from app.domain.models.presentation import Presentation
 from app.domain.models.slide_outline import SlideOutline
+from app.domain.models.resource import Resource
+from app.application.services.observability import observe_llm_call
 
 
 class SlideChain:
@@ -21,6 +23,7 @@ class SlideChain:
         self,
         presentation: Presentation,
         outline: SlideOutline,
+        resources: list[Resource] | None = None,
     ) -> SlideSchema:
         """
         Generate a single slide from the blueprint.
@@ -29,12 +32,13 @@ class SlideChain:
         prompt = self.prompt_builder.build(
             presentation=presentation,
             outline=outline,
+            resources=resources,
         )
 
         structured_llm = self.llm.with_structured_output(
             SlideSchema,
         )
 
-        result = structured_llm.invoke(prompt)
+        result = observe_llm_call("slide_generation", prompt, lambda: structured_llm.invoke(prompt))
 
         return result

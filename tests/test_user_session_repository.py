@@ -121,9 +121,43 @@ def test_project_audit_events_are_scoped_and_removed_with_the_project(tmp_path):
 
     events = repository.list_events("user-1", "project-a")
 
-    assert len(events) == 1
-    assert events[0]["event_type"] == "RESOURCE_UPLOADED"
+    assert [event["event_type"] for event in events] == ["RESOURCE_UPLOADED", "PROJECT_CREATED"]
     assert events[0]["payload"]["resource_id"] == "pdf-1"
 
     assert repository.delete_project("user-1", "project-a")
     assert repository.list_events("user-1", "project-a") == []
+
+
+def test_state_and_audit_event_are_written_together(tmp_path):
+    repository = UserSessionRepository(tmp_path / "sessions.sqlite3")
+    state = GraphState()
+    state.conversation_context.topic = "One transaction"
+
+    repository.save_with_event(
+        "user-1", "project-a", "thread-1", state,
+        "PROJECT_STATE_SAVED", "system", {"reason": "test"}, "Atomic project",
+    )
+
+    _, restored = repository.load("user-1", "project-a")
+    events = repository.list_events("user-1", "project-a")
+    assert restored.conversation_context.topic == "One transaction"
+    assert [(event["event_type"], event["payload"]["reason"]) for event in events] == [
+        ("PROJECT_STATE_SAVED", "test")
+    ]
+
+
+def test_job_progress_is_durable_and_scoped_to_the_user(tmp_path):
+    repository = UserSessionRepository(tmp_path / "sessions.sqlite3")
+    repository.create_empty("user-1", "project-a")
+    job = repository.create_job("user-1", "project-a", "resources")
+
+    repository.update_job(
+        "user-1", job["job_id"], status="running", progress=65, stage="generating_overview"
+    )
+
+    restored = repository.get_job("user-1", job["job_id"])
+    assert restored is not None
+    assert restored["status"] == "running"
+    assert restored["progress"] == 65
+    assert restored["stage"] == "generating_overview"
+    assert repository.get_job("another-user", job["job_id"]) is None

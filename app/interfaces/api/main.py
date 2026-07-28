@@ -25,10 +25,12 @@ from app.application.use_cases.manage_project_resources import (
 )
 from app.application.services.workflow_policy import WorkflowPolicy
 from app.application.services.conversation_history import add_turn, ensure_history
-from app.application.services.resource_library import ensure_resource_library
+from app.application.services.resource_library import ensure_resource_library, resolve_presentation_resources
 from app.core.config import get_settings
 from app.core.versioning import HARNESS_VERSION, RETRIEVAL_VERSION, WORKFLOW_VERSION
 from app.interfaces.storage.user_session_repository import UserSessionRepository
+from app.interfaces.api.job_runner import submit as submit_job
+from app.application.services.observability import snapshot as observability_snapshot, record as record_observability
 from app.domain.models.user_profile import UserProfile
 from app.domain.enums.presentation_theme import PresentationTheme
 from app.domain.enums.workflow_status import WorkflowStatus
@@ -149,7 +151,7 @@ def _project_response(user_id: str, project_id: str, thread_id: str, state: Grap
         "project_id": project_id,
         "thread_id": thread_id,
         "presentation": presentation,
-        "resource_library": [resource.model_dump(mode="json") for resource in state.resource_library],
+        "resource_library": [_resource_response(resource) for resource in state.resource_library],
         "resource_analysis": state.resource_analysis.model_dump(mode="json") if state.resource_analysis else None,
         "messages": messages,
         "conversation_context": state.conversation_context.model_dump(mode="json"),
@@ -160,6 +162,22 @@ def _project_response(user_id: str, project_id: str, thread_id: str, state: Grap
         ),
         "error": state.execution.error,
         "required_human_action": _required_human_action(state),
+    }
+
+
+def _resource_response(resource) -> dict[str, object]:
+    """Expose resource metadata only; extracted PDF text never leaves the API."""
+    return {
+        "id": resource.id,
+        "filename": resource.filename,
+        "title": resource.title,
+        "source": resource.source,
+        "language": resource.language.value if hasattr(resource.language, "value") else resource.language,
+        "file_type": resource.file_type,
+        "uploaded_at": resource.uploaded_at.isoformat(),
+        "is_validated": resource.is_validated,
+        "page_count": len(resource.extracted_pages),
+        "characters_extracted": len(resource.extracted_text or ""),
     }
 
 
@@ -243,8 +261,15 @@ def _save_project(
     repository = get_repository()
     ensure_history(state)
     ensure_resource_library(state)
-    repository.save(user_id, project_id, thread_id, state)
-    repository.record_event(user_id, project_id, event_type, actor, _audit_payload(state, extra_audit))
+    repository.save_with_event(
+        user_id,
+        project_id,
+        thread_id,
+        state,
+        event_type,
+        actor,
+        _audit_payload(state, extra_audit),
+    )
     return _project_response(user_id, project_id, thread_id, state)
 
 
@@ -273,6 +298,18 @@ def health():
     return {
         "status": "healthy",
     }
+
+
+@app.get("/api/v1/health", tags=["platform"])
+def api_health():
+    """Versioned platform health endpoint for clients and CI smoke tests."""
+    return {"status": "healthy", "api_version": "v1"}
+
+
+@app.get("/api/v1/observability/summary", tags=["observability"])
+def observability_summary():
+    """Return process-local operational counters without source or prompt content."""
+    return {"counters": observability_snapshot()}
 
 
 @app.post("/auth/register")
@@ -386,23 +423,18 @@ def create_or_open_project(request: ProjectRequest, authenticated_user: str = De
     stored = get_repository().load(request.user_id, request.project_id)
     if stored is None:
         thread_id, state = get_repository().create_empty(request.user_id, request.project_id, request.project_name)
-        get_repository().record_event(
-            request.user_id,
-            request.project_id,
-            "PROJECT_CREATED",
-            "user",
-            _audit_payload(state, {"project_name": request.project_name or request.project_id}),
-        )
     else:
         thread_id, state = stored
     if stored is not None and request.project_name:
-        get_repository().save(request.user_id, request.project_id, thread_id, state, request.project_name)
-        get_repository().record_event(
+        get_repository().save_with_event(
             request.user_id,
             request.project_id,
+            thread_id,
+            state,
             "PROJECT_RENAMED",
             "user",
             _audit_payload(state, {"project_name": request.project_name}),
+            request.project_name,
         )
     return _project_response(request.user_id, request.project_id, thread_id, state)
 
@@ -907,7 +939,12 @@ def export_powerpoint(user_id: str, project_id: str, authenticated_user: str = D
             if state.presentation.custom_template_id
             else None
         )
-        path = ExportPowerPointUseCase().execute(state.presentation, _exports_dir, custom_template)
+        path = ExportPowerPointUseCase().execute(
+            state.presentation,
+            _exports_dir,
+            custom_template,
+            resolve_presentation_resources(state),
+        )
     except ValueError as exc:
         raise _workflow_conflict(exc) from exc
     state.presentation.state.workflow_status = WorkflowStatus.EXPORTED
@@ -921,6 +958,83 @@ def export_powerpoint(user_id: str, project_id: str, authenticated_user: str = D
         extra_audit={"filename": path.name},
     )
     return FileResponse(path, media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation", filename=f"{state.presentation.title}.pptx")
+
+
+@app.post("/api/v1/conversations/jobs", tags=["conversations"], status_code=202)
+def start_conversation_job(request: ChatRequest, authenticated_user: str = Depends(_authenticated_user)):
+    """Run an agent turn asynchronously; poll the returned job for progress."""
+    _assert_owner(request.user_id, authenticated_user)
+    if get_repository().load(request.user_id, request.project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    job = get_repository().create_job(request.user_id, request.project_id, "conversation")
+
+    def work(progress):
+        progress(25, "preparing_conversation")
+        progress(55, "calling_model")
+        result = chat(request, authenticated_user)
+        progress(90, "persisting_project")
+        return {"message": result.get("message", ""), "project_id": request.project_id}
+
+    submit_job(get_repository(), request.user_id, str(job["job_id"]), "conversation", work)
+    record_observability("async_job_queued", domain="conversation")
+    return job
+
+
+@app.post("/api/v1/resources/{user_id}/{project_id}/overview/jobs", tags=["resources"], status_code=202)
+def start_resource_overview_job(
+    user_id: str, project_id: str, authenticated_user: str = Depends(_authenticated_user)
+):
+    """Generate a resource overview asynchronously from the shared RAG layer."""
+    _assert_owner(user_id, authenticated_user)
+    if get_repository().load(user_id, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    job = get_repository().create_job(user_id, project_id, "resources")
+
+    def work(progress):
+        progress(30, "retrieving_pdf_passages")
+        progress(65, "generating_overview")
+        result = summarize_resources(user_id, project_id, authenticated_user)
+        progress(90, "persisting_project")
+        return {"project_id": project_id, "resource_analysis": result.get("resource_analysis")}
+
+    submit_job(get_repository(), user_id, str(job["job_id"]), "resources", work)
+    record_observability("async_job_queued", domain="resources")
+    return job
+
+
+@app.post("/api/v1/resources/{user_id}/{project_id}/discussion/jobs", tags=["resources"], status_code=202)
+def start_resource_discussion_job(
+    user_id: str,
+    project_id: str,
+    request: ResourceDiscussionRequest,
+    authenticated_user: str = Depends(_authenticated_user),
+):
+    """Discuss project PDFs asynchronously without entering production mode."""
+    _assert_owner(user_id, authenticated_user)
+    if get_repository().load(user_id, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    job = get_repository().create_job(user_id, project_id, "resources")
+
+    def work(progress):
+        progress(30, "retrieving_pdf_passages")
+        progress(65, "generating_discussion")
+        result = discuss_resources(user_id, project_id, request, authenticated_user)
+        progress(90, "persisting_project")
+        return {"project_id": project_id, "messages": result.get("messages", [])[-1:]}
+
+    submit_job(get_repository(), user_id, str(job["job_id"]), "resources", work)
+    record_observability("async_job_queued", domain="resources")
+    return job
+
+
+@app.get("/api/v1/jobs/{user_id}/{job_id}", tags=["jobs"])
+def get_async_job(user_id: str, job_id: str, authenticated_user: str = Depends(_authenticated_user)):
+    """Poll a durable job record. Terminal states are completed and failed."""
+    _assert_owner(user_id, authenticated_user)
+    job = get_repository().get_job(user_id, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    return job
 
 
 if __name__ == "__main__":

@@ -4,7 +4,9 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.ai.llm.llm import get_llm
 from app.application.use_cases.summarize_resources import SummarizeResourcesUseCase
+from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuilder
 from app.domain.models.resource import Resource
+from app.application.services.observability import observe_llm_call
 
 
 class DiscussResourcesUseCase:
@@ -12,8 +14,10 @@ class DiscussResourcesUseCase:
         question = question.strip()
         if not question:
             raise ValueError("Enter a question about the uploaded resources.")
-        context = SummarizeResourcesUseCase().build_context(resources)
-        response = get_llm().invoke([
+        context = EvidenceContextBuilder().for_resources(resources, question)
+        if context.startswith("No relevant"):
+            raise ValueError("The uploaded PDFs do not contain relevant readable passages for this question.")
+        prompt = [
             SystemMessage(content=(
                 "Answer only from the supplied user-uploaded PDF passages. Do not use external knowledge, "
                 "give clinical advice, invent facts, or invent citations. If the answer is absent, ambiguous, "
@@ -22,7 +26,8 @@ class DiscussResourcesUseCase:
                 f"Reply in {language}."
             )),
             HumanMessage(content=f"QUESTION: {question}\n\nUSER-UPLOADED PDF PASSAGES:\n{context}"),
-        ])
+        ]
+        response = observe_llm_call("resource_discussion", prompt, lambda: get_llm().invoke(prompt))
         answer = SummarizeResourcesUseCase._message_text(response).strip()
         if not answer:
             raise ValueError("The model returned an empty resource discussion response. Please retry.")

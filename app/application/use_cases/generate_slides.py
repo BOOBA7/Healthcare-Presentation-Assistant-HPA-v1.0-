@@ -9,6 +9,7 @@ from app.core.versioning import HARNESS_VERSION, PROMPT_VERSION, RETRIEVAL_VERSI
 from app.domain.models.presentation import Presentation
 from app.application.services.production_evidence_gate import ProductionEvidenceGate
 from app.domain.exceptions.workflow_error import WorkflowError
+from app.domain.models.resource import Resource
 
 from datetime import UTC, datetime
 
@@ -27,6 +28,7 @@ class GenerateSlidesUseCase:
     def execute(
         self,
         presentation: Presentation,
+        resources: list[Resource] | None = None,
     ) -> Presentation:
         """
         Generate all presentation slides.
@@ -41,16 +43,18 @@ class GenerateSlidesUseCase:
             evidence_error = ProductionEvidenceGate.generation_error(
                 presentation,
                 f"{presentation.context.topic} {outline.title} {outline.objective} {outline.key_message}",
+                resources,
             )
             if evidence_error:
                 raise WorkflowError("INSUFFICIENT_EVIDENCE", evidence_error)
             schema = self.chain.invoke(
                 presentation=presentation,
                 outline=outline,
+                resources=resources,
             )
 
             slide = self.mapper.to_domain(schema)
-            self.evidence_validator.validate_slide(slide, presentation.resources)
+            self.evidence_validator.validate_slide(slide, resources if resources is not None else presentation.resources)
 
             presentation.slides.append(slide)
 

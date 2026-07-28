@@ -3,13 +3,14 @@
 from app.domain.enums.workflow_status import WorkflowStatus
 from app.domain.models.presentation import Presentation
 from app.domain.models.resource import Resource
+from app.application.services.resource_library import resource_selection
 
 
 class AddResourceUseCase:
     """Add a PDF resource at any workflow stage without leaving stale output."""
 
     def execute(self, presentation: Presentation, resource: Resource) -> Presentation:
-        presentation.resources.append(resource)
+        presentation.resources.append(resource_selection(resource))
 
         # A new source changes the evidence set. Existing generated content is
         # retained nowhere as "current" until the full source set is reviewed.

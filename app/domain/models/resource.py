@@ -57,7 +57,7 @@ class Resource(BaseModel):
 
     is_validated: bool = Field(
         default=False,
-        description="Indicates whether the user validated this resource.",
+        description="Indicates whether the PDF was successfully parsed into usable text. Human production approval is held in PresentationState.",
     )
 
     uploaded_at: datetime = Field(

@@ -12,6 +12,7 @@ from app.domain.models.conversation_turn import ConversationTurn
 from app.domain.models.resource import Resource
 from app.domain.models.resource_analysis import ResourceAnalysis
 from app.domain.value_objects.presentation_context import PresentationContext
+from app.domain.enums.conversation_mode import ConversationMode
 
 
 class GraphState(BaseModel):
@@ -19,6 +20,7 @@ class GraphState(BaseModel):
 
     messages: Annotated[list[BaseMessage], add_messages] = Field(default_factory=list)
     conversation_history: list[ConversationTurn] = Field(default_factory=list)
+    conversation_mode: ConversationMode = ConversationMode.GENERAL
     # The project owns uploaded documents. A presentation only keeps an
     # explicit selection from this library for controlled production.
     resource_library: list[Resource] = Field(default_factory=list)
