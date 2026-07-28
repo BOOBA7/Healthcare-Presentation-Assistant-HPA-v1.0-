@@ -2,7 +2,7 @@
 
 ## Status
 
-**Accepted — updated 2026-07-26**
+**Accepted — updated 2026-07-28**
 
 This ADR supersedes the earlier agent-centric description. HPA retains one
 cognitive agent, but the LLM is no longer considered the workflow authority.
@@ -41,12 +41,35 @@ safe workflow errors, and returns tool outcomes to the model as `ToolMessage`s.
 
 | State | Responsibility | Authority |
 |---|---|---|
-| `GraphState` | Conversation, collected context, presentation reference | Agent orchestration |
+| `GraphState` | Agent messages, durable conversation transcript, collected context, Project resource library, resource overview and presentation reference | Agent orchestration |
 | `PresentationState` | Workflow status, validation flags, slide progress | Business lifecycle |
 | `ExecutionContext` | Last tool result, safe error code/message | Technical execution only |
 
 The presentation aggregate is the durable business object. An execution error
 must never be treated as a scientific or approval decision.
+
+### 2a. Expected domain failures use a typed hierarchy
+
+Expected business failures use a common, safe hierarchy:
+
+```text
+ValueError
+└── DomainError
+    ├── ValidationError
+    └── WorkflowError
+        └── InvalidTransition
+```
+
+`DomainError` preserves compatibility with existing `ValueError` handling while
+adding a stable code, user-facing message and retryability metadata.
+`InvalidTransition` is used by `WorkflowPolicy` when an action is not permitted
+in the current lifecycle state. `ValidationError` is used for deterministic
+domain validation such as invalid evidence provenance.
+
+The API maps these typed domain failures to predictable client responses. This
+allows Web and Streamlit interfaces to react to an error category or code
+rather than parsing an arbitrary error string. The LLM receives safe tool
+outcomes, never raw stack traces.
 
 ### 3. Business state machine is the source of truth
 
@@ -72,18 +95,30 @@ but code is the final authority.
 
 ### 4. Evidence is user-scoped and system-verified
 
-Only PDFs uploaded and validated by the current project user are evidence.
-There is no global document folder and no external retrieval by default.
+PDFs first belong to the authenticated user's **Project resource library**.
+Users may upload, inspect, summarise and discuss library PDFs independently from
+presentation production. A user must explicitly attach library resources to a
+presentation; only this selection can become production evidence. There is no
+global document folder and no external retrieval by default.
+
+```text
+Project PDF library → optional source-only exploration
+                    → explicit presentation attachment
+                    → human validation before blueprint production
+```
 
 `EvidenceContextBuilder` performs local BM25 chunk retrieval over extracted PDF
-pages. `ProductionEvidenceGate` checks for sufficient lexical support before:
+pages selected for the presentation. `ProductionEvidenceGate` checks for
+sufficient lexical support before:
 
 - answering a production-scoped scientific question;
 - generating a blueprint;
 - generating or regenerating a slide.
 
-If there is no validated PDF, or retrieval is insufficient, HPA returns a
-fixed request for a suitable PDF or clarification instead of calling the LLM.
+If there is no selected and approved PDF, or retrieval is insufficient, HPA
+returns a fixed request for a suitable PDF or clarification instead of calling
+the LLM. Resource validation is contextual: it is requested when the user
+starts blueprint production, not when they merely upload or discuss a PDF.
 This conservative policy may produce false negatives for multilingual or
 semantically indirect queries; that trade-off is accepted for safety.
 
@@ -94,6 +129,8 @@ Every slide reference is validated by `EvidenceProvenanceValidator`:
 3. the evidence excerpt must occur on that page.
 
 The PowerPoint displays the user-validated resources and associated evidence.
+The separate resource-overview and PDF-discussion features use bounded passages
+from the Project library only; they do not alter the production selection.
 
 ### 5. Prompt, harness, and loop have distinct roles
 
@@ -110,18 +147,21 @@ approvals.
 
 ### 6. Human approval is mandatory
 
-The user must explicitly validate resources, Agenda, blueprint items, complete
-blueprint, slides, and final presentation. The model cannot simulate these
-approvals. Rejections and reviewer comments are persisted and can drive
-regeneration.
+The user must explicitly validate selected production resources, Agenda,
+blueprint items, complete blueprint, slides, and final presentation. The model
+cannot simulate these approvals. Rejections and reviewer comments are persisted
+and can drive regeneration. Users may edit blueprint items and slides; HPA
+retains the original AI snapshot and labels content as AI-generated,
+user-edited, or user-authored.
 
 ### 7. Persistence and auditability
 
 For local use, `UserSessionRepository` persists user accounts, profile,
-projects, conversation state, templates, and immutable-style project events in
-SQLite. Audit events include action type, actor, time, workflow state, and
-prompt/harness/retrieval/workflow versions. Generation records store selected
-model and version metadata.
+Projects, durable conversation transcripts, resource-library metadata and
+extracted text, presentation state, templates, and immutable-style project
+events in SQLite. Audit events include action type, actor, time, workflow
+state, and prompt/harness/retrieval/workflow versions. Generation records store
+selected model and version metadata.
 
 The audit API is:
 
@@ -135,9 +175,13 @@ architecture.
 ### 8. Interfaces and authentication
 
 FastAPI serves the local JavaScript interface at `/app`; Streamlit and CLI are
-additional local interfaces. API project access requires a bearer token and is
+additional local interfaces. API Project access requires a bearer token and is
 owner-scoped. The current password reset route is intentionally local-only and
 is not acceptable for public deployment.
+
+The application repository is the durable source of Project state. A legacy
+`InMemorySaver` adapter remains available for experimentation, but the durable
+Project workflow does not rely on it.
 
 ## Consequences
 
@@ -151,7 +195,7 @@ is not acceptable for public deployment.
 
 ### Trade-offs
 
-- Users must provide and validate sources before scientific production.
+- Users must select and validate sources before scientific production.
 - BM25 can reject a concept that is present under different wording or language.
 - More gates mean more explicit user interactions and less apparent autonomy.
 - SQLite and local files must be replaced for concurrent production deployment.
@@ -162,6 +206,7 @@ The following are intentionally not claimed as implemented:
 
 - OCR for scanned PDFs;
 - external PubMed, guideline, or web retrieval;
+- semantic/vector retrieval, embeddings, or a global knowledge base;
 - background job queue, retries, or distributed execution;
 - PostgreSQL migration and object storage;
 - enterprise SSO, MFA, secure public password recovery, or role-based access;

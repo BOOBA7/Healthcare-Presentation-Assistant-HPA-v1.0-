@@ -1,102 +1,224 @@
 # Healthcare Presentation Assistant (HPA)
 
-HPA helps healthcare professionals prepare scientific presentations from **their
-own uploaded PDF resources**. It accelerates drafting and PowerPoint creation;
-it does not replace scientific, clinical, or institutional review.
+HPA is a local, evidence-gated assistant that helps healthcare professionals
+prepare scientific PowerPoint presentations from **PDF resources they upload**.
+It accelerates drafting, review and export; it does not replace scientific,
+clinical, legal or institutional review.
 
-> HPA follows an FDA-oriented, human-in-the-loop design: traceability,
-> evidence provenance, controlled workflow, and professional validation. It is
-> not a diagnostic, prescribing, or individualized clinical decision system.
-> The professional remains responsible for reviewing and approving every output
-> before use.
+> **Safety and regulatory position.** HPA is FDA-oriented in its engineering
+> approach: human review, traceability, evidence provenance, explicit workflow
+> states and risk-aware constraints. It is **not** FDA-cleared, FDA-approved,
+> certified medical software, a diagnostic system, a prescribing system or a
+> clinical decision-support authority. The healthcare professional remains
+> responsible for every use of the output.
 
-## What the application does
+## What it does
 
-- Collects presentation context: topic, audience, format, language, duration,
-  objective, and professional profile.
-- Keeps separate projects, conversations, resources, and presentation state for
-  each authenticated local user.
-- Accepts user-provided PDFs up to 20 MB and extracts selectable text with
-  PyMuPDF.
-- Retrieves compact evidence passages from **validated PDFs only** through
-  local BM25 retrieval. No external knowledge base is used.
-- Generates a blueprint, editable Agenda, and slides only after the required
-  human validations.
-- Verifies slide provenance: each reference must have a known `resource_id`, an
-  existing PDF page, and an excerpt actually present on that page.
-- Exports a themed `.pptx` presentation with a mandatory Agenda slide and a
-  final *Resources and user validation* slide.
-- Records project audit events such as uploads, approvals, regenerations, and
-  exports in SQLite.
+- Creates separate, authenticated local user accounts and Projects.
+- Stores a professional profile (role and preferred language: English, French
+  or Arabic) to adapt the assistant's communication style.
+- Lets users upload readable PDFs (maximum 20 MB) to a **Project resource
+  library**, even before a presentation exists.
+- Provides a source-only resource overview and a dedicated PDF discussion mode
+  to explore the uploaded material without changing a presentation.
+- Lets the user explicitly select library resources for a presentation. Only
+  this selection is used as production evidence.
+- Generates an editable blueprint, an Agenda, slides and a themed PowerPoint
+  after the required human review steps.
+- Supports direct user editing of blueprint items and slides, while preserving
+  an AI-origin snapshot and labelling content as AI-generated, user-edited or
+  user-authored.
+- Validates evidence provenance for AI-generated slides and exports a final
+  *Resources and validation* slide.
+- Persists Projects, conversation transcripts, extracted PDF text, templates,
+  workflow state and audit events in local SQLite storage.
 
-## Safety model
+## Resource library and evidence model
 
-HPA uses prompts, retrieval, and code-level controls together. Prompts are not
-the security boundary.
-
-1. Only user-uploaded and user-validated PDFs are treated as evidence.
-2. PDF text is delimited as untrusted content to resist prompt injection.
-3. A deterministic evidence gate blocks scientific answers when no validated
-   PDF exists or BM25 finds insufficient support; it asks for a suitable PDF or
-   a more precise question instead.
-4. Blueprint and slide generation are also blocked before the model call when
-   sufficient evidence cannot be retrieved.
-5. Provenance is checked again before a slide is accepted and before export.
-6. Agenda, blueprint items, slides, and final presentation require explicit
-   human approval.
-
-The evidence gate is lexical BM25. It is deliberately conservative: a relevant
-PDF written in another language or using very different terminology can be
-blocked and may require a clearer query or a better source.
-
-## Business workflow
+There is no shared document folder and no external evidence source. A resource
+belongs to the authenticated user's Project.
 
 ```text
-Collect context
-  → Validate context
+Upload PDF → Project library → optional overview / PDF discussion
+                              ↓
+                    explicitly attach to presentation
+                              ↓
+              human validation before blueprint production
+```
+
+Two modes are intentionally separate:
+
+| Mode | Purpose | Evidence input |
+|---|---|---|
+| Resource exploration | Summarise or discuss the user’s PDFs before creating slides | Bounded passages from the Project library only |
+| Production | Generate a blueprint or slides | Explicitly attached, user-approved presentation resources only |
+
+For production, HPA uses a local lexical BM25 retrieval layer over extracted
+PDF-page chunks. It selects a small, bounded evidence context; it does not use
+an external vector database, web search or a global knowledge base. If support
+is missing or insufficient, the deterministic evidence gate asks for a better
+PDF or a clarification instead of generating a scientific answer.
+
+Each AI-generated slide reference must pass system validation:
+
+1. the `resource_id` exists in the presentation selection;
+2. the cited PDF page exists;
+3. the cited evidence excerpt occurs on that page.
+
+This is provenance verification, not a claim that the source itself is
+clinically correct or appropriate for every use.
+
+## Controlled workflow
+
+```text
+Discuss / explore PDFs (optional)
+  → Collect and validate presentation context
   → Create presentation
-  → Upload PDF(s)
-  → Validate resources
+  → Select Project-library PDF(s) for this presentation
+  → Request blueprint generation
+  → Human validates the selected resources
   → Generate blueprint
   → Edit and approve Agenda
-  → Approve blueprint items and blueprint
-  → Generate slides
-  → Approve slides
-  → Final approval
+  → Review blueprint items and approve blueprint
+  → Generate and review slides
+  → Final human approval
   → Export PowerPoint
 ```
 
-The durable workflow states are enforced in code. The model can suggest an
-allowed action, but it cannot bypass a state transition or a human approval.
+The model may suggest the next step, but code enforces workflow transitions.
+Resource validation is requested when the user starts production; it is not
+required simply to upload, read or discuss a PDF.
+
+## Safety boundaries
+
+HPA combines prompts with deterministic controls. Prompts are not the security
+boundary.
+
+1. User messages and PDF text are treated as untrusted content; PDF text cannot
+   instruct the system to bypass its workflow.
+2. Only selected and human-approved presentation PDFs can support production
+   claims and citations.
+3. `ProductionEvidenceGate` checks evidence availability and BM25 support
+   before model generation.
+4. `WorkflowPolicy` rejects invalid lifecycle transitions.
+5. `EvidenceProvenanceValidator` checks citations before slide acceptance and
+   PowerPoint export.
+6. Agenda, blueprint, slides and final presentation need explicit human review.
 
 ## Architecture
 
 ```text
-Web / Streamlit / CLI
-        │
-        ▼
-FastAPI or local agent entry point
-        │
-        ▼
-HealthcarePresentationAgent
-        │  trusted state summary + prompt / harness / loop policy
-        ▼
-LangGraph reasoning loop ──► application use cases ──► domain models
-        │                         │
-        │                         ├─ WorkflowPolicy (state transitions)
-        │                         ├─ ProductionEvidenceGate (BM25 threshold)
-        │                         └─ EvidenceProvenanceValidator
-        ▼
-SQLite: users, projects, state, templates, audit events
+Web app (/app) · Streamlit · CLI
+                │
+                ▼
+              FastAPI
+                │
+                ▼
+    HealthcarePresentationAgent
+                │
+     trusted state summary + prompts
+                ▼
+  LangGraph guarded agent/tool loop
+                │
+                ▼
+ Application use cases and domain rules
+  ├─ Project resource library
+  ├─ WorkflowPolicy and presentation state machine
+  ├─ ProductionEvidenceGate + local BM25
+  ├─ EvidenceProvenanceValidator
+  └─ PowerPoint exporter
+                │
+                ▼
+ SQLite: users · Projects · state · transcripts · templates · audit events
 ```
 
-State is separated by responsibility:
+State is deliberately separated:
 
-- `GraphState`: conversation and agent orchestration.
-- `PresentationState`: durable business workflow and approvals.
-- `ExecutionContext`: last tool outcome and safe technical error.
+| State | Responsibility |
+|---|---|
+| `GraphState` | Agent orchestration, conversation transcript, Project library and exploration analysis |
+| `PresentationState` | Durable production lifecycle and approval flags |
+| `ExecutionContext` | Last safe tool outcome or error; never a business approval |
 
-See [ADR.txt](ADR.txt) for the current architectural decisions.
+The full architecture rationale is in [ADR-0007](ADR.txt). The historical
+prompt-engineering review is retained in [docs/PROMPT_REVIEW.md](docs/PROMPT_REVIEW.md).
+
+## Project structure
+
+The repository follows a pragmatic clean-architecture layout. The tree below
+lists source modules and important entry-point files; runtime directories such
+as `venv/`, `data/`, `exports/`, caches and user-uploaded PDFs are intentionally
+excluded.
+
+```text
+.
+├── app/
+│   ├── ai/                              # LLM-facing layer
+│   │   ├── agents/                      # AgentBuilder, HealthcarePresentationAgent
+│   │   ├── chains/                      # Blueprint and slide chains
+│   │   ├── harness/                     # Healthcare safety harness
+│   │   ├── llm/                         # Provider/model factory
+│   │   ├── mappers/                     # LLM output → domain mapping
+│   │   ├── prompt_builders/             # State, evidence, blueprint and slide prompts
+│   │   ├── prompts/                     # System prompt and loop policy
+│   │   ├── schemas/                     # Structured LLM output schemas
+│   │   ├── service/                     # Conversation service
+│   │   └── workflows/                   # GraphState, graph and guarded tools
+│   ├── application/                     # Use cases and deterministic business services
+│   │   ├── services/                    # Evidence gate, history, library, workflow policy
+│   │   ├── use_cases/                   # PDF, blueprint, slides, review and PPTX operations
+│   │   └── validators/                  # Resource, audience and provenance validation
+│   ├── core/                            # Configuration, logging and version metadata
+│   ├── domain/                          # Business models and rules
+│   │   ├── enums/                       # Workflow, language, resource and theme enums
+│   │   ├── exceptions/                  # Typed domain and workflow errors
+│   │   ├── models/                      # Presentation, resources, slides, approvals, users
+│   │   ├── profiles/                    # Professional role profiles
+│   │   └── value_objects/               # Presentation context and reference value objects
+│   └── interfaces/                      # Delivery and persistence adapters
+│       ├── api/main.py                  # FastAPI API and `/app` routes
+│       ├── storage/                     # SQLite UserSessionRepository
+│       ├── web/                         # JavaScript web app: HTML, CSS and client logic
+│       └── langgraph/                   # Experimental checkpointer adapter
+├── docs/
+│   └── PROMPT_REVIEW.md                 # Historical prompt-engineering review
+├── tests/                               # Automated unit and workflow tests
+├── main.py                              # Local CLI entry point
+├── streamlit_app.py                     # Streamlit interface entry point
+├── list_models.py                       # Utility to inspect available provider models
+├── ADR.txt                              # Current architecture decision record
+├── README.md                            # Project documentation
+├── requirements.txt                     # Python dependencies
+├── pytest.ini                           # Pytest configuration
+└── secrets.toml.example                 # Streamlit secrets template (never commit real secrets)
+```
+
+At runtime, SQLite data is created under `data/`, PowerPoint exports under
+`exports/`, and uploaded resource content is stored in the Project state. These
+runtime artefacts and user PDFs should not be committed to Git.
+
+## Domain error model
+
+Expected business failures use a small typed hierarchy rather than unrelated
+text-only `ValueError` exceptions:
+
+```text
+ValueError
+└── DomainError                         # Common safe business failure
+    ├── ValidationError                 # Deterministic invalid domain data
+    └── WorkflowError                   # Stable workflow code and retry flag
+        └── InvalidTransition           # Action forbidden in the current state
+```
+
+All domain errors keep a human-readable `user_message`, a stable `code`, and a
+`retryable` flag where relevant. They still inherit from `ValueError` for
+compatibility with the existing FastAPI and interface handling.
+
+For example, attempting to generate a blueprint before the selected resources
+are ready raises `InvalidTransition` with the code
+`INVALID_WORKFLOW_TRANSITION`. The API can then return a predictable conflict
+response and the interface can direct the user to the required next step,
+instead of trying to interpret an arbitrary text error.
 
 ## Local setup
 
@@ -109,7 +231,7 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Configure one provider in `.env`.
+Configure one supported provider in `.env`:
 
 ```env
 # OpenAI example
@@ -117,7 +239,7 @@ LLM_PROVIDER=openai
 OPENAI_API_KEY=your_key
 OPENAI_MODEL=your_supported_model
 
-# Or Gemini example
+# Gemini example
 # LLM_PROVIDER=gemini
 # GEMINI_API_KEY=your_key
 # GEMINI_MODEL=your_supported_model
@@ -128,19 +250,18 @@ DEBUG=True
 ```
 
 Use a model identifier available to your own API account. Never commit `.env`,
-API keys, session tokens, or `secrets.toml`.
+API keys, session tokens or Streamlit secrets.
 
 ## Run locally
 
-### Web interface (recommended)
+### Web interface
 
 ```bash
 uvicorn app.interfaces.api.main:app --reload
 ```
 
-Open `http://127.0.0.1:8000/app`.
-
-The API documentation is available at `http://127.0.0.1:8000/docs`.
+Open [http://127.0.0.1:8000/app](http://127.0.0.1:8000/app). API documentation
+is available at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
 
 ### Streamlit
 
@@ -148,7 +269,7 @@ The API documentation is available at `http://127.0.0.1:8000/docs`.
 streamlit run streamlit_app.py
 ```
 
-Open `http://localhost:8501`.
+Open [http://localhost:8501](http://localhost:8501).
 
 ### CLI
 
@@ -156,21 +277,25 @@ Open `http://localhost:8501`.
 python main.py
 ```
 
-## API notes
+## API overview
 
-The web interface authenticates first and sends a Bearer token to the API.
-Project endpoints are owner-scoped. Useful endpoints include:
+The web client authenticates with a Bearer token. Project endpoints are
+owner-scoped. Main endpoint groups include:
 
 - `POST /auth/register`, `POST /auth/login`
-- `POST /projects`, `GET /users/{user_id}/projects`
-- `POST /chat`
+- `POST /projects`, `GET /users/{user_id}/projects`, `POST /chat`
 - `POST /resources/pdf/{user_id}/{project_id}`
+- `POST /projects/{user_id}/{project_id}/resources/summary`
+- `POST /projects/{user_id}/{project_id}/resources/discuss`
+- `POST /projects/{user_id}/{project_id}/resources/{resource_id}/attach`
+- `DELETE /projects/{user_id}/{project_id}/resources/{resource_id}/attach`
+- `DELETE /projects/{user_id}/{project_id}/resources/{resource_id}`
 - `GET /projects/{user_id}/{project_id}/audit-events`
 - `GET /presentations/{user_id}/{project_id}/export/pptx`
 
-The local password-reset route is intentionally only suitable for local
-development. Do not expose it publicly. Use a real identity provider and a
-secure recovery flow before deployment.
+The local password-reset endpoint is intentionally unsuitable for public
+deployment. Use a real identity provider and secure recovery flow before any
+public deployment.
 
 ## Tests
 
@@ -178,17 +303,17 @@ secure recovery flow before deployment.
 venv/bin/pytest -q
 ```
 
-The test suite does not call an LLM and does not consume provider quota.
+The test suite uses fake model responses and does not consume provider quota.
 
-## Current limitations and production work
+## Current limitations and next production work
 
-- SQLite is appropriate for one local instance. Use PostgreSQL and migrations
-  for concurrent or multi-instance deployment.
-- PDFs with no selectable text require OCR; OCR is not implemented yet.
-- BM25 is local, private, and transparent, but has no semantic multilingual
-  understanding. A later embedding retrieval layer should remain scoped to the
-  user’s uploaded resources.
-- Authentication, audit storage, uploaded files, and logs need production-grade
-  hardening before public or hospital deployment.
-- HPA is FDA-oriented by design, but it is not certified medical software and
-  does not by itself establish regulatory, legal, or clinical compliance.
+- SQLite is suitable for one local instance. Use PostgreSQL, migrations and
+  object storage for concurrent or multi-instance deployment.
+- Scanned PDFs require OCR; OCR is not implemented.
+- BM25 is private and transparent, but lexical and conservative. A future
+  semantic retrieval layer must remain scoped to user-uploaded resources.
+- The resource overview and discussion use bounded PDF passages; they are not
+  a replacement for full evidence synthesis or clinical review.
+- Public deployment needs production authentication, rate limits, secure file
+  storage, redacted logging, monitoring and incident procedures.
+- HPA does not establish regulatory, legal, clinical or hospital compliance.
