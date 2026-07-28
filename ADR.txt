@@ -41,7 +41,7 @@ safe workflow errors, and returns tool outcomes to the model as `ToolMessage`s.
 
 | State | Responsibility | Authority |
 |---|---|---|
-| `GraphState` | Agent messages, durable conversation transcript, collected context, Project resource library, resource overview and presentation reference | Agent orchestration |
+| `GraphState` | Agent messages, durable presentation-chat transcript, separate resource-chat transcript, collected context, Project library, resource overview and presentation reference | Agent orchestration |
 | `PresentationState` | Workflow status, validation flags, slide progress | Business lifecycle |
 | `ExecutionContext` | Last tool result, safe error code/message | Technical execution only |
 
@@ -101,6 +101,11 @@ Users may upload, inspect, summarise and discuss library PDFs independently from
 presentation production. A user must explicitly attach library resources to a
 presentation; only this selection can become production evidence. There is no
 global document folder and no external retrieval by default.
+
+The UI exposes this separation as two persistent workspaces: **Resources** for
+the library, overview and PDF-only discussion, and **Presentation assistant**
+for workflow-controlled conversation and generation. Resource overview and PDF
+discussion turns are never appended to the presentation-assistant transcript.
 
 ```text
 Project PDF library → optional source-only exploration

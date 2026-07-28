@@ -21,6 +21,9 @@ clinical, legal or institutional review.
   library**, even before a presentation exists.
 - Provides a source-only resource overview and a dedicated PDF discussion mode
   to explore the uploaded material without changing a presentation.
+- Keeps the **Resources workspace** (PDF library, overview and PDF chat)
+  separate from the **Presentation assistant** (workflow and generation), with
+  independent durable conversation histories in both `/app` and Streamlit.
 - Lets the user explicitly select library resources for a presentation. Only
   this selection is used as production evidence.
 - Generates an editable blueprint, an Agenda, slides and a themed PowerPoint
@@ -138,7 +141,7 @@ State is deliberately separated:
 
 | State | Responsibility |
 |---|---|
-| `GraphState` | Agent orchestration, conversation transcript, resource identifiers and exploration analysis |
+| `GraphState` | Agent orchestration, presentation-chat transcript, resource-chat transcript, library and exploration analysis |
 | `PresentationState` | Durable production lifecycle and approval flags |
 | `ExecutionContext` | Last safe tool outcome or error; never a business approval |
 
@@ -183,7 +186,7 @@ excluded.
 │       ├── api/main.py                  # FastAPI composition, legacy-compatible routes and `/app`
 │       │   └── routers/                 # Authentication, Project, platform and job routers
 │       ├── storage/                     # SQLite UserSessionRepository
-│       ├── web/                         # JavaScript web app: HTML, CSS and client logic
+│       ├── web/                         # JavaScript app: persistent Presentation/Resources workspaces
 │       └── langgraph/                   # Experimental checkpointer adapter
 ├── docs/
 │   ├── EVALUATION.md                    # System-level evaluation and test strategy

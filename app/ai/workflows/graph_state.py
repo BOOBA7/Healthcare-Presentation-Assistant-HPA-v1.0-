@@ -19,7 +19,12 @@ class GraphState(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="ignore")
 
     messages: Annotated[list[BaseMessage], add_messages] = Field(default_factory=list)
+    # Presentation-assistant transcript. It never contains resource-only
+    # overview or PDF-discussion turns.
     conversation_history: list[ConversationTurn] = Field(default_factory=list)
+    # Exploration transcript for the Project PDF library. It is deliberately
+    # independent from the agent's workflow conversation.
+    resource_conversation_history: list[ConversationTurn] = Field(default_factory=list)
     # Optimistic-lock revision supplied by the SQLite repository.  It is not a
     # workflow approval and must change on every durable Project write.
     project_revision: int = Field(default=0, ge=0)

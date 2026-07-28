@@ -22,7 +22,7 @@ from app.application.use_cases.manage_project_resources import (
     RemoveProjectResourceUseCase,
 )
 from app.application.services.workflow_policy import WorkflowPolicy
-from app.application.services.conversation_history import add_turn, ensure_history
+from app.application.services.conversation_history import add_resource_turn, add_turn, ensure_history
 from app.application.services.resource_library import ensure_resource_library, resolve_presentation_resources
 from app.core.config import get_settings
 from app.core.versioning import HARNESS_VERSION, RETRIEVAL_VERSION, WORKFLOW_VERSION
@@ -142,6 +142,7 @@ def _project_response(user_id: str, project_id: str, thread_id: str, state: Grap
     ensure_resource_library(state)
     presentation = state.presentation.model_dump(mode="json") if state.presentation else None
     messages = [turn.model_dump(mode="json") for turn in state.conversation_history]
+    resource_messages = [turn.model_dump(mode="json") for turn in state.resource_conversation_history]
     return {
         "user_id": user_id,
         "project_id": project_id,
@@ -150,6 +151,7 @@ def _project_response(user_id: str, project_id: str, thread_id: str, state: Grap
         "resource_library": [_resource_response(resource) for resource in state.resource_library],
         "resource_analysis": state.resource_analysis.model_dump(mode="json") if state.resource_analysis else None,
         "messages": messages,
+        "resource_messages": resource_messages,
         "conversation_context": state.conversation_context.model_dump(mode="json"),
         "user_profile": state.user_profile.model_dump(mode="json"),
         "last_tool": state.execution.last_tool,
@@ -180,7 +182,10 @@ def _resource_response(resource) -> dict[str, object]:
 def _required_human_action(state: GraphState) -> dict[str, str] | None:
     """Expose deterministic UI actions only when the workflow requests one."""
     output = state.execution.tool_output or {}
-    if output.get("error_code") == "RESOURCES_VALIDATION_REQUIRED":
+    if (
+        output.get("error_code") == "RESOURCES_VALIDATION_REQUIRED"
+        or WorkflowPolicy.requires_resource_validation(state.presentation)
+    ):
         return {
             "action": "validate_resources",
             "message": "Validate the uploaded resources before generating the blueprint.",
@@ -431,8 +436,6 @@ def summarize_resources(user_id: str, project_id: str, authenticated_user: str =
         logger.exception("Resource analysis failed for user=%s project=%s", user_id, project_id)
         raise HTTPException(status_code=502, detail="The model could not analyze the uploaded resources. Please retry.") from exc
     state.resource_analysis = analysis
-    ensure_history(state)
-    add_turn(state, "assistant", f"Resource overview:\n{analysis.summary}")
     return _save_project(
         user_id,
         project_id,
@@ -464,9 +467,8 @@ def discuss_resources(
     except Exception as exc:
         logger.exception("Resource discussion failed for user=%s project=%s", user_id, project_id)
         raise HTTPException(status_code=502, detail="The model could not discuss the uploaded resources. Please retry.") from exc
-    ensure_history(state)
-    add_turn(state, "user", request.question)
-    add_turn(state, "assistant", answer)
+    add_resource_turn(state, "user", request.question)
+    add_resource_turn(state, "assistant", answer)
     return _save_project(
         user_id, project_id, thread_id, state,
         event_type="RESOURCE_DISCUSSION_COMPLETED", actor="llm",

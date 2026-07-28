@@ -9,9 +9,25 @@ from collections.abc import Iterable
 
 from app.domain.enums.workflow_status import WorkflowStatus
 from app.domain.exceptions.invalid_transition import InvalidTransition
+from app.domain.models.presentation import Presentation
 
 
 class WorkflowPolicy:
+    @staticmethod
+    def requires_resource_validation(presentation: Presentation | None) -> bool:
+        """Return whether a selected evidence set awaits the human approval gate.
+
+        This is a business-state rule shared by every interface.  It must not
+        depend on a previous LLM error message, because users may attach a PDF
+        before asking the model to generate a blueprint.
+        """
+        return bool(
+            presentation is not None
+            and presentation.resources
+            and not presentation.state.resources_validated
+            and presentation.state.workflow_status == WorkflowStatus.AWAITING_RESOURCE_VALIDATION
+        )
+
     @staticmethod
     def require_status(
         current: WorkflowStatus,

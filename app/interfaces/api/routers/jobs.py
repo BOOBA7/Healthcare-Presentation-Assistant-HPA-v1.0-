@@ -78,7 +78,7 @@ def start_resource_discussion_job(
         progress(65, "generating_discussion")
         result = api.discuss_resources(user_id, project_id, request, authenticated_user)
         progress(90, "persisting_project")
-        return {"project_id": project_id, "messages": result.get("messages", [])[-1:]}
+        return {"project_id": project_id, "resource_messages": result.get("resource_messages", [])[-1:]}
 
     submit_job(repository, user_id, str(job["job_id"]), "resources", work)
     record_observability("async_job_queued", domain="resources")

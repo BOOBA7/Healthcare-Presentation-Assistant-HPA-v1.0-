@@ -38,8 +38,14 @@ from app.interfaces.storage.user_session_repository import UserSessionRepository
 from app.domain.models.user_profile import UserProfile
 from app.domain.enums.presentation_theme import PresentationTheme
 from app.domain.models.execution_context import ExecutionContext
-from app.application.services.conversation_history import add_turn, ensure_history, message_text as transcript_message_text
+from app.application.services.conversation_history import (
+    add_resource_turn,
+    add_turn,
+    ensure_history,
+    message_text as transcript_message_text,
+)
 from app.application.services.resource_library import ensure_resource_library, resolve_presentation_resources
+from app.application.services.workflow_policy import WorkflowPolicy
 
 
 st.set_page_config(page_title="Healthcare Presentation Assistant", page_icon="🩺", layout="wide")
@@ -293,10 +299,8 @@ def analyze_uploaded_resources() -> None:
             state.resource_library, language=state.user_profile.preferred_language
         )
         state.resource_analysis = analysis
-        ensure_history(state)
-        add_turn(state, "assistant", f"Resource overview:\n{analysis.summary}")
         save_state()
-        st.success("Resource overview generated. You can now discuss it in the chat before creating slides.")
+        st.success("Resource overview generated in the Resources workspace.")
     except ValueError as exc:
         st.error(str(exc))
     except Exception:
@@ -309,8 +313,8 @@ def discuss_uploaded_resources(question: str) -> None:
         answer = DiscussResourcesUseCase().execute(
             state.resource_library, question, language=state.user_profile.preferred_language
         )
-        add_turn(state, "user", question)
-        add_turn(state, "assistant", answer)
+        add_resource_turn(state, "user", question)
+        add_resource_turn(state, "assistant", answer)
         save_state()
         st.session_state.resource_discussion_answer = answer
     except ValueError as exc:
@@ -501,9 +505,6 @@ with st.sidebar:
     if resource_error := st.session_state.pop("resource_error", None):
         st.error(resource_error)
 
-    if state.resource_library:
-        st.button("Analyze uploaded resources", on_click=analyze_uploaded_resources, use_container_width=True)
-
     st.divider()
     if state.presentation:
         selected_theme = st.selectbox(
@@ -546,27 +547,72 @@ with st.sidebar:
     if "pptx_data" in st.session_state:
         st.download_button("Télécharger le PowerPoint", st.session_state.pptx_data, st.session_state.pptx_name, "application/vnd.openxmlformats-officedocument.presentationml.presentation")
 
-if state.resource_analysis:
+workspace_key = f"active_workspace_{user_id}_{project_id}"
+workspace = st.segmented_control(
+    "Workspace",
+    options=("Presentation assistant", "Resources workspace"),
+    default="Presentation assistant",
+    key=workspace_key,
+)
+resource_validation_required = WorkflowPolicy.requires_resource_validation(state.presentation)
+
+if workspace == "Resources workspace":
+    st.header("Resources workspace")
+    st.caption("Explore this Project's PDF library without changing the presentation workflow.")
+    if resource_validation_required:
+        st.info("The selected resources need your approval before the blueprint can be generated.")
+        st.button(
+            "Validate resources and continue",
+            type="primary",
+            on_click=run_validation,
+            args=(validate_resources,),
+            key="resource_workspace_validate_resources",
+        )
+    if not state.resource_library:
+        st.info("Upload a PDF from the Scientific sources section in the sidebar to begin.")
+        st.stop()
+
+    analyze_column, status_column = st.columns([1, 2])
+    analyze_column.button(
+        "Analyze uploaded resources",
+        on_click=analyze_uploaded_resources,
+        use_container_width=True,
+    )
+    status_column.caption(f"{len(state.resource_library)} PDF resource(s) in this Project library")
     st.divider()
+
     st.subheader("Resource overview")
     st.caption("AI-generated discussion starter based only on the uploaded PDF resources.")
-    st.write(state.resource_analysis.summary)
+    if state.resource_analysis:
+        st.write(state.resource_analysis.summary)
+    else:
+        st.info("Select Analyze uploaded resources to generate a source-only overview.")
 
-if state.resource_library:
-    st.subheader("Discuss the PDF library")
-    resource_question = st.text_area(
+    st.divider()
+    st.subheader("Resource chat")
+    st.caption("This discussion is separate from the Presentation assistant chat.")
+    for turn in state.resource_conversation_history:
+        with st.chat_message(turn.role):
+            st.write(turn.text)
+    resource_question = st.chat_input(
         "Ask a question answered only from the uploaded PDFs",
-        key="resource_discussion_question",
-        placeholder="What is the central idea of these resources?",
+        key=f"resource_discussion_question_{project_id}",
     )
-    if st.button("Ask about resources", disabled=not resource_question.strip(), use_container_width=True):
-        discuss_uploaded_resources(resource_question)
+    if resource_question:
+        with st.chat_message("user"):
+            st.write(resource_question)
+        with st.chat_message("assistant"):
+            with st.spinner("Searching uploaded PDFs..."):
+                discuss_uploaded_resources(resource_question)
+                error = st.session_state.pop("resource_error", None)
+                if error:
+                    st.error(error)
+                else:
+                    st.write(st.session_state.get("resource_discussion_answer", ""))
         st.rerun()
+    st.stop()
 
-if (
-    state.presentation
-    and (state.execution.tool_output or {}).get("error_code") == "RESOURCES_VALIDATION_REQUIRED"
-):
+if resource_validation_required:
     st.divider()
     st.subheader("Human validation required")
     st.info("The assistant needs your validation before it can generate the blueprint.")

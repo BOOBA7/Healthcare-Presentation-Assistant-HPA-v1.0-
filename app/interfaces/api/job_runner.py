@@ -6,12 +6,25 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 import logging
 
+from fastapi import HTTPException
+
 from app.application.services.observability import record
 from app.interfaces.storage.user_session_repository import UserSessionRepository
 
 
 logger = logging.getLogger(__name__)
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="hpa-job")
+
+
+def _job_error_message(exc: Exception) -> str:
+    """Return the user-facing API message rather than a Python HTTP wrapper."""
+    if isinstance(exc, HTTPException):
+        detail = exc.detail
+        if isinstance(detail, dict):
+            return str(detail.get("message") or detail.get("detail") or "The operation could not be completed.")
+        if isinstance(detail, str):
+            return detail
+    return str(exc)
 
 
 def submit(
@@ -42,7 +55,7 @@ def submit(
                 status="failed",
                 progress=100,
                 stage="failed",
-                error_message=str(exc),
+                error_message=_job_error_message(exc),
             )
             record("async_job_failed", domain=domain, error_type=type(exc).__name__)
 

@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/web/styles.css?v=20260728-markdown" />
+    <link rel="stylesheet" href="/web/styles.css?v=20260728-workspaces-v2" />
   </head>
   <body>
     <section id="auth-screen" class="auth-screen">
@@ -60,16 +60,6 @@
           </details>
         </section>
 
-        <section class="side-section resource-panel">
-          <p class="eyebrow" data-i18n="scientificSources">Scientific sources</p>
-          <label class="dropzone" for="pdf-file"><span>↑</span> <span data-i18n="uploadPdf">Upload a PDF</span><input id="pdf-file" type="file" accept="application/pdf" /></label>
-          <p id="file-name" class="muted" data-i18n="maxSize">20 MB maximum</p>
-          <button id="upload-resource" class="secondary full" disabled data-i18n="addResource">Add resource</button>
-          <button id="validate-resources" class="secondary full" hidden>Validate resources and continue</button>
-          <button id="analyze-resources" class="secondary full" hidden data-i18n="analyzeResources">Analyze uploaded resources</button>
-          <div id="resource-list" class="resource-list"></div>
-        </section>
-
         <section class="side-section template-panel">
           <p class="eyebrow" data-i18n="templateLibrary">PowerPoint templates</p>
           <div id="presentation-settings" class="presentation-settings"></div>
@@ -88,7 +78,13 @@
         </header>
 
         <section id="notice" class="notice" hidden></section>
-        <section class="progress-card">
+        <nav class="workspace-tabs" aria-label="Workspace">
+          <button class="workspace-tab" data-workspace="presentation" aria-selected="true"><span class="tab-mark">✦</span><span data-i18n="productionAssistant">Production assistant</span></button>
+          <button class="workspace-tab" data-workspace="resources" aria-selected="false"><span class="tab-mark">⌁</span><span data-i18n="resources">Resources</span></button>
+        </nav>
+
+        <section id="presentation-workspace" class="workspace-view">
+          <section class="progress-card">
           <div class="progress-heading"><div><p class="eyebrow" data-i18n="controlledWorkflow">Controlled workflow</p><h2 data-i18n="sourceToPresentation">From sources to presentation</h2></div><span id="resource-count" class="muted">0 resources</span></div>
           <div class="steps" id="steps">
             <div data-step="context" class="step"><span>1</span><span data-i18n="context">Context</span></div>
@@ -97,9 +93,9 @@
             <div data-step="slides" class="step"><span>4</span><span data-i18n="slides">Slides</span></div>
             <div data-step="final" class="step"><span>5</span><span data-i18n="finalApproval">Final approval</span></div>
           </div>
-        </section>
+          </section>
 
-        <div class="workspace-grid">
+          <div class="workspace-grid">
           <section class="chat-card card">
             <div class="card-heading"><div><p class="eyebrow" data-i18n="productionAssistant">Production assistant</p><h2 data-i18n="discussImagineProduce">Discuss, imagine, then produce</h2></div><span id="role-emblem" class="assistant-orb" role="img" aria-label="Professional profile">🩺</span></div>
             <div id="chat-messages" class="chat-messages" aria-live="polite"><div class="empty-chat" data-i18n="chatEmpty">Explore an idea, ask for structure advice, or explicitly ask to create your presentation.</div></div>
@@ -112,11 +108,31 @@
             <div id="next-action" class="final-actions"></div>
             <div id="final-actions" class="final-actions"></div>
           </section>
-        </div>
+          </div>
 
-        <section id="agenda-area" class="review-area"></section>
-        <section id="resource-analysis-area" class="review-area"></section>
-        <section id="review-area" class="review-area"></section>
+          <section id="agenda-area" class="review-area"></section>
+          <section id="review-area" class="review-area"></section>
+          <button id="validate-resources" hidden aria-hidden="true" tabindex="-1"></button>
+        </section>
+
+        <section id="resources-workspace" class="workspace-view" hidden>
+          <section class="resources-hero card">
+            <div>
+              <p class="eyebrow" data-i18n="scientificSources">Scientific sources</p>
+              <h2 data-i18n="resources">Resources</h2>
+              <p class="muted" data-i18n="resourceWorkspaceHint">Upload, analyse and discuss this Project’s PDFs without changing the presentation workflow.</p>
+            </div>
+            <div class="resource-upload-grid">
+              <label class="dropzone resource-dropzone" for="pdf-file"><span>↑</span> <span data-i18n="uploadPdf">Upload a PDF</span><input id="pdf-file" type="file" accept="application/pdf" /></label>
+              <p id="file-name" class="muted" data-i18n="maxSize">20 MB maximum</p>
+              <button id="upload-resource" class="secondary" disabled data-i18n="addResource">Add resource</button>
+              <button id="analyze-resources" class="outline-button" hidden data-i18n="analyzeResources">Analyze uploaded resources</button>
+            </div>
+            <div id="resource-list" class="resource-list resource-library-list"></div>
+            <div id="resource-workflow-action" class="final-actions"></div>
+          </section>
+          <section id="resource-analysis-area" class="review-area"></section>
+        </section>
       </main>
     </div>
     <div id="loading" class="loading" hidden><div class="spinner"></div><p data-i18n="processing">Processing…</p></div>
@@ -128,6 +144,6 @@
         <div id="template-modal-preview" class="template-large-preview clinical"><span>HPA</span><strong>Healthcare presentation</strong><small>Scientific evidence · Human review</small></div>
       </div>
     </div>
-    <script src="/web/app.js?v=20260728-markdown" defer></script>
+    <script src="/web/app.js?v=20260728-workspaces-v2" defer></script>
   </body>
 </html>

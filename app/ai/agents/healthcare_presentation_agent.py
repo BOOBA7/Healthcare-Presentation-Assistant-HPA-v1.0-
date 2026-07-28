@@ -11,7 +11,10 @@ from app.ai.workflows.tools import (
 )
 from app.application.services.production_evidence_gate import ProductionEvidenceGate
 from app.application.services.resource_library import resolve_presentation_resources
+from app.application.use_cases.workflow_steps import RecordProfessionalScopeUseCase
 from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuilder
+from app.domain.enums.workflow_status import WorkflowStatus
+from app.domain.exceptions.workflow_error import WorkflowError
 from app.domain.models.execution_context import ExecutionContext
 
 logger = logging.getLogger(__name__)
@@ -46,6 +49,24 @@ class HealthcarePresentationAgent:
             ),
             "",
         )
+        # This is a deterministic human-workflow transition.  Asking the LLM
+        # to remember to call a tool after the user has already clarified their
+        # scope can leave a Project stuck in the same clarification loop.
+        state = self._record_scope_clarification_if_supplied(state, latest_user_message)
+        scope_message = self._scope_clarification_message_if_needed(state)
+        if scope_message:
+            action_state = state.model_copy(deep=True)
+            action_state.messages.append(AIMessage(content=scope_message))
+            action_state.execution = ExecutionContext(
+                tool_output={
+                    "status": "action_required",
+                    "action": "clarify_professional_scope",
+                    "error_code": "PRESENTATION_SCOPE_CLARIFICATION_REQUIRED",
+                    "retryable": False,
+                },
+                error=scope_message,
+            )
+            return action_state.model_dump()
         blocked_message = self.evidence_gate.block_reason(state, latest_user_message)
         if blocked_message:
             logger.info("production_evidence_gate_blocked thread=%s", thread_id)
@@ -110,6 +131,62 @@ class HealthcarePresentationAgent:
             if not getattr(message, "additional_kwargs", {}).get("hpa_transient_retrieval")
         ]
         return result_state.model_dump()
+
+    @staticmethod
+    def _record_scope_clarification_if_supplied(state: GraphState, message: str) -> GraphState:
+        """Persist one adequate scope explanation before returning to the LLM.
+
+        Human scope clarification is not a scientific answer and does not need
+        model interpretation.  Persisting it here makes the transition
+        idempotent: the same Project cannot ask for the same clarification a
+        second time once an explanation has been accepted.
+        """
+        presentation = state.presentation
+        if (
+            presentation is None
+            or presentation.state.workflow_status != WorkflowStatus.AWAITING_SCOPE_CLARIFICATION
+        ):
+            return state
+
+        try:
+            clarified_state = RecordProfessionalScopeUseCase().execute(
+                state.model_copy(deep=True), message
+            )
+        except WorkflowError:
+            # Short acknowledgements such as "done" are not explanations. The
+            # existing agent prompt will ask for the concise missing context.
+            return state
+
+        clarified_state.execution = ExecutionContext()
+        return clarified_state
+
+    @staticmethod
+    def _scope_clarification_message_if_needed(state: GraphState) -> str | None:
+        """Keep the one required scope question concise and model-independent."""
+        presentation = state.presentation
+        if (
+            presentation is None
+            or presentation.state.workflow_status != WorkflowStatus.AWAITING_SCOPE_CLARIFICATION
+        ):
+            return None
+        messages = {
+            "fr": (
+                "Avant de poursuivre, indiquez en une phrase votre rôle professionnel et la raison pour "
+                "laquelle cette présentation destinée à ce public entre dans votre périmètre. Exemple : "
+                "« Je suis délégué médical, avec une formation vétérinaire, et je présente une information "
+                "scientifique destinée aux professionnels de santé humaine. »"
+            ),
+            "ar": (
+                "قبل المتابعة، اشرح في جملة واحدة دورك المهني وسبب ملاءمة هذا العرض لهذا الجمهور. "
+                "مثال: «أنا مندوب طبي بتكوين بيطري وأعرض معلومات علمية موجهة إلى مهنيي الصحة البشرية»."
+            ),
+            "en": (
+                "Before continuing, explain in one sentence your professional role and why this presentation "
+                "for this audience is within your scope. Example: “I am a medical representative with veterinary "
+                "training presenting scientific information for human healthcare professionals.”"
+            ),
+        }
+        return messages.get(state.user_profile.preferred_language, messages["en"])
 
     @staticmethod
     def _conversation_retrieval_context(state: GraphState, message: str) -> str | None:

@@ -35,7 +35,16 @@ def ensure_history(state: GraphState) -> bool:
 
 
 def add_turn(state: GraphState, role: str, text: str) -> None:
+    """Append a presentation-assistant turn only."""
     normalized = text.strip()
     if not normalized:
         return
     state.conversation_history.append(ConversationTurn(role=role, text=normalized))
+
+
+def add_resource_turn(state: GraphState, role: str, text: str) -> None:
+    """Append a PDF-library exploration turn without changing agent history."""
+    normalized = text.strip()
+    if not normalized:
+        return
+    state.resource_conversation_history.append(ConversationTurn(role=role, text=normalized))

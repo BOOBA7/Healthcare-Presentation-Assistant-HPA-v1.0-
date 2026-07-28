@@ -22,6 +22,7 @@ from app.application.use_cases.workflow_steps import (
 from app.application.use_cases.export_powerpoint import ExportPowerPointUseCase
 from app.application.use_cases.remove_resource import RemoveResourceUseCase
 from app.application.use_cases.add_resource import AddResourceUseCase
+from app.application.services.workflow_policy import WorkflowPolicy
 from app.ai.agents.healthcare_presentation_agent import HealthcarePresentationAgent
 from app.domain.enums.resource_type import ResourceType
 from app.domain.models.resource import Resource
@@ -125,6 +126,46 @@ def test_scope_clarification_resumes_slide_generation_when_blueprint_was_already
     assert state.presentation.state.workflow_status == WorkflowStatus.SLIDE_GENERATION
 
 
+def test_scope_explanation_is_persisted_once_before_the_agent_can_reply_again():
+    """A model omission must not force the user to repeat the same explanation."""
+    state = collect_context.func(
+        GraphState(user_profile=UserProfile(professional_role="veterinarian", preferred_language="en")),
+        topic="Depression",
+        audience=AudienceType.GENERAL_PRACTITIONER,
+        presentation_type=PresentationType.LECTURE,
+        language=Language.ENGLISH,
+        duration_minutes=20,
+        objective="Review approved product evidence",
+    )
+    state = create_presentation.func(validate_context.func(state))
+    state.presentation.state.workflow_status = WorkflowStatus.AWAITING_SCOPE_CLARIFICATION
+    explanation = "I am a human medical representative with veterinary training presenting Zoloft evidence."
+
+    clarified = HealthcarePresentationAgent._record_scope_clarification_if_supplied(state, explanation)
+    repeated = HealthcarePresentationAgent._record_scope_clarification_if_supplied(clarified, explanation)
+
+    assert clarified.presentation.professional_scope == explanation
+    assert clarified.presentation.state.workflow_status == WorkflowStatus.BLUEPRINT_GENERATION
+    assert repeated.presentation.professional_scope == explanation
+    assert repeated.presentation.state.workflow_status == WorkflowStatus.BLUEPRINT_GENERATION
+    assert HealthcarePresentationAgent._scope_clarification_message_if_needed(clarified) is None
+
+
+def test_scope_clarification_prompt_is_deterministic_and_concise():
+    state = GraphState(user_profile=UserProfile(professional_role="veterinarian", preferred_language="en"))
+    state.presentation = type(
+        "Presentation",
+        (),
+        {"state": type("State", (), {"workflow_status": WorkflowStatus.AWAITING_SCOPE_CLARIFICATION})()},
+    )()
+
+    prompt = HealthcarePresentationAgent._scope_clarification_message_if_needed(state)
+
+    assert prompt is not None
+    assert "medical representative" in prompt
+    assert "clinical guidance for human patients" not in prompt
+
+
 def test_deleting_a_resource_resets_generated_content_and_approvals():
     state = collect_context.func(
         GraphState(),
@@ -203,6 +244,7 @@ def test_adding_a_resource_is_allowed_late_and_resets_dependent_output():
     assert presentation.slides == []
     assert not presentation.state.resources_validated
     assert presentation.state.workflow_status == WorkflowStatus.AWAITING_RESOURCE_VALIDATION
+    assert WorkflowPolicy.requires_resource_validation(presentation)
 
 
 def test_blueprint_request_surfaces_human_resource_validation_only_when_needed():
