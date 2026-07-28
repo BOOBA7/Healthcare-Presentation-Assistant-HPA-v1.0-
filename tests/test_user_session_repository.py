@@ -1,5 +1,10 @@
+import pytest
+
 from app.ai.workflows.graph_state import GraphState
 from app.domain.models.user_profile import UserProfile
+from app.domain.models.resource import Resource
+from app.domain.enums.resource_type import ResourceType
+from app.domain.exceptions.concurrent_modification_error import ConcurrentModificationError
 from app.interfaces.storage.user_session_repository import UserSessionRepository
 from app.application.services.conversation_history import add_turn, ensure_history
 from langchain_core.messages import AIMessage, HumanMessage
@@ -161,3 +166,46 @@ def test_job_progress_is_durable_and_scoped_to_the_user(tmp_path):
     assert restored["progress"] == 65
     assert restored["stage"] == "generating_overview"
     assert repository.get_job("another-user", job["job_id"]) is None
+
+
+def test_pdf_pages_and_chunks_are_not_serialized_in_project_state(tmp_path):
+    repository = UserSessionRepository(tmp_path / "sessions.sqlite3")
+    state = GraphState(
+        resource_library=[
+            Resource(
+                id="pdf-1",
+                filename="guideline.pdf",
+                file_type=ResourceType.PDF,
+                extracted_pages=[{"page": 1, "text": "Evidence passage " * 120}],
+                is_validated=True,
+            )
+        ]
+    )
+
+    repository.save("user-1", "project-a", "thread-1", state)
+    _, restored = repository.load("user-1", "project-a")
+
+    assert restored.resource_library[0].extracted_pages[0]["text"].startswith("Evidence passage")
+    with repository._connect() as connection:
+        serialized = connection.execute(
+            "SELECT state_json FROM project_sessions WHERE user_id = 'user-1' AND project_id = 'project-a'"
+        ).fetchone()[0]
+        page_count = connection.execute("SELECT COUNT(*) FROM project_resource_pages").fetchone()[0]
+        chunk_count = connection.execute("SELECT COUNT(*) FROM project_resource_chunks").fetchone()[0]
+    assert "Evidence passage" not in serialized
+    assert page_count == 1
+    assert chunk_count >= 1
+
+
+def test_stale_project_revision_is_rejected_instead_of_overwriting(tmp_path):
+    repository = UserSessionRepository(tmp_path / "sessions.sqlite3")
+    thread_id, state = repository.create_empty("user-1", "project-a")
+    _, first_copy = repository.load("user-1", "project-a")
+    _, stale_copy = repository.load("user-1", "project-a")
+
+    first_copy.conversation_context.topic = "First update"
+    repository.save("user-1", "project-a", thread_id, first_copy)
+    stale_copy.conversation_context.topic = "Stale update"
+
+    with pytest.raises(ConcurrentModificationError):
+        repository.save("user-1", "project-a", thread_id, stale_copy)

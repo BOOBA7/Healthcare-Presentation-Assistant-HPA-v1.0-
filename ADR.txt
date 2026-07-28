@@ -56,8 +56,9 @@ Expected business failures use a common, safe hierarchy:
 ValueError
 └── DomainError
     ├── ValidationError
-    └── WorkflowError
-        └── InvalidTransition
+    ├── WorkflowError
+    │   └── InvalidTransition
+    └── ConcurrentModificationError
 ```
 
 `DomainError` preserves compatibility with existing `ValueError` handling while
@@ -128,6 +129,11 @@ Every slide reference is validated by `EvidenceProvenanceValidator`:
 2. the cited page must exist in that resource;
 3. the evidence excerpt must occur on that page.
 
+Comparison normalisation is Unicode-safe: it removes combining marks for
+accent-tolerant comparison without deleting Arabic (or another non-Latin)
+letters. An Arabic excerpt therefore cannot be accepted merely because both
+strings were reduced to empty ASCII text.
+
 The PowerPoint displays the user-validated resources and associated evidence.
 The separate resource-overview and PDF-discussion features use bounded passages
 from the Project library only; they do not alter the production selection.
@@ -157,11 +163,44 @@ user-edited, or user-authored.
 ### 7. Persistence and auditability
 
 For local use, `UserSessionRepository` persists user accounts, profile,
-Projects, durable conversation transcripts, resource-library metadata and
-extracted text, presentation state, templates, and immutable-style project
-events in SQLite. Audit events include action type, actor, time, workflow
-state, and prompt/harness/retrieval/workflow versions. Generation records store
-selected model and version metadata.
+Projects, durable conversation transcripts, resource-library metadata,
+presentation state, templates, jobs and immutable-style project events in
+SQLite. Large PDF material is deliberately outside `state_json`: metadata is
+stored in `project_resources`, extracted pages in `project_resource_pages`,
+and retrieval chunks in `project_resource_chunks`. This avoids copying all PDF
+text on every chat turn and keeps API responses metadata-only.
+
+Each Project has an optimistic `revision`. State and audit event are written in
+the same SQLite transaction and a write uses `WHERE revision = expected`.
+When a human action or a second job has already changed the Project, the stale
+write fails as `PROJECT_VERSION_CONFLICT` rather than overwriting the latest
+state.
+
+Long-running model calls are recorded as durable local `project_jobs` entries.
+The API returns `202`, then clients poll a job for stage/progress/result. The
+process records content-free observability counters such as LLM duration,
+prompt size, retrieval selections, generation failures and evidence refusals.
+This is deliberately a local executor, not a distributed queue.
+
+### 7a. Evaluation is system-level and provider-independent
+
+HPA evaluates its own contract with deterministic, provider-free tests and a
+small clinician-reviewed product evaluation set. The target is not merely a
+generic medical-chat score. Evaluation must exercise the complete path:
+
+```text
+Project PDF → retrieval → evidence gate → workflow → provenance → human review
+```
+
+Each product-evaluation case records expected allow/refuse behavior, workflow
+transition, citation/provenance outcome and, when a live model is used, the
+provider and model identifier. The initial evaluation set can be built from
+small controlled PDFs and 30–50 realistic scenarios; it does not require an
+external data source or an OpenAI account.
+
+External benchmarks can inform base-model choice, but they do not certify HPA's
+retrieval, workflow or provenance behavior. The detailed strategy is maintained
+in `docs/EVALUATION.md`.
 
 The audit API is:
 
@@ -172,7 +211,7 @@ GET /projects/{user_id}/{project_id}/audit-events
 SQLite is a local deployment choice, not a multi-instance production
 architecture.
 
-### 8. Interfaces and authentication
+### 8. Interfaces, API composition and authentication
 
 FastAPI serves the local JavaScript interface at `/app`; Streamlit and CLI are
 additional local interfaces. API Project access requires a bearer token and is
@@ -182,6 +221,13 @@ is not acceptable for public deployment.
 The application repository is the durable source of Project state. A legacy
 `InMemorySaver` adapter remains available for experimentation, but the durable
 Project workflow does not rely on it.
+
+FastAPI composition is separated by bounded API domain. `main.py` owns
+application creation, shared dependencies and workflow compatibility routes;
+authentication, Project/template, versioned platform and asynchronous-job
+routes are provided by modules in `interfaces/api/routers/`. This keeps a
+stable public surface while allowing the remaining resource/review routes to
+migrate without breaking either local interface.
 
 ## Consequences
 
@@ -199,6 +245,16 @@ Project workflow does not rely on it.
 - BM25 can reject a concept that is present under different wording or language.
 - More gates mean more explicit user interactions and less apparent autonomy.
 - SQLite and local files must be replaced for concurrent production deployment.
+- The local job executor provides persistence and progress, not worker retries
+  or horizontal scaling.
+- The current BM25 index is reconstructed from persisted page text per request;
+  using the persisted chunk table directly is a planned optimisation.
+- Conversation history is persisted but not yet summarised or context-bounded
+  before every model call.
+- Optimistic Project revision prevents lost writes but does not yet serialize
+  duplicate jobs for one Project.
+- Generation records include version metadata, but provider-accurate model
+  capture must be completed before treating them as fully reproducible records.
 
 ## Explicit non-decisions
 
@@ -207,7 +263,9 @@ The following are intentionally not claimed as implemented:
 - OCR for scanned PDFs;
 - external PubMed, guideline, or web retrieval;
 - semantic/vector retrieval, embeddings, or a global knowledge base;
-- background job queue, retries, or distributed execution;
+- distributed job queue, worker retries, or distributed execution;
+- a clinical benchmark score, clinical validation, or an external benchmark
+  certification of HPA;
 - PostgreSQL migration and object storage;
 - enterprise SSO, MFA, secure public password recovery, or role-based access;
 - clinical validation, regulatory certification, FDA clearance/approval, or

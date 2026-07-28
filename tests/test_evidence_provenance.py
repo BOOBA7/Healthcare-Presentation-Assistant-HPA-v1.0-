@@ -49,6 +49,26 @@ def test_evidence_reference_is_verified_against_its_pdf_page():
     assert candidate.evidence_verified
 
 
+def test_arabic_evidence_excerpt_must_match_the_exact_pdf_page():
+    arabic_resource = Resource(
+        id="arabic-pdf",
+        filename="guideline-ar.pdf",
+        file_type=ResourceType.PDF,
+        extracted_pages=[{"page": 4, "text": "يوصى بمراجعة الاستجابة للعلاج بانتظام."}],
+        is_validated=True,
+    )
+    valid = slide(
+        {"resource_id": "arabic-pdf", "page": 4, "evidence_excerpt": "مراجعة الاستجابة للعلاج"}
+    )
+    invalid = slide(
+        {"resource_id": "arabic-pdf", "page": 4, "evidence_excerpt": "لا توجد هذه العبارة في المصدر"}
+    )
+
+    EvidenceProvenanceValidator().validate_slide(valid, [arabic_resource])
+    with pytest.raises(ValueError, match="was not found"):
+        EvidenceProvenanceValidator().validate_slide(invalid, [arabic_resource])
+
+
 @pytest.mark.parametrize(
     "reference, message",
     [

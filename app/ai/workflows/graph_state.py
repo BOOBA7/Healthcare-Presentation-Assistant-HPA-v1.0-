@@ -20,6 +20,9 @@ class GraphState(BaseModel):
 
     messages: Annotated[list[BaseMessage], add_messages] = Field(default_factory=list)
     conversation_history: list[ConversationTurn] = Field(default_factory=list)
+    # Optimistic-lock revision supplied by the SQLite repository.  It is not a
+    # workflow approval and must change on every durable Project write.
+    project_revision: int = Field(default=0, ge=0)
     conversation_mode: ConversationMode = ConversationMode.GENERAL
     # The project owns uploaded documents. A presentation only keeps an
     # explicit selection from this library for controlled production.

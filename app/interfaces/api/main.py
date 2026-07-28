@@ -1,8 +1,6 @@
 from functools import lru_cache
-import io
 import logging
 from pathlib import Path
-from zipfile import BadZipFile, ZipFile
 
 import httpx
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
@@ -29,8 +27,6 @@ from app.application.services.resource_library import ensure_resource_library, r
 from app.core.config import get_settings
 from app.core.versioning import HARNESS_VERSION, RETRIEVAL_VERSION, WORKFLOW_VERSION
 from app.interfaces.storage.user_session_repository import UserSessionRepository
-from app.interfaces.api.job_runner import submit as submit_job
-from app.application.services.observability import snapshot as observability_snapshot, record as record_observability
 from app.domain.models.user_profile import UserProfile
 from app.domain.enums.presentation_theme import PresentationTheme
 from app.domain.enums.workflow_status import WorkflowStatus
@@ -261,15 +257,18 @@ def _save_project(
     repository = get_repository()
     ensure_history(state)
     ensure_resource_library(state)
-    repository.save_with_event(
-        user_id,
-        project_id,
-        thread_id,
-        state,
-        event_type,
-        actor,
-        _audit_payload(state, extra_audit),
-    )
+    try:
+        repository.save_with_event(
+            user_id,
+            project_id,
+            thread_id,
+            state,
+            event_type,
+            actor,
+            _audit_payload(state, extra_audit),
+        )
+    except DomainError as exc:
+        raise _workflow_conflict(exc) from exc
     return _project_response(user_id, project_id, thread_id, state)
 
 
@@ -300,85 +299,6 @@ def health():
     }
 
 
-@app.get("/api/v1/health", tags=["platform"])
-def api_health():
-    """Versioned platform health endpoint for clients and CI smoke tests."""
-    return {"status": "healthy", "api_version": "v1"}
-
-
-@app.get("/api/v1/observability/summary", tags=["observability"])
-def observability_summary():
-    """Return process-local operational counters without source or prompt content."""
-    return {"counters": observability_snapshot()}
-
-
-@app.post("/auth/register")
-def register(credentials: RegistrationRequest):
-    try:
-        profile = UserProfile(
-            professional_role=credentials.professional_role,
-            preferred_language=credentials.preferred_language,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="Invalid professional profile or language.") from exc
-    try:
-        get_repository().register_user(credentials.user_id, credentials.password, profile)
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    token = get_repository().create_auth_token(credentials.user_id)
-    return {"user_id": credentials.user_id, "token": token, "profile": profile.model_dump()}
-
-
-@app.post("/auth/login")
-def login(credentials: CredentialsRequest):
-    if not get_repository().authenticate_user(credentials.user_id, credentials.password):
-        raise HTTPException(status_code=401, detail="Invalid user ID or password.")
-    token = get_repository().create_auth_token(credentials.user_id)
-    return {
-        "user_id": credentials.user_id,
-        "token": token,
-        "profile": get_repository().get_user_profile(credentials.user_id).model_dump(),
-    }
-
-
-@app.post("/auth/reset-password")
-def reset_password(credentials: CredentialsRequest):
-    """Local-only, deliberately unsecured recovery flow requested for this app."""
-    try:
-        get_repository().reset_password_without_verification(credentials.user_id, credentials.password)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return {
-        "user_id": credentials.user_id,
-        "token": get_repository().create_auth_token(credentials.user_id),
-        "profile": get_repository().get_user_profile(credentials.user_id).model_dump(),
-    }
-
-
-@app.get("/users/{user_id}/profile")
-def get_user_profile(user_id: str, authenticated_user: str = Depends(_authenticated_user)):
-    _assert_owner(user_id, authenticated_user)
-    return {"profile": get_repository().get_user_profile(user_id).model_dump()}
-
-
-@app.put("/users/{user_id}/profile")
-def update_user_profile(
-    user_id: str,
-    request: UserProfileRequest,
-    authenticated_user: str = Depends(_authenticated_user),
-):
-    _assert_owner(user_id, authenticated_user)
-    try:
-        profile = UserProfile(
-            professional_role=request.professional_role,
-            preferred_language=request.preferred_language,
-        )
-        get_repository().update_user_profile(user_id, profile)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="Invalid professional profile or language.") from exc
-    return {"profile": profile.model_dump()}
-
-
 @app.get("/app", include_in_schema=False)
 def web_app():
     """Serve the local JavaScript interface."""
@@ -386,85 +306,6 @@ def web_app():
 
 
 app.mount("/web", StaticFiles(directory=_web_dir), name="web")
-
-
-@app.get("/users/{user_id}/projects")
-def list_projects(user_id: str, authenticated_user: str = Depends(_authenticated_user)):
-    _assert_owner(user_id, authenticated_user)
-    return {"projects": get_repository().list_projects(user_id)}
-
-
-@app.get("/users/{user_id}/templates")
-def list_templates(user_id: str, authenticated_user: str = Depends(_authenticated_user)):
-    _assert_owner(user_id, authenticated_user)
-    return {"templates": get_repository().list_presentation_templates(user_id)}
-
-
-@app.post("/users/{user_id}/templates")
-async def upload_template(user_id: str, file: UploadFile = File(...), authenticated_user: str = Depends(_authenticated_user)):
-    _assert_owner(user_id, authenticated_user)
-    if not (file.filename or "").lower().endswith(".pptx"):
-        raise HTTPException(status_code=415, detail="Only .pptx templates are accepted.")
-    content = await file.read()
-    if not content or len(content) > 20 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="PowerPoint templates must be between 1 byte and 20 MB.")
-    try:
-        with ZipFile(io.BytesIO(content)) as archive:
-            if "ppt/presentation.xml" not in archive.namelist():
-                raise BadZipFile("Not a PowerPoint file")
-    except BadZipFile as exc:
-        raise HTTPException(status_code=422, detail="The uploaded file is not a valid .pptx template.") from exc
-    return get_repository().save_presentation_template(user_id, file.filename or "template.pptx", content)
-
-
-@app.post("/projects")
-def create_or_open_project(request: ProjectRequest, authenticated_user: str = Depends(_authenticated_user)):
-    _assert_owner(request.user_id, authenticated_user)
-    stored = get_repository().load(request.user_id, request.project_id)
-    if stored is None:
-        thread_id, state = get_repository().create_empty(request.user_id, request.project_id, request.project_name)
-    else:
-        thread_id, state = stored
-    if stored is not None and request.project_name:
-        get_repository().save_with_event(
-            request.user_id,
-            request.project_id,
-            thread_id,
-            state,
-            "PROJECT_RENAMED",
-            "user",
-            _audit_payload(state, {"project_name": request.project_name}),
-            request.project_name,
-        )
-    return _project_response(request.user_id, request.project_id, thread_id, state)
-
-
-@app.get("/projects/{user_id}/{project_id}")
-def get_project(user_id: str, project_id: str, authenticated_user: str = Depends(_authenticated_user)):
-    _assert_owner(user_id, authenticated_user)
-    thread_id, state = _get_project(user_id, project_id)
-    return _project_response(user_id, project_id, thread_id, state)
-
-
-@app.get("/projects/{user_id}/{project_id}/audit-events")
-def list_audit_events(user_id: str, project_id: str, authenticated_user: str = Depends(_authenticated_user)):
-    """Return immutable project events for traceability and operational review."""
-    _assert_owner(user_id, authenticated_user)
-    _get_project(user_id, project_id)
-    return {"events": get_repository().list_events(user_id, project_id)}
-
-
-@app.delete("/projects/{user_id}/{project_id}", status_code=204)
-def delete_project(user_id: str, project_id: str, authenticated_user: str = Depends(_authenticated_user)):
-    _assert_owner(user_id, authenticated_user)
-    if not get_repository().delete_project(user_id, project_id):
-        raise HTTPException(status_code=404, detail="Project not found.")
-
-
-@app.delete("/users/{user_id}", status_code=204)
-def delete_user(user_id: str, authenticated_user: str = Depends(_authenticated_user)):
-    _assert_owner(user_id, authenticated_user)
-    get_repository().delete_user(user_id)
 
 
 @app.post("/chat")
@@ -960,81 +801,15 @@ def export_powerpoint(user_id: str, project_id: str, authenticated_user: str = D
     return FileResponse(path, media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation", filename=f"{state.presentation.title}.pptx")
 
 
-@app.post("/api/v1/conversations/jobs", tags=["conversations"], status_code=202)
-def start_conversation_job(request: ChatRequest, authenticated_user: str = Depends(_authenticated_user)):
-    """Run an agent turn asynchronously; poll the returned job for progress."""
-    _assert_owner(request.user_id, authenticated_user)
-    if get_repository().load(request.user_id, request.project_id) is None:
-        raise HTTPException(status_code=404, detail="Project not found.")
-    job = get_repository().create_job(request.user_id, request.project_id, "conversation")
+from app.interfaces.api.routers import auth, jobs, platform, projects
 
-    def work(progress):
-        progress(25, "preparing_conversation")
-        progress(55, "calling_model")
-        result = chat(request, authenticated_user)
-        progress(90, "persisting_project")
-        return {"message": result.get("message", ""), "project_id": request.project_id}
-
-    submit_job(get_repository(), request.user_id, str(job["job_id"]), "conversation", work)
-    record_observability("async_job_queued", domain="conversation")
-    return job
-
-
-@app.post("/api/v1/resources/{user_id}/{project_id}/overview/jobs", tags=["resources"], status_code=202)
-def start_resource_overview_job(
-    user_id: str, project_id: str, authenticated_user: str = Depends(_authenticated_user)
-):
-    """Generate a resource overview asynchronously from the shared RAG layer."""
-    _assert_owner(user_id, authenticated_user)
-    if get_repository().load(user_id, project_id) is None:
-        raise HTTPException(status_code=404, detail="Project not found.")
-    job = get_repository().create_job(user_id, project_id, "resources")
-
-    def work(progress):
-        progress(30, "retrieving_pdf_passages")
-        progress(65, "generating_overview")
-        result = summarize_resources(user_id, project_id, authenticated_user)
-        progress(90, "persisting_project")
-        return {"project_id": project_id, "resource_analysis": result.get("resource_analysis")}
-
-    submit_job(get_repository(), user_id, str(job["job_id"]), "resources", work)
-    record_observability("async_job_queued", domain="resources")
-    return job
-
-
-@app.post("/api/v1/resources/{user_id}/{project_id}/discussion/jobs", tags=["resources"], status_code=202)
-def start_resource_discussion_job(
-    user_id: str,
-    project_id: str,
-    request: ResourceDiscussionRequest,
-    authenticated_user: str = Depends(_authenticated_user),
-):
-    """Discuss project PDFs asynchronously without entering production mode."""
-    _assert_owner(user_id, authenticated_user)
-    if get_repository().load(user_id, project_id) is None:
-        raise HTTPException(status_code=404, detail="Project not found.")
-    job = get_repository().create_job(user_id, project_id, "resources")
-
-    def work(progress):
-        progress(30, "retrieving_pdf_passages")
-        progress(65, "generating_discussion")
-        result = discuss_resources(user_id, project_id, request, authenticated_user)
-        progress(90, "persisting_project")
-        return {"project_id": project_id, "messages": result.get("messages", [])[-1:]}
-
-    submit_job(get_repository(), user_id, str(job["job_id"]), "resources", work)
-    record_observability("async_job_queued", domain="resources")
-    return job
-
-
-@app.get("/api/v1/jobs/{user_id}/{job_id}", tags=["jobs"])
-def get_async_job(user_id: str, job_id: str, authenticated_user: str = Depends(_authenticated_user)):
-    """Poll a durable job record. Terminal states are completed and failed."""
-    _assert_owner(user_id, authenticated_user)
-    job = get_repository().get_job(user_id, job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Job not found.")
-    return job
+# Versioned platform and asynchronous workload endpoints are isolated from the
+# legacy compatibility routes above.  More domains can migrate incrementally
+# without changing the public URLs used by the two local interfaces.
+app.include_router(platform.router)
+app.include_router(jobs.router)
+app.include_router(auth.router)
+app.include_router(projects.router)
 
 
 if __name__ == "__main__":

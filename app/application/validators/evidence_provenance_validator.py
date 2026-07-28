@@ -67,5 +67,11 @@ class EvidenceProvenanceValidator:
 
     @staticmethod
     def _normalize(text: str) -> str:
-        decomposed = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
-        return re.sub(r"[^a-z0-9]+", "", decomposed.lower())
+        """Normalize comparison text without erasing Arabic or other Unicode scripts.
+
+        Combining marks are removed so accented Latin text compares reliably,
+        while letters from Arabic, Cyrillic and other scripts remain intact.
+        """
+        decomposed = unicodedata.normalize("NFKD", text)
+        without_marks = "".join(char for char in decomposed if not unicodedata.combining(char))
+        return "".join(char for char in without_marks.casefold() if char.isalnum())

@@ -30,8 +30,10 @@ clinical, legal or institutional review.
   user-authored.
 - Validates evidence provenance for AI-generated slides and exports a final
   *Resources and validation* slide.
-- Persists Projects, conversation transcripts, extracted PDF text, templates,
-  workflow state and audit events in local SQLite storage.
+- Persists Projects, conversation transcripts, resource metadata, PDF pages,
+  retrieval chunks, templates, workflow state and audit events in local SQLite.
+- Runs longer model operations as durable local jobs with polling progress and
+  lightweight operational counters.
 
 ## Resource library and evidence model
 
@@ -129,19 +131,21 @@ Web app (/app) · Streamlit · CLI
   └─ PowerPoint exporter
                 │
                 ▼
- SQLite: users · Projects · state · transcripts · templates · audit events
+ SQLite: users · Projects/revision · state · resource pages/chunks · jobs · audit
 ```
 
 State is deliberately separated:
 
 | State | Responsibility |
 |---|---|
-| `GraphState` | Agent orchestration, conversation transcript, Project library and exploration analysis |
+| `GraphState` | Agent orchestration, conversation transcript, resource identifiers and exploration analysis |
 | `PresentationState` | Durable production lifecycle and approval flags |
 | `ExecutionContext` | Last safe tool outcome or error; never a business approval |
 
 The full architecture rationale is in [ADR-0007](ADR.txt). The historical
 prompt-engineering review is retained in [docs/PROMPT_REVIEW.md](docs/PROMPT_REVIEW.md).
+The system-level evaluation approach is documented in
+[docs/EVALUATION.md](docs/EVALUATION.md).
 
 ## Project structure
 
@@ -176,11 +180,13 @@ excluded.
 │   │   ├── profiles/                    # Professional role profiles
 │   │   └── value_objects/               # Presentation context and reference value objects
 │   └── interfaces/                      # Delivery and persistence adapters
-│       ├── api/main.py                  # FastAPI API and `/app` routes
+│       ├── api/main.py                  # FastAPI composition, legacy-compatible routes and `/app`
+│       │   └── routers/                 # Authentication, Project, platform and job routers
 │       ├── storage/                     # SQLite UserSessionRepository
 │       ├── web/                         # JavaScript web app: HTML, CSS and client logic
 │       └── langgraph/                   # Experimental checkpointer adapter
 ├── docs/
+│   ├── EVALUATION.md                    # System-level evaluation and test strategy
 │   └── PROMPT_REVIEW.md                 # Historical prompt-engineering review
 ├── tests/                               # Automated unit and workflow tests
 ├── main.py                              # Local CLI entry point
@@ -193,9 +199,17 @@ excluded.
 └── secrets.toml.example                 # Streamlit secrets template (never commit real secrets)
 ```
 
-At runtime, SQLite data is created under `data/`, PowerPoint exports under
-`exports/`, and uploaded resource content is stored in the Project state. These
-runtime artefacts and user PDFs should not be committed to Git.
+At runtime, SQLite data is created under `data/` and PowerPoint exports under
+`exports/`. Uploaded PDF text is not stored in `project_sessions.state_json`:
+the repository stores metadata in `project_resources`, page text in
+`project_resource_pages`, and bounded retrieval chunks in
+`project_resource_chunks`. These runtime artefacts and user PDFs should not be
+committed to Git.
+
+Every Project row also has a monotonically increasing `revision`. A save only
+succeeds when its revision still matches the database row; a stale background
+job therefore receives `PROJECT_VERSION_CONFLICT` rather than silently
+overwriting newer human work.
 
 ## Domain error model
 
@@ -206,8 +220,9 @@ text-only `ValueError` exceptions:
 ValueError
 └── DomainError                         # Common safe business failure
     ├── ValidationError                 # Deterministic invalid domain data
-    └── WorkflowError                   # Stable workflow code and retry flag
-        └── InvalidTransition           # Action forbidden in the current state
+    ├── WorkflowError                   # Stable workflow code and retry flag
+    │   └── InvalidTransition           # Action forbidden in the current state
+    └── ConcurrentModificationError     # A stale job/save cannot overwrite a Project
 ```
 
 All domain errors keep a human-readable `user_message`, a stable `code`, and a
@@ -292,6 +307,15 @@ owner-scoped. Main endpoint groups include:
 - `DELETE /projects/{user_id}/{project_id}/resources/{resource_id}`
 - `GET /projects/{user_id}/{project_id}/audit-events`
 - `GET /presentations/{user_id}/{project_id}/export/pptx`
+- `POST /api/v1/conversations/jobs`, `GET /api/v1/jobs/{user_id}/{job_id}`
+- `POST /api/v1/resources/{user_id}/{project_id}/overview/jobs`
+- `POST /api/v1/resources/{user_id}/{project_id}/discussion/jobs`
+- `GET /api/v1/observability/summary`
+
+FastAPI endpoints are grouped by router (`auth`, `projects`, `platform` and
+`jobs`) under `app/interfaces/api/routers/`. The remaining workflow routes
+stay in `main.py` while they are migrated incrementally without breaking
+Streamlit or `/app`.
 
 The local password-reset endpoint is intentionally unsuitable for public
 deployment. Use a real identity provider and secure recovery flow before any
@@ -304,14 +328,37 @@ venv/bin/pytest -q
 ```
 
 The test suite uses fake model responses and does not consume provider quota.
+It includes repository concurrency/persistence tests and an HTTP integration
+test for the authenticated Project/PDF lifecycle. GitHub Actions runs
+compilation and this suite for every push and pull request to `main`.
+
+This is not a clinical benchmark score. HPA should be evaluated as a complete
+evidence-gated system: uploaded PDF → retrieval → gate → workflow → human
+review → export. See [docs/EVALUATION.md](docs/EVALUATION.md) for the concrete
+test contract and a low-cost clinician-reviewed pilot plan.
 
 ## Current limitations and next production work
 
-- SQLite is suitable for one local instance. Use PostgreSQL, migrations and
-  object storage for concurrent or multi-instance deployment.
+- SQLite is suitable for one local instance. The local optimistic Project
+  revision prevents lost updates between local jobs, but PostgreSQL, migrations
+  and object storage are needed for concurrent or multi-instance deployment.
 - Scanned PDFs require OCR; OCR is not implemented.
 - BM25 is private and transparent, but lexical and conservative. A future
   semantic retrieval layer must remain scoped to user-uploaded resources.
+- Chunks are persisted in SQLite, but the current BM25 implementation rebuilds
+  its in-memory index from the stored pages for each request. Direct retrieval
+  over persisted chunks is a performance improvement still to be implemented.
+- Conversation messages are durable but are not yet summarised or bounded
+  before every model call; very long discussions can become slower and more
+  expensive.
+- Generation records should capture the configured provider and exact model for
+  every generation. This is especially important when switching between OpenAI
+  and Gemini.
+- Project revisions prevent silent stale writes, but local jobs are not yet
+  serialized per Project; concurrent requests can still waste one model call
+  before the stale write is rejected.
+- `main.py` still contains resource and review endpoints while their routers
+  are being migrated incrementally.
 - The resource overview and discussion use bounded PDF passages; they are not
   a replacement for full evidence synthesis or clinical review.
 - Public deployment needs production authentication, rate limits, secure file

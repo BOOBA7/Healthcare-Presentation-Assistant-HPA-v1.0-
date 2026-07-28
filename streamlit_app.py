@@ -565,7 +565,7 @@ if state.resource_library:
 
 if (
     state.presentation
-    and state.execution.tool_output.get("error_code") == "RESOURCES_VALIDATION_REQUIRED"
+    and (state.execution.tool_output or {}).get("error_code") == "RESOURCES_VALIDATION_REQUIRED"
 ):
     st.divider()
     st.subheader("Human validation required")

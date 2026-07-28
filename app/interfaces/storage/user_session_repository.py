@@ -10,6 +10,9 @@ from uuid import uuid4
 from langchain_core.messages import AIMessage, HumanMessage, messages_from_dict, messages_to_dict
 
 from app.ai.workflows.graph_state import GraphState
+from app.application.services.resource_library import ensure_resource_library
+from app.domain.exceptions.concurrent_modification_error import ConcurrentModificationError
+from app.domain.models.resource import Resource
 from app.domain.models.user_profile import UserProfile
 
 
@@ -88,6 +91,38 @@ class UserSessionRepository:
                 )"""
             )
             connection.execute(
+                """CREATE TABLE IF NOT EXISTS project_resources (
+                    user_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    resource_id TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, project_id, resource_id)
+                )"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS project_resource_pages (
+                    user_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    resource_id TEXT NOT NULL,
+                    page_number INTEGER NOT NULL,
+                    page_text TEXT NOT NULL,
+                    PRIMARY KEY (user_id, project_id, resource_id, page_number)
+                )"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS project_resource_chunks (
+                    user_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    resource_id TEXT NOT NULL,
+                    page_number INTEGER NOT NULL,
+                    chunk_position INTEGER NOT NULL,
+                    chunk_text TEXT NOT NULL,
+                    PRIMARY KEY (user_id, project_id, resource_id, page_number, chunk_position)
+                )"""
+            )
+            connection.execute(
                 """CREATE INDEX IF NOT EXISTS idx_project_jobs_project
                    ON project_jobs (user_id, project_id, created_at DESC)"""
             )
@@ -96,6 +131,7 @@ class UserSessionRepository:
                    ON project_events (user_id, project_id, created_at)"""
             )
             self._ensure_project_name_column(connection)
+            self._ensure_project_revision_column(connection)
             self._ensure_user_profile_columns(connection)
             self._migrate_legacy_user_sessions(connection)
             self._recover_interrupted_jobs(connection)
@@ -103,13 +139,18 @@ class UserSessionRepository:
     def load(self, user_id: str, project_id: str) -> tuple[str, GraphState] | None:
         with self._connect() as connection:
             row = connection.execute(
-                """SELECT thread_id, state_json FROM project_sessions
+                """SELECT thread_id, state_json, revision FROM project_sessions
                    WHERE user_id = ? AND project_id = ?""",
                 (user_id, project_id),
             ).fetchone()
+            resources = self._load_resources(connection, user_id, project_id)
         if row is None:
             return None
-        return row[0], self._deserialize_state(json.loads(row[1]))
+        state = self._deserialize_state(json.loads(row[1]))
+        if resources:
+            state.resource_library = resources
+        state.project_revision = row[2]
+        return row[0], state
 
     def save(
         self,
@@ -253,6 +294,11 @@ class UserSessionRepository:
 
     def delete_project(self, user_id: str, project_id: str) -> bool:
         with self._connect() as connection:
+            for table in ("project_resource_chunks", "project_resource_pages", "project_resources", "project_jobs"):
+                connection.execute(
+                    f"DELETE FROM {table} WHERE user_id = ? AND project_id = ?",
+                    (user_id, project_id),
+                )
             connection.execute(
                 "DELETE FROM project_events WHERE user_id = ? AND project_id = ?",
                 (user_id, project_id),
@@ -269,6 +315,10 @@ class UserSessionRepository:
                 "SELECT stored_filename FROM presentation_templates WHERE user_id = ?", (user_id,)
             ).fetchall()
             connection.execute("DELETE FROM auth_tokens WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM project_resource_chunks WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM project_resource_pages WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM project_resources WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM project_jobs WHERE user_id = ?", (user_id,))
             connection.execute("DELETE FROM project_sessions WHERE user_id = ?", (user_id,))
             connection.execute("DELETE FROM project_events WHERE user_id = ?", (user_id,))
             connection.execute("DELETE FROM presentation_templates WHERE user_id = ?", (user_id,))
@@ -394,7 +444,10 @@ class UserSessionRepository:
 
     @staticmethod
     def _serialize_state(state: GraphState) -> dict[str, object]:
-        payload = state.model_dump(mode="json", exclude={"messages"})
+        # Resource documents/pages are persisted in dedicated tables. Keeping
+        # them out of this state snapshot prevents every chat turn from
+        # rewriting all extracted PDF content.
+        payload = state.model_dump(mode="json", exclude={"messages", "resource_library"})
         payload["messages"] = messages_to_dict(state.messages)
         return payload
 
@@ -434,6 +487,12 @@ class UserSessionRepository:
             connection.execute(
                 "UPDATE project_sessions SET project_name = project_id WHERE project_name IS NULL"
             )
+
+    @staticmethod
+    def _ensure_project_revision_column(connection: sqlite3.Connection) -> None:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(project_sessions)")}
+        if "revision" not in columns:
+            connection.execute("ALTER TABLE project_sessions ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
 
     @staticmethod
     def _ensure_user_profile_columns(connection: sqlite3.Connection) -> None:
@@ -494,20 +553,147 @@ class UserSessionRepository:
         state: GraphState,
         project_name: str | None,
     ) -> None:
+        ensure_resource_library(state)
+        existing = connection.execute(
+            "SELECT revision FROM project_sessions WHERE user_id = ? AND project_id = ?",
+            (user_id, project_id),
+        ).fetchone()
+        current_revision = existing[0] if existing else None
+        if current_revision is not None and state.project_revision != current_revision:
+            raise ConcurrentModificationError()
+
+        next_revision = 1 if current_revision is None else current_revision + 1
+        state.project_revision = next_revision
+        self._sync_resources(connection, user_id, project_id, state.resource_library)
         payload = json.dumps(self._serialize_state(state))
-        connection.execute(
-            """INSERT INTO project_sessions (user_id, project_id, project_name, thread_id, state_json, updated_at)
-               VALUES (?, ?, COALESCE(NULLIF(?, ''), ?), ?, ?, CURRENT_TIMESTAMP)
-               ON CONFLICT(user_id, project_id) DO UPDATE SET
-               project_name = CASE
-                   WHEN ? = '' THEN project_sessions.project_name
-                   ELSE excluded.project_name
-               END,
-               thread_id = excluded.thread_id,
-               state_json = excluded.state_json,
-               updated_at = CURRENT_TIMESTAMP""",
-            (user_id, project_id, project_name or "", project_id, thread_id, payload, project_name or ""),
+
+        if current_revision is None:
+            connection.execute(
+                """INSERT INTO project_sessions
+                   (user_id, project_id, project_name, thread_id, state_json, revision, updated_at)
+                   VALUES (?, ?, COALESCE(NULLIF(?, ''), ?), ?, ?, ?, CURRENT_TIMESTAMP)""",
+                (user_id, project_id, project_name or "", project_id, thread_id, payload, next_revision),
+            )
+            return
+
+        cursor = connection.execute(
+            """UPDATE project_sessions SET
+               project_name = CASE WHEN ? = '' THEN project_name ELSE ? END,
+               thread_id = ?, state_json = ?, revision = ?, updated_at = CURRENT_TIMESTAMP
+               WHERE user_id = ? AND project_id = ? AND revision = ?""",
+            (
+                project_name or "", project_name or "", thread_id, payload, next_revision,
+                user_id, project_id, current_revision,
+            ),
         )
+        if cursor.rowcount != 1:
+            raise ConcurrentModificationError()
+
+    @staticmethod
+    def _resource_pages(resource: Resource) -> list[dict[str, object]]:
+        pages = [
+            {"page": page["page"], "text": page["text"]}
+            for page in resource.extracted_pages
+            if isinstance(page.get("page"), int) and isinstance(page.get("text"), str)
+        ]
+        if not pages and resource.extracted_text:
+            pages = [{"page": 1, "text": resource.extracted_text}]
+        return pages
+
+    @staticmethod
+    def _chunks_for_pages(pages: list[dict[str, object]]) -> list[tuple[int, int, str]]:
+        chunks: list[tuple[int, int, str]] = []
+        for page in pages:
+            page_number, page_text = page["page"], " ".join(str(page["text"]).split())
+            for position, start in enumerate(range(0, len(page_text), 1200)):
+                chunk = page_text[start : start + 1200]
+                if chunk:
+                    chunks.append((int(page_number), position, chunk))
+        return chunks
+
+    def _sync_resources(
+        self, connection: sqlite3.Connection, user_id: str, project_id: str, resources: list[Resource]
+    ) -> None:
+        existing = {
+            row[0]: row[1]
+            for row in connection.execute(
+                "SELECT resource_id, content_hash FROM project_resources WHERE user_id = ? AND project_id = ?",
+                (user_id, project_id),
+            )
+        }
+        incoming_ids = {resource.id for resource in resources}
+        removed_ids = set(existing).difference(incoming_ids)
+        for resource_id in removed_ids:
+            for table in ("project_resource_chunks", "project_resource_pages", "project_resources"):
+                connection.execute(
+                    f"DELETE FROM {table} WHERE user_id = ? AND project_id = ? AND resource_id = ?",
+                    (user_id, project_id, resource_id),
+                )
+
+        for resource in resources:
+            metadata = resource.model_dump(mode="json", exclude={"extracted_text", "extracted_pages"})
+            pages = self._resource_pages(resource)
+            canonical = json.dumps({"metadata": metadata, "pages": pages}, sort_keys=True, ensure_ascii=False)
+            content_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+            if existing.get(resource.id) == content_hash:
+                continue
+            connection.execute(
+                """INSERT INTO project_resources (user_id, project_id, resource_id, metadata_json, content_hash)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(user_id, project_id, resource_id) DO UPDATE SET
+                   metadata_json = excluded.metadata_json, content_hash = excluded.content_hash,
+                   updated_at = CURRENT_TIMESTAMP""",
+                (user_id, project_id, resource.id, json.dumps(metadata), content_hash),
+            )
+            connection.execute(
+                "DELETE FROM project_resource_pages WHERE user_id = ? AND project_id = ? AND resource_id = ?",
+                (user_id, project_id, resource.id),
+            )
+            connection.execute(
+                "DELETE FROM project_resource_chunks WHERE user_id = ? AND project_id = ? AND resource_id = ?",
+                (user_id, project_id, resource.id),
+            )
+            connection.executemany(
+                """INSERT INTO project_resource_pages
+                   (user_id, project_id, resource_id, page_number, page_text) VALUES (?, ?, ?, ?, ?)""",
+                [(user_id, project_id, resource.id, int(page["page"]), str(page["text"])) for page in pages],
+            )
+            connection.executemany(
+                """INSERT INTO project_resource_chunks
+                   (user_id, project_id, resource_id, page_number, chunk_position, chunk_text)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                [
+                    (user_id, project_id, resource.id, page, position, text)
+                    for page, position, text in self._chunks_for_pages(pages)
+                ],
+            )
+
+    @staticmethod
+    def _load_resources(connection: sqlite3.Connection, user_id: str, project_id: str) -> list[Resource]:
+        rows = connection.execute(
+            """SELECT resource_id, metadata_json FROM project_resources
+               WHERE user_id = ? AND project_id = ? ORDER BY updated_at, resource_id""",
+            (user_id, project_id),
+        ).fetchall()
+        resources: list[Resource] = []
+        for resource_id, metadata_json in rows:
+            pages = connection.execute(
+                """SELECT page_number, page_text FROM project_resource_pages
+                   WHERE user_id = ? AND project_id = ? AND resource_id = ? ORDER BY page_number""",
+                (user_id, project_id, resource_id),
+            ).fetchall()
+            metadata = json.loads(metadata_json)
+            extracted_pages = [{"page": page, "text": text} for page, text in pages]
+            resources.append(
+                Resource.model_validate(
+                    {
+                        **metadata,
+                        "extracted_pages": extracted_pages,
+                        "extracted_text": "\n".join(str(page["text"]) for page in extracted_pages),
+                    }
+                )
+            )
+        return resources
 
     @staticmethod
     def _insert_event(
