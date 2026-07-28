@@ -5,6 +5,7 @@ import unicodedata
 
 from app.domain.models.resource import Resource
 from app.domain.models.slide import Slide
+from app.domain.exceptions.validation_error import ValidationError
 
 
 class EvidenceProvenanceValidator:
@@ -12,7 +13,7 @@ class EvidenceProvenanceValidator:
 
     def validate_slide(self, slide: Slide, resources: list[Resource]) -> None:
         if not slide.reference_details:
-            raise ValueError(f"Slide {slide.slide_number} has no evidence citation.")
+            raise ValidationError(f"Slide {slide.slide_number} has no evidence citation.")
 
         resources_by_id = {resource.id: resource for resource in resources}
         for reference in slide.reference_details:
@@ -40,11 +41,11 @@ class EvidenceProvenanceValidator:
         excerpt = reference.get("evidence_excerpt")
 
         if not isinstance(resource_id, str) or resource_id not in resources_by_id:
-            raise ValueError(f"Slide {slide_number} cites an unknown resource ID.")
+            raise ValidationError(f"Slide {slide_number} cites an unknown resource ID.")
         if not isinstance(page_number, int):
-            raise ValueError(f"Slide {slide_number} citation has no valid PDF page.")
+            raise ValidationError(f"Slide {slide_number} citation has no valid PDF page.")
         if not isinstance(excerpt, str) or len(excerpt.strip()) < 12:
-            raise ValueError(f"Slide {slide_number} citation has no usable evidence excerpt.")
+            raise ValidationError(f"Slide {slide_number} citation has no usable evidence excerpt.")
 
         resource = resources_by_id[resource_id]
         page_text = next(
@@ -56,11 +57,11 @@ class EvidenceProvenanceValidator:
             None,
         )
         if not isinstance(page_text, str):
-            raise ValueError(
+            raise ValidationError(
                 f"Slide {slide_number} cites page {page_number}, which does not exist in resource {resource_id}."
             )
         if self._normalize(excerpt) not in self._normalize(page_text):
-            raise ValueError(
+            raise ValidationError(
                 f"Slide {slide_number} evidence excerpt was not found on page {page_number} of resource {resource_id}."
             )
 

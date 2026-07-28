@@ -8,7 +8,7 @@ auditable.
 from collections.abc import Iterable
 
 from app.domain.enums.workflow_status import WorkflowStatus
-from app.domain.exceptions.workflow_error import WorkflowError
+from app.domain.exceptions.invalid_transition import InvalidTransition
 
 
 class WorkflowPolicy:
@@ -20,7 +20,8 @@ class WorkflowPolicy:
     ) -> None:
         allowed_statuses = tuple(allowed)
         if current not in allowed_statuses:
-            raise WorkflowError(
-                "INVALID_WORKFLOW_TRANSITION",
-                f"Cannot {action} while the workflow is '{current.value}'.",
+            raise InvalidTransition(
+                current_status=current.value,
+                action=action,
+                allowed_statuses=(status.value for status in allowed_statuses),
             )

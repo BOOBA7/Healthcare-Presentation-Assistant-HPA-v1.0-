@@ -33,6 +33,7 @@ from app.domain.models.user_profile import UserProfile
 from app.domain.enums.presentation_theme import PresentationTheme
 from app.domain.enums.workflow_status import WorkflowStatus
 from app.domain.exceptions.workflow_error import WorkflowError
+from app.domain.exceptions.domain_error import DomainError
 from app.domain.models.execution_context import ExecutionContext
 from app.application.use_cases.workflow_steps import (
     RegenerateBlueprintUseCase,
@@ -196,7 +197,7 @@ def _assert_owner(user_id: str, authenticated_user: str) -> None:
 
 def _workflow_conflict(exc: ValueError) -> HTTPException:
     """Use a stable error code so web clients do not have to parse human text."""
-    if isinstance(exc, WorkflowError):
+    if isinstance(exc, DomainError):
         detail = {
             "code": exc.code,
             "message": exc.user_message,
