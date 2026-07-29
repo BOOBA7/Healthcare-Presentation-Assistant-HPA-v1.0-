@@ -5,6 +5,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from app.ai.llm.llm import get_llm
 from app.domain.models.resource_analysis import ResourceAnalysis
 from app.domain.models.resource import Resource
+from app.domain.models.resource_chunk import ResourceChunk
 from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuilder
 from app.application.services.observability import observe_llm_call
 
@@ -12,11 +13,16 @@ from app.application.services.observability import observe_llm_call
 class SummarizeResourcesUseCase:
     """Create a discussion starter without creating clinical slide content."""
 
-    def execute(self, resources: list[Resource], language: str = "en") -> ResourceAnalysis:
+    def execute(
+        self,
+        resources: list[Resource],
+        language: str = "en",
+        chunks: list[ResourceChunk] | None = None,
+    ) -> ResourceAnalysis:
         if not resources:
             raise ValueError("Upload at least one PDF before requesting a resource overview.")
 
-        context = EvidenceContextBuilder().for_overview(resources)
+        context = EvidenceContextBuilder().for_overview(resources, chunks)
         prompt = [
                 SystemMessage(
                     content=(
@@ -40,8 +46,8 @@ class SummarizeResourcesUseCase:
         )
         return analysis
 
-    def build_context(self, resources: list[Resource]) -> str:
-        context = EvidenceContextBuilder().for_overview(resources)
+    def build_context(self, resources: list[Resource], chunks: list[ResourceChunk] | None = None) -> str:
+        context = EvidenceContextBuilder().for_overview(resources, chunks)
         if context.startswith("No relevant"):
             raise ValueError("No readable text is available in the uploaded PDFs.")
         return context

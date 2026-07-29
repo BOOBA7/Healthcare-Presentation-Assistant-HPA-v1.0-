@@ -3,6 +3,7 @@ from app.ai.prompt_builders.blueprint_prompt_builder import BlueprintPromptBuild
 from app.ai.schemas.blueprint_schema import BlueprintSchema
 from app.domain.models.presentation import Presentation
 from app.domain.models.resource import Resource
+from app.domain.models.resource_chunk import ResourceChunk
 from app.application.services.observability import observe_llm_call
 
 
@@ -20,12 +21,13 @@ class BlueprintChain:
         self,
         presentation: Presentation,
         resources: list[Resource] | None = None,
+        chunks: list[ResourceChunk] | None = None,
     ) -> BlueprintSchema:
         """
         Generate a blueprint from the presentation context.
         """
 
-        prompt = self.prompt_builder.build(presentation, resources)
+        prompt = self.prompt_builder.build(presentation, resources, chunks)
 
         structured_llm = self.llm.with_structured_output(BlueprintSchema)
 

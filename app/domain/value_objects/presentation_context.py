@@ -41,3 +41,10 @@ class PresentationContext(BaseModel):
         ...,
         description="Main objective of the presentation.",
     )
+
+    presenter_name: str | None = Field(default=None, description="Name shown on the title slide.")
+    presenter_title: str | None = Field(default=None, description="Professional title shown on the title slide.")
+    organization: str | None = Field(default=None, description="Affiliation shown on the title slide.")
+    event_name: str | None = Field(default=None, description="Event name shown on the title slide.")
+    venue: str | None = Field(default=None, description="Presentation venue shown on the title slide.")
+    presentation_date: str | None = Field(default=None, description="Presentation date shown on the title slide.")

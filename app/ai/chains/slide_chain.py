@@ -6,6 +6,7 @@ from app.ai.schemas.slide_schema import SlideSchema
 from app.domain.models.presentation import Presentation
 from app.domain.models.slide_outline import SlideOutline
 from app.domain.models.resource import Resource
+from app.domain.models.resource_chunk import ResourceChunk
 from app.application.services.observability import observe_llm_call
 
 
@@ -24,6 +25,7 @@ class SlideChain:
         presentation: Presentation,
         outline: SlideOutline,
         resources: list[Resource] | None = None,
+        chunks: list[ResourceChunk] | None = None,
     ) -> SlideSchema:
         """
         Generate a single slide from the blueprint.
@@ -33,6 +35,7 @@ class SlideChain:
             presentation=presentation,
             outline=outline,
             resources=resources,
+            chunks=chunks,
         )
 
         structured_llm = self.llm.with_structured_output(

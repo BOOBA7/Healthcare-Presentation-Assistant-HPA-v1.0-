@@ -101,8 +101,22 @@ class ExportPowerPointUseCase:
         accent.fill.solid(); accent.fill.fore_color.rgb = self._rgb(palette["accent"]); accent.line.fill.background()
         self._textbox(slide, "HEALTHCARE PRESENTATION", 0.8, 1.25, 10.8, 0.35, size=12, color=palette["accent"], bold=True)
         self._textbox(slide, presentation.title, 0.8, 1.8, 11.5, 1.6, size=34, color=(255, 255, 255), bold=True)
-        self._textbox(slide, presentation.context.objective, 0.8, 4.0, 10.7, 0.8, size=18, color=(220, 235, 235))
+        self._textbox(slide, presentation.context.objective, 0.8, 3.75, 10.7, 0.62, size=17, color=(220, 235, 235))
+        details = self._title_slide_details(presentation)
+        for index, detail in enumerate(details):
+            self._textbox(slide, detail, 0.8, 4.55 + index * 0.34, 11.4, 0.28, size=11, color=(220, 235, 235))
         self._textbox(slide, f"{presentation.context.duration_minutes} min  ·  {presentation.context.audience.value}", 0.8, 6.5, 10.0, 0.3, size=11, color=(220, 235, 235))
+
+    @staticmethod
+    def _title_slide_details(presentation: Presentation) -> list[str]:
+        context = presentation.context
+        details: list[str] = []
+        presenter = " · ".join(item for item in (context.presenter_name, context.presenter_title) if item)
+        location = " · ".join(item for item in (context.venue, context.presentation_date) if item)
+        for item in (presenter, context.organization, context.event_name, location):
+            if item:
+                details.append(item)
+        return details[:4]
 
     def _add_agenda_slide(self, deck: PowerPoint, presentation: Presentation, palette: dict[str, tuple[int, int, int]]) -> None:
         slide = deck.slides.add_slide(self._blank_layout(deck))
@@ -186,29 +200,78 @@ class ExportPowerPointUseCase:
         resources: list[Resource],
         palette: dict[str, tuple[int, int, int]],
     ) -> None:
-        slide = deck.slides.add_slide(self._blank_layout(deck))
-        self._background(slide, palette["paper"])
-        title = self._label(presentation, "Resources and validation", "Ressources et validation", "المصادر والاعتماد")
-        validated = self._label(presentation, "All resources below were validated by the user.", "Toutes les ressources ci-dessous ont été validées par l’utilisateur.", "تم اعتماد جميع المصادر التالية من قبل المستخدم.")
-        self._header(slide, title, palette)
-        self._textbox(slide, validated, 0.85, 1.42, 11.5, 0.45, size=18, color=palette["ink"], bold=True)
+        # One resource is deliberately a small visual block rather than one
+        # long sentence. IDs remain available for audit, but do not compete
+        # with the document title during normal reading.
+        batches = [resources[index:index + 4] for index in range(0, len(resources), 4)]
         origins = {
             "ai_generated": sum(item.content_origin == "ai_generated" for item in presentation.slides),
             "user_edited": sum(item.content_origin == "user_edited" for item in presentation.slides),
             "user_authored": sum(item.content_origin == "user_authored" for item in presentation.slides),
         }
-        provenance = (
-            f"Content provenance: {origins['ai_generated']} AI-generated, "
-            f"{origins['user_edited']} user-edited, {origins['user_authored']} user-authored."
+        title = self._label(presentation, "Resources and validation", "Ressources et validation", "المصادر والاعتماد")
+        validated = self._label(
+            presentation,
+            "All resources below were validated by the user.",
+            "Toutes les ressources ci-dessous ont été validées par l’utilisateur.",
+            "تم اعتماد جميع المصادر التالية من قبل المستخدم.",
         )
-        self._textbox(slide, provenance, 0.85, 1.9, 11.5, 0.48, size=10, color=palette["ink"])
-        for index, resource in enumerate(resources):
-            details = [resource.title or resource.filename]
-            if resource.source:
-                details.append(resource.source)
-            details.append(f"ID: {resource.id}")
-            self._textbox(slide, f"{index + 1}. " + " — ".join(details), 0.95, 2.48 + index * 0.53, 11.1, 0.4, size=14, color=palette["ink"])
-        self._footer(slide, palette)
+        source_label = self._label(presentation, "Organisation", "Organisme", "الجهة")
+        audit_label = self._label(presentation, "Audit ID", "Identifiant d’audit", "معرّف التدقيق")
+
+        for batch_number, batch in enumerate(batches, start=1):
+            slide = deck.slides.add_slide(self._blank_layout(deck))
+            self._background(slide, palette["paper"])
+            suffix = f" ({batch_number}/{len(batches)})" if len(batches) > 1 else ""
+            self._header(slide, f"{title}{suffix}", palette)
+
+            if batch_number == 1:
+                self._textbox(slide, validated, 0.85, 1.38, 11.5, 0.38, size=15, color=palette["ink"], bold=True)
+                provenance = (
+                    f"Content provenance: {origins['ai_generated']} AI-generated, "
+                    f"{origins['user_edited']} user-edited, {origins['user_authored']} user-authored."
+                )
+                self._textbox(slide, provenance, 0.85, 1.86, 11.5, 0.3, size=9, color=palette["ink"])
+                top = 2.38
+            else:
+                top = 1.5
+
+            for index, resource in enumerate(batch):
+                resource_number = (batch_number - 1) * 4 + index + 1
+                item_top = top + index * 0.98
+                self._textbox(
+                    slide,
+                    f"{resource_number}. {resource.title or resource.filename}",
+                    0.95,
+                    item_top,
+                    11.1,
+                    0.42,
+                    size=13,
+                    color=palette["ink"],
+                    bold=True,
+                )
+                if resource.source:
+                    self._textbox(
+                        slide,
+                        f"{source_label}: {resource.source}",
+                        1.18,
+                        item_top + 0.43,
+                        10.9,
+                        0.2,
+                        size=9,
+                        color=palette["ink"],
+                    )
+                self._textbox(
+                    slide,
+                    f"{audit_label}: {resource.id}",
+                    1.18,
+                    item_top + 0.66,
+                    10.9,
+                    0.18,
+                    size=8,
+                    color=palette["ink"],
+                )
+            self._footer(slide, palette)
 
     @staticmethod
     def _label(presentation: Presentation, english: str, french: str, arabic: str) -> str:

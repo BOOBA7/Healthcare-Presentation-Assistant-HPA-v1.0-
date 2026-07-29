@@ -10,6 +10,7 @@ from app.ai.workflows.tools import (
     COGNITIVE_TOOLS,
 )
 from app.application.services.production_evidence_gate import ProductionEvidenceGate
+from app.application.services.conversation_memory import prepare_model_context, strip_transient_model_context
 from app.application.services.resource_library import resolve_presentation_resources
 from app.application.use_cases.workflow_steps import RecordProfessionalScopeUseCase
 from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuilder
@@ -97,8 +98,8 @@ class HealthcarePresentationAgent:
             )
             return action_state.model_dump()
 
-        retrieval_context = self._conversation_retrieval_context(state, latest_user_message)
-        workflow_state = state
+        workflow_state = prepare_model_context(state)
+        retrieval_context = self._conversation_retrieval_context(workflow_state, latest_user_message)
         if retrieval_context:
             workflow_state = state.model_copy(deep=True)
             excerpt_message = SystemMessage(
@@ -122,14 +123,8 @@ class HealthcarePresentationAgent:
                 }
             },
         )
-        if not retrieval_context:
-            return result
         result_state = GraphState(**result)
-        result_state.messages = [
-            message
-            for message in result_state.messages
-            if not getattr(message, "additional_kwargs", {}).get("hpa_transient_retrieval")
-        ]
+        strip_transient_model_context(result_state)
         return result_state.model_dump()
 
     @staticmethod
@@ -199,7 +194,9 @@ class HealthcarePresentationAgent:
             return None
         if not ProductionEvidenceGate._scientific_request.search(message):
             return None
-        context = EvidenceContextBuilder().for_resources(resolve_presentation_resources(state), message)
+        context = EvidenceContextBuilder().for_resources(
+            resolve_presentation_resources(state), message, state.resource_chunks
+        )
         return None if context.startswith("No relevant") else context
 
     @staticmethod

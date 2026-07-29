@@ -12,6 +12,7 @@ from app.application.use_cases.export_powerpoint import ExportPowerPointUseCase
 from app.application.use_cases.extract_pdf_resource import ExtractPdfResourceUseCase
 from app.application.use_cases.summarize_resources import SummarizeResourcesUseCase
 from app.application.use_cases.discuss_resources import DiscussResourcesUseCase
+from app.application.use_cases.update_presentation_details import UpdatePresentationDetailsUseCase
 from app.application.use_cases.manage_project_resources import (
     AddProjectResourceUseCase,
     AttachResourceToPresentationUseCase,
@@ -37,6 +38,7 @@ from app.ai.workflows.tools import (
 from app.interfaces.storage.user_session_repository import UserSessionRepository
 from app.domain.models.user_profile import UserProfile
 from app.domain.enums.presentation_theme import PresentationTheme
+from app.domain.enums.workflow_status import WorkflowStatus
 from app.domain.models.execution_context import ExecutionContext
 from app.application.services.conversation_history import (
     add_resource_turn,
@@ -46,6 +48,10 @@ from app.application.services.conversation_history import (
 )
 from app.application.services.resource_library import ensure_resource_library, resolve_presentation_resources
 from app.application.services.workflow_policy import WorkflowPolicy
+from app.application.services.citation_presentation import (
+    citation_display_details,
+    format_citations_for_display,
+)
 
 
 st.set_page_config(page_title="Healthcare Presentation Assistant", page_icon="🩺", layout="wide")
@@ -156,6 +162,7 @@ def load_project_state(user_id: str, project_id: str) -> GraphState:
             )
         st.session_state.pop("pptx_data", None)
         st.session_state.pop("pptx_name", None)
+    st.session_state.state.resource_chunks = get_repository().load_resource_chunks(user_id, project_id)
     return st.session_state.state
 
 
@@ -296,7 +303,9 @@ def analyze_uploaded_resources() -> None:
     state = st.session_state.state
     try:
         analysis = SummarizeResourcesUseCase().execute(
-            state.resource_library, language=state.user_profile.preferred_language
+            state.resource_library,
+            language=state.user_profile.preferred_language,
+            chunks=state.resource_chunks,
         )
         state.resource_analysis = analysis
         save_state()
@@ -311,7 +320,10 @@ def discuss_uploaded_resources(question: str) -> None:
     state = st.session_state.state
     try:
         answer = DiscussResourcesUseCase().execute(
-            state.resource_library, question, language=state.user_profile.preferred_language
+            state.resource_library,
+            question,
+            language=state.user_profile.preferred_language,
+            chunks=state.resource_chunks,
         )
         add_resource_turn(state, "user", question)
         add_resource_turn(state, "assistant", answer)
@@ -334,6 +346,18 @@ def message_text(message) -> str:
             if isinstance(block, dict) and block.get("type") == "text"
         ).strip()
     return str(content)
+
+
+def render_model_message(text: str, resources) -> None:
+    """Render readable source titles while retaining technical IDs on demand."""
+    st.markdown(format_citations_for_display(text, resources))
+    details = citation_display_details(text, resources)
+    if details:
+        with st.expander("Technical citation details", expanded=False):
+            for detail in details:
+                location = f" · p. {detail.pages}" if detail.pages else ""
+                st.caption(f"{detail.title}{location}")
+                st.code(f"resource_id: {detail.resource_id}", language=None)
 
 
 st.title("🩺 Healthcare Presentation Assistant")
@@ -507,6 +531,31 @@ with st.sidebar:
 
     st.divider()
     if state.presentation:
+        with st.expander("Title-slide details", expanded=False):
+            st.caption("Optional human-supplied details. Empty fields are not shown on the PowerPoint title slide.")
+            context = state.presentation.context
+            presenter_name = st.text_input("Presenter name", value=context.presenter_name or "")
+            presenter_title = st.text_input("Professional title", value=context.presenter_title or "")
+            organization = st.text_input("Organization", value=context.organization or "")
+            event_name = st.text_input("Event name", value=context.event_name or "")
+            venue = st.text_input("Venue", value=context.venue or "")
+            presentation_date = st.text_input("Presentation date", value=context.presentation_date or "")
+            if st.button("Save title-slide details", use_container_width=True):
+                try:
+                    UpdatePresentationDetailsUseCase().execute(
+                        state,
+                        presenter_name=presenter_name,
+                        presenter_title=presenter_title,
+                        organization=organization,
+                        event_name=event_name,
+                        venue=venue,
+                        presentation_date=presentation_date,
+                    )
+                    save_state()
+                    st.success("Title-slide details saved.")
+                    st.rerun()
+                except ValueError as exc:
+                    st.error(str(exc))
         selected_theme = st.selectbox(
             "PowerPoint template",
             options=list(PresentationTheme),
@@ -584,7 +633,7 @@ if workspace == "Resources workspace":
     st.subheader("Resource overview")
     st.caption("AI-generated discussion starter based only on the uploaded PDF resources.")
     if state.resource_analysis:
-        st.write(state.resource_analysis.summary)
+        render_model_message(state.resource_analysis.summary, state.resource_library)
     else:
         st.info("Select Analyze uploaded resources to generate a source-only overview.")
 
@@ -593,7 +642,10 @@ if workspace == "Resources workspace":
     st.caption("This discussion is separate from the Presentation assistant chat.")
     for turn in state.resource_conversation_history:
         with st.chat_message(turn.role):
-            st.write(turn.text)
+            if turn.role == "assistant":
+                render_model_message(turn.text, state.resource_library)
+            else:
+                st.write(turn.text)
     resource_question = st.chat_input(
         "Ask a question answered only from the uploaded PDFs",
         key=f"resource_discussion_question_{project_id}",
@@ -608,7 +660,9 @@ if workspace == "Resources workspace":
                 if error:
                     st.error(error)
                 else:
-                    st.write(st.session_state.get("resource_discussion_answer", ""))
+                    render_model_message(
+                        st.session_state.get("resource_discussion_answer", ""), state.resource_library
+                    )
         st.rerun()
     st.stop()
 
@@ -622,6 +676,16 @@ if resource_validation_required:
         on_click=run_validation,
         args=(validate_resources,),
         key="contextual_validate_resources",
+    )
+
+if (
+    state.presentation
+    and state.presentation.state.workflow_status == WorkflowStatus.AWAITING_SLIDE_RESOLUTION
+):
+    blocked_slide = state.presentation.state.blocked_slide_number or "?"
+    st.warning(
+        f"Slide {blocked_slide} cannot be generated by AI from the validated PDFs. "
+        "Edit its blueprint item, add a relevant PDF, or select ‘Written by user’."
     )
 
 if state.presentation and state.presentation.blueprint:
@@ -767,7 +831,10 @@ if state.presentation and state.presentation.slides:
 
 for turn in state.conversation_history:
     with st.chat_message(turn.role):
-        st.write(turn.text)
+        if turn.role == "assistant":
+            render_model_message(turn.text, state.resource_library)
+        else:
+            st.write(turn.text)
 
 if prompt := st.chat_input("Discutez d’une idée ou demandez explicitement de créer/générer votre présentation..."):
     with st.chat_message("user"):
@@ -799,7 +866,10 @@ if prompt := st.chat_input("Discutez d’une idée ou demandez explicitement de 
                 ):
                     add_turn(state, "assistant", assistant_text)
                 save_state()
-                st.write(assistant_text or "Aucune réponse reçue.")
+                if assistant_text:
+                    render_model_message(assistant_text, state.resource_library)
+                else:
+                    st.write("Aucune réponse reçue.")
             except Exception as exc:
                 text = str(exc)
                 if "RESOURCE_EXHAUSTED" in text or "429" in text:

@@ -23,6 +23,11 @@ class PresentationState(BaseModel):
 
     total_slides: int = 0
 
+    # When a proposed AI slide lacks evidence, the workflow pauses on this
+    # exact item instead of leaving the entire Project in an opaque state.
+    blocked_slide_number: int | None = None
+    slide_generation_error: str | None = None
+
     resources_validated: bool = False
 
     audience_validated: bool = False

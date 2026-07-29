@@ -12,6 +12,7 @@ class WorkflowStatus(str, Enum):
     AWAITING_AGENDA_APPROVAL = "awaiting_agenda_approval"
     AWAITING_BLUEPRINT_APPROVAL = "awaiting_blueprint_approval"
     SLIDE_GENERATION = "slide_generation"
+    AWAITING_SLIDE_RESOLUTION = "awaiting_slide_resolution"
     AWAITING_SLIDE_APPROVAL = "awaiting_slide_approval"
     AWAITING_FINAL_APPROVAL = "awaiting_final_approval"
     READY_FOR_EXPORT = "ready_for_export"

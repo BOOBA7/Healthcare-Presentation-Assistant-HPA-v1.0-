@@ -9,6 +9,7 @@ import re
 
 from app.domain.models.presentation import Presentation
 from app.domain.models.resource import Resource
+from app.domain.models.resource_chunk import ResourceChunk
 from app.domain.models.slide_outline import SlideOutline
 from app.application.services.observability import record
 
@@ -43,44 +44,51 @@ class EvidenceContextBuilder:
     bm25_k1 = 1.2
     bm25_b = 0.75
 
-    def for_presentation(self, presentation: Presentation, resources: list[Resource] | None = None) -> str:
+    def for_presentation(
+        self,
+        presentation: Presentation,
+        resources: list[Resource] | None = None,
+        chunks: list[ResourceChunk] | None = None,
+    ) -> str:
         query = " ".join(
             [presentation.context.topic, presentation.context.objective, presentation.context.audience.value]
         )
-        return self._select(resources or presentation.resources, query)
+        return self._select(resources or presentation.resources, query, chunks)
 
     def for_slide(
         self,
         presentation: Presentation,
         outline: SlideOutline,
         resources: list[Resource] | None = None,
+        chunks: list[ResourceChunk] | None = None,
     ) -> str:
         query = " ".join(
             [presentation.context.topic, outline.title, outline.objective, outline.key_message]
         )
-        return self._select(resources or presentation.resources, query)
+        return self._select(resources or presentation.resources, query, chunks)
 
     def assess(
         self,
         presentation: Presentation,
         query: str,
         resources: list[Resource] | None = None,
+        chunks: list[ResourceChunk] | None = None,
     ) -> EvidenceAssessment:
         """Return whether local, validated evidence sufficiently covers a query.
 
         This is deliberately deterministic: a model cannot turn missing evidence
         into a supported answer by sounding confident.
         """
-        chunks = self._chunks_for_resources(resources or presentation.resources)
+        evidence_chunks = self._chunks_for_resources(resources or presentation.resources, chunks)
         query_terms = tuple(dict.fromkeys(self._terms(query)))
-        if not chunks:
+        if not evidence_chunks:
             return EvidenceAssessment(False, False, 0.0, ())
         if not query_terms:
             return EvidenceAssessment(True, False, 0.0, ())
 
-        scores = self._bm25_scores(chunks, list(query_terms))
+        scores = self._bm25_scores(evidence_chunks, list(query_terms))
         best_index, best_score = max(enumerate(scores), key=lambda item: item[1])
-        matched_terms = tuple(sorted(set(query_terms).intersection(chunks[best_index].terms)))
+        matched_terms = tuple(sorted(set(query_terms).intersection(evidence_chunks[best_index].terms)))
         minimum_matches = 1 if len(query_terms) <= 2 else 2
         return EvidenceAssessment(
             has_validated_resources=True,
@@ -89,20 +97,22 @@ class EvidenceContextBuilder:
             matched_terms=matched_terms,
         )
 
-    def for_resources(self, resources: list[Resource], query: str) -> str:
+    def for_resources(
+        self, resources: list[Resource], query: str, chunks: list[ResourceChunk] | None = None
+    ) -> str:
         """Retrieve bounded, cited passages for Project-library exploration."""
-        return self._select(resources, query)
+        return self._select(resources, query, chunks)
 
-    def for_overview(self, resources: list[Resource]) -> str:
+    def for_overview(self, resources: list[Resource], chunks: list[ResourceChunk] | None = None) -> str:
         """Build a balanced bounded context for a resource-library overview."""
-        chunks = self._chunks_for_resources(resources)
+        evidence_chunks = self._chunks_for_resources(resources, chunks)
         selected: list[str] = []
         selected_chunks: list[EvidenceChunk] = []
         total = 0
         # One first chunk and one middle chunk per resource avoids the old
         # first-page-only bias while keeping the prompt bounded.
         by_resource: dict[str, list[EvidenceChunk]] = {}
-        for chunk in chunks:
+        for chunk in evidence_chunks:
             by_resource.setdefault(chunk.resource_id, []).append(chunk)
         for resource_id in sorted(by_resource):
             candidates = by_resource[resource_id]
@@ -122,8 +132,10 @@ class EvidenceContextBuilder:
         )
         return context
 
-    def _select(self, resources: list[Resource], query: str) -> str:
-        chunks = self._chunks_for_resources(resources)
+    def _select(
+        self, resources: list[Resource], query: str, persisted_chunks: list[ResourceChunk] | None = None
+    ) -> str:
+        chunks = self._chunks_for_resources(resources, persisted_chunks)
         query_terms = self._terms(query)
         if not chunks or not query_terms:
             return "No relevant validated PDF passages are available."
@@ -162,7 +174,26 @@ class EvidenceContextBuilder:
         )
         return context
 
-    def _chunks_for_resources(self, resources: list[Resource]) -> list[EvidenceChunk]:
+    def _chunks_for_resources(
+        self, resources: list[Resource], persisted_chunks: list[ResourceChunk] | None = None
+    ) -> list[EvidenceChunk]:
+        validated_resources = {resource.id for resource in resources if resource.is_validated}
+        # An empty cache means this state has not been hydrated from SQLite
+        # yet (for example an in-memory unit test or a freshly created state).
+        # Fall back to in-state pages only in that compatibility case.
+        if persisted_chunks:
+            return [
+                EvidenceChunk(
+                    resource_id=chunk.resource_id,
+                    page=chunk.page,
+                    title=chunk.title,
+                    position=chunk.position,
+                    text=chunk.text,
+                    terms=tuple(self._terms(chunk.text)),
+                )
+                for chunk in persisted_chunks
+                if chunk.resource_id in validated_resources and self._terms(chunk.text)
+            ]
         chunks: list[EvidenceChunk] = []
         for resource in resources:
             if not resource.is_validated:

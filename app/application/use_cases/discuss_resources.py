@@ -6,15 +6,22 @@ from app.ai.llm.llm import get_llm
 from app.application.use_cases.summarize_resources import SummarizeResourcesUseCase
 from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuilder
 from app.domain.models.resource import Resource
+from app.domain.models.resource_chunk import ResourceChunk
 from app.application.services.observability import observe_llm_call
 
 
 class DiscussResourcesUseCase:
-    def execute(self, resources: list[Resource], question: str, language: str = "en") -> str:
+    def execute(
+        self,
+        resources: list[Resource],
+        question: str,
+        language: str = "en",
+        chunks: list[ResourceChunk] | None = None,
+    ) -> str:
         question = question.strip()
         if not question:
             raise ValueError("Enter a question about the uploaded resources.")
-        context = EvidenceContextBuilder().for_resources(resources, question)
+        context = EvidenceContextBuilder().for_resources(resources, question, chunks)
         if context.startswith("No relevant"):
             raise ValueError("The uploaded PDFs do not contain relevant readable passages for this question.")
         prompt = [

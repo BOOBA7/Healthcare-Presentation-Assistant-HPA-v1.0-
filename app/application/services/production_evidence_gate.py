@@ -65,7 +65,9 @@ class ProductionEvidenceGate:
         if not presentation.state.resources_validated:
             record("evidence_refusal", reason="resources_not_human_validated")
             return self._message(state, "missing")
-        assessment = EvidenceContextBuilder().assess(presentation, user_message, resources)
+        assessment = EvidenceContextBuilder().assess(
+            presentation, user_message, resources, state.resource_chunks
+        )
         if not assessment.has_validated_resources:
             record("evidence_refusal", reason="no_validated_resources")
             return self._message(state, "missing")
@@ -80,8 +82,8 @@ class ProductionEvidenceGate:
         return None
 
     @staticmethod
-    def generation_error(presentation, query: str, resources=None) -> str | None:
-        assessment = EvidenceContextBuilder().assess(presentation, query, resources)
+    def generation_error(presentation, query: str, resources=None, chunks=None) -> str | None:
+        assessment = EvidenceContextBuilder().assess(presentation, query, resources, chunks)
         if not assessment.has_validated_resources:
             record("generation_refusal", reason="no_validated_resources")
             return "No user-validated PDF is available for this production step."

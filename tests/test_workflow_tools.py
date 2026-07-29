@@ -21,6 +21,8 @@ from app.application.use_cases.workflow_steps import (
 )
 from app.application.use_cases.export_powerpoint import ExportPowerPointUseCase
 from app.application.use_cases.remove_resource import RemoveResourceUseCase
+from app.application.use_cases.update_presentation_details import UpdatePresentationDetailsUseCase
+from app.application.use_cases.generate_slides import GenerateSlidesUseCase
 from app.application.use_cases.add_resource import AddResourceUseCase
 from app.application.services.workflow_policy import WorkflowPolicy
 from app.ai.agents.healthcare_presentation_agent import HealthcarePresentationAgent
@@ -50,6 +52,55 @@ def test_context_can_create_a_presentation_without_a_live_llm():
     assert state.presentation is not None
     assert state.presentation.title == "Depression"
     assert state.presentation.owner_profile.professional_role == "biologist"
+
+
+def test_optional_title_slide_details_are_preserved_without_blocking_context_validation():
+    state = collect_context.func(
+        GraphState(),
+        topic="Depression",
+        audience=AudienceType.SPECIALIST,
+        presentation_type=PresentationType.LECTURE,
+        language=Language.ENGLISH,
+        duration_minutes=20,
+        objective="Review treatment strategies",
+        presenter_name="Dr Ada Martin",
+        presenter_title="Associate Professor of Psychiatry",
+        organization="University Hospital",
+        event_name="Clinical Update 2026",
+        venue="Algiers",
+        presentation_date="29 July 2026",
+    )
+
+    presentation = create_presentation.func(validate_context.func(state)).presentation
+
+    assert presentation.context.presenter_name == "Dr Ada Martin"
+    assert presentation.context.event_name == "Clinical Update 2026"
+    assert presentation.context.presentation_date == "29 July 2026"
+
+
+def test_updating_title_slide_details_reopens_only_final_approval():
+    state = collect_context.func(
+        GraphState(),
+        topic="Depression",
+        audience=AudienceType.SPECIALIST,
+        presentation_type=PresentationType.LECTURE,
+        language=Language.ENGLISH,
+        duration_minutes=20,
+        objective="Review treatment strategies",
+    )
+    state = create_presentation.func(validate_context.func(state))
+    state.presentation.state.workflow_status = WorkflowStatus.READY_FOR_EXPORT
+    state.presentation.state.presentation_validated = True
+
+    UpdatePresentationDetailsUseCase().execute(
+        state,
+        presenter_name="Dr Ada Martin",
+        event_name="Clinical Update 2026",
+    )
+
+    assert state.presentation.context.presenter_name == "Dr Ada Martin"
+    assert state.presentation.state.workflow_status == WorkflowStatus.AWAITING_FINAL_APPROVAL
+    assert not state.presentation.state.presentation_validated
 
 
 def test_final_approval_requires_slide_approval_first():
@@ -418,6 +469,16 @@ def test_powerpoint_always_ends_with_user_validated_resources(tmp_path):
     presentation.state.resources_validated = True
     presentation.state.presentation_validated = True
     presentation.agenda = Agenda(items=["Introduction", "Treatment"], is_validated=True)
+    presentation.context = presentation.context.model_copy(
+        update={
+            "presenter_name": "Dr Ada Martin",
+            "presenter_title": "Professor of Psychiatry",
+            "organization": "University Hospital",
+            "event_name": "Clinical Update 2026",
+            "venue": "Algiers",
+            "presentation_date": "29 July 2026",
+        }
+    )
 
     custom_template = tmp_path / "custom-template.pptx"
     base_deck = PowerPoint()
@@ -433,6 +494,69 @@ def test_powerpoint_always_ends_with_user_validated_resources(tmp_path):
     assert deck.slides[-1].shapes[1].text == "Ressources et validation"
     assert "guideline" in last_slide_text
     assert "validées par l’utilisateur" in last_slide_text
+    title_slide_text = " ".join(shape.text for shape in deck.slides[0].shapes if hasattr(shape, "text"))
+    resources_slide_text = " ".join(shape.text for shape in deck.slides[-1].shapes if hasattr(shape, "text"))
+    assert "Dr Ada Martin" in title_slide_text
+    assert "University Hospital" in title_slide_text
+    assert "Clinical Update 2026" in title_slide_text
+    assert "Clinical guideline" in resources_slide_text
+    assert "Identifiant d’audit: resource-1" in resources_slide_text
+
+
+def test_powerpoint_splits_many_resource_blocks_over_multiple_final_slides(tmp_path):
+    state = collect_context.func(
+        GraphState(),
+        topic="Depression",
+        audience=AudienceType.SPECIALIST,
+        presentation_type=PresentationType.LECTURE,
+        language=Language.ENGLISH,
+        duration_minutes=20,
+        objective="Review treatment strategies",
+    )
+    presentation = create_presentation.func(validate_context.func(state)).presentation
+    presentation.slides = [
+        Slide(
+            slide_number=1,
+            title="Introduction",
+            key_messages=["Evidence-based message"],
+            reference_details=[
+                {
+                    "title": "Guideline 1",
+                    "resource_id": "resource-1",
+                    "page": 1,
+                    "evidence_excerpt": "Evidence one supports this presentation.",
+                }
+            ],
+        )
+    ]
+    presentation.resources = [
+        Resource(
+            id=f"resource-{index}",
+            filename=f"guideline-{index}.pdf",
+            title=f"A deliberately readable title for guideline {index}",
+            source="Professional organisation",
+            file_type=ResourceType.PDF,
+            extracted_pages=[
+                {
+                    "page": 1,
+                    "text": "Evidence one supports this presentation." if index == 1 else f"Evidence for guideline {index}.",
+                }
+            ],
+            is_validated=True,
+        )
+        for index in range(1, 6)
+    ]
+    presentation.agenda = Agenda(items=["Introduction"], is_validated=True)
+    presentation.state.resources_validated = True
+    presentation.state.presentation_validated = True
+
+    path = ExportPowerPointUseCase().execute(presentation, tmp_path)
+    deck = PowerPoint(path)
+    resource_slides = [deck.slides[len(deck.slides) - 2], deck.slides[len(deck.slides) - 1]]
+
+    assert len(deck.slides) == 5  # title, agenda, content, two resource slides
+    assert "Resources and validation (1/2)" in " ".join(shape.text for shape in resource_slides[0].shapes if hasattr(shape, "text"))
+    assert "Audit ID: resource-5" in " ".join(shape.text for shape in resource_slides[1].shapes if hasattr(shape, "text"))
 
 
 def test_powerpoint_labels_user_authored_slide_without_claiming_verified_evidence(tmp_path):
@@ -476,3 +600,107 @@ def test_powerpoint_labels_user_authored_slide_without_claiming_verified_evidenc
     assert "User-authored content" in content_text
     assert "Human-approved" in content_text
     assert "1 user-authored" in resources_text
+
+
+def test_user_authored_blueprint_item_becomes_a_slide_without_a_model_call():
+    state = collect_context.func(
+        GraphState(),
+        topic="Depression",
+        audience=AudienceType.SPECIALIST,
+        presentation_type=PresentationType.LECTURE,
+        language=Language.ENGLISH,
+        duration_minutes=10,
+        objective="Review a user-authored message",
+    )
+    presentation = create_presentation.func(validate_context.func(state)).presentation
+    presentation.blueprint = Blueprint(
+        title="Blueprint",
+        learning_objective="Objective",
+        target_number_of_slides=1,
+        storytelling="Story",
+        slides=[
+            SlideOutline(
+                slide_number=1,
+                title="My own slide",
+                objective="My own objective",
+                key_message="Exact user-provided message",
+                content_origin="user_authored",
+            )
+        ],
+    )
+    presentation.resources = [
+        Resource(
+            id="resource-1",
+            filename="guideline.pdf",
+            file_type=ResourceType.PDF,
+            extracted_pages=[{"page": 1, "text": "Unrelated source text."}],
+            is_validated=True,
+        )
+    ]
+
+    # No constructor: this branch must not initialize or call an LLM chain.
+    result = GenerateSlidesUseCase.execute(object.__new__(GenerateSlidesUseCase), presentation)
+
+    assert result.state.workflow_status == WorkflowStatus.AWAITING_SLIDE_APPROVAL
+    assert result.slides[0].content_origin == "user_authored"
+    assert result.slides[0].title == "My own slide"
+    assert result.slides[0].key_messages == ["Exact user-provided message"]
+    assert not result.slides[0].evidence_verified
+
+
+def test_unsupported_ai_outline_pauses_one_slide_without_erasing_existing_output():
+    state = collect_context.func(
+        GraphState(),
+        topic="Depression",
+        audience=AudienceType.SPECIALIST,
+        presentation_type=PresentationType.LECTURE,
+        language=Language.ENGLISH,
+        duration_minutes=10,
+        objective="Review treatment evidence",
+    )
+    presentation = create_presentation.func(validate_context.func(state)).presentation
+    presentation.blueprint = Blueprint(
+        title="Blueprint",
+        learning_objective="Objective",
+        target_number_of_slides=1,
+        storytelling="Story",
+        slides=[
+            SlideOutline(
+                slide_number=4,
+                title="Astronomy claims",
+                objective="Discuss a distant galaxy",
+                key_message="Unrelated celestial statement",
+            )
+        ],
+    )
+    presentation.resources = [
+        Resource(
+            id="resource-1",
+            filename="guideline.pdf",
+            file_type=ResourceType.PDF,
+            extracted_pages=[{"page": 1, "text": "Depression treatment evidence from the guideline."}],
+            is_validated=True,
+        )
+    ]
+    presentation.state.resources_validated = True
+    presentation.state.workflow_status = WorkflowStatus.SLIDE_GENERATION
+    existing = Slide(slide_number=1, title="Existing reviewed draft")
+    presentation.slides = [existing]
+
+    result = GenerateSlidesUseCase.execute(object.__new__(GenerateSlidesUseCase), presentation)
+
+    assert result.state.workflow_status == WorkflowStatus.AWAITING_SLIDE_RESOLUTION
+    assert result.state.blocked_slide_number == 4
+    assert result.state.slide_generation_error
+    assert result.slides == [existing]
+
+    state.presentation = result
+    EditBlueprintItemUseCase().execute(
+        state,
+        0,
+        title="Astronomy claims",
+        objective="Discuss a distant galaxy",
+        key_message="Unrelated celestial statement",
+        content_origin="user_authored",
+    )
+    assert state.presentation.state.workflow_status == WorkflowStatus.AWAITING_AGENDA_APPROVAL

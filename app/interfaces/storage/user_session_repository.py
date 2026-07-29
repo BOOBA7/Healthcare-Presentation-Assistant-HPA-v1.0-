@@ -5,6 +5,7 @@ import json
 import secrets
 import sqlite3
 from pathlib import Path
+from collections.abc import Iterable
 from uuid import uuid4
 
 from langchain_core.messages import AIMessage, HumanMessage, messages_from_dict, messages_to_dict
@@ -12,7 +13,9 @@ from langchain_core.messages import AIMessage, HumanMessage, messages_from_dict,
 from app.ai.workflows.graph_state import GraphState
 from app.application.services.resource_library import ensure_resource_library
 from app.domain.exceptions.concurrent_modification_error import ConcurrentModificationError
+from app.domain.exceptions.project_job_running_error import ProjectJobRunningError
 from app.domain.models.resource import Resource
+from app.domain.models.resource_chunk import ResourceChunk
 from app.domain.models.user_profile import UserProfile
 
 
@@ -135,6 +138,7 @@ class UserSessionRepository:
             self._ensure_user_profile_columns(connection)
             self._migrate_legacy_user_sessions(connection)
             self._recover_interrupted_jobs(connection)
+            self._ensure_one_active_job_per_project(connection)
 
     def load(self, user_id: str, project_id: str) -> tuple[str, GraphState] | None:
         with self._connect() as connection:
@@ -151,6 +155,49 @@ class UserSessionRepository:
             state.resource_library = resources
         state.project_revision = row[2]
         return row[0], state
+
+    def load_resource_chunks(
+        self,
+        user_id: str,
+        project_id: str,
+        resource_ids: Iterable[str] | None = None,
+    ) -> list[ResourceChunk]:
+        """Load retrieval passages directly from the normalized SQLite store."""
+        selected_ids = tuple(resource_ids) if resource_ids is not None else None
+        if selected_ids == ():
+            return []
+        with self._connect() as connection:
+            parameters: list[object] = [user_id, project_id]
+            resource_filter = ""
+            if selected_ids is not None:
+                placeholders = ", ".join("?" for _ in selected_ids)
+                resource_filter = f" AND chunks.resource_id IN ({placeholders})"
+                parameters.extend(selected_ids)
+            rows = connection.execute(
+                f"""SELECT chunks.resource_id, chunks.page_number, chunks.chunk_position,
+                           chunks.chunk_text, resources.metadata_json
+                    FROM project_resource_chunks AS chunks
+                    JOIN project_resources AS resources
+                      ON resources.user_id = chunks.user_id
+                     AND resources.project_id = chunks.project_id
+                     AND resources.resource_id = chunks.resource_id
+                    WHERE chunks.user_id = ? AND chunks.project_id = ?{resource_filter}
+                    ORDER BY chunks.resource_id, chunks.page_number, chunks.chunk_position""",
+                parameters,
+            ).fetchall()
+        chunks: list[ResourceChunk] = []
+        for row in rows:
+            try:
+                metadata = json.loads(row[4])
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            title = metadata.get("title") or metadata.get("filename") or row[0]
+            chunks.append(
+                ResourceChunk(
+                    resource_id=row[0], page=row[1], position=row[2], text=row[3], title=title
+                )
+            )
+        return chunks
 
     def save(
         self,
@@ -392,14 +439,17 @@ class UserSessionRepository:
         ]
 
     def create_job(self, user_id: str, project_id: str, domain: str) -> dict[str, object]:
-        """Create a durable asynchronous job record before scheduling work."""
+        """Create the only state-writing job permitted for one Project."""
         job_id = str(uuid4())
-        with self._connect() as connection:
-            connection.execute(
-                """INSERT INTO project_jobs (job_id, user_id, project_id, domain, status, progress, stage)
-                   VALUES (?, ?, ?, ?, 'queued', 0, 'queued')""",
-                (job_id, user_id, project_id, domain),
-            )
+        try:
+            with self._connect() as connection:
+                connection.execute(
+                    """INSERT INTO project_jobs (job_id, user_id, project_id, domain, status, progress, stage)
+                       VALUES (?, ?, ?, ?, 'queued', 0, 'queued')""",
+                    (job_id, user_id, project_id, domain),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ProjectJobRunningError() from exc
         return self.get_job(user_id, job_id) or {}
 
     def update_job(
@@ -447,7 +497,7 @@ class UserSessionRepository:
         # Resource documents/pages are persisted in dedicated tables. Keeping
         # them out of this state snapshot prevents every chat turn from
         # rewriting all extracted PDF content.
-        payload = state.model_dump(mode="json", exclude={"messages", "resource_library"})
+        payload = state.model_dump(mode="json", exclude={"messages", "resource_library", "resource_chunks"})
         payload["messages"] = messages_to_dict(state.messages)
         return payload
 
@@ -524,6 +574,15 @@ class UserSessionRepository:
             """UPDATE project_jobs SET status = 'failed', stage = 'interrupted',
                error_message = 'The local server restarted before this job completed.',
                updated_at = CURRENT_TIMESTAMP
+               WHERE status IN ('queued', 'running')"""
+        )
+
+    @staticmethod
+    def _ensure_one_active_job_per_project(connection: sqlite3.Connection) -> None:
+        """Atomically prevent concurrent jobs from racing to save one Project."""
+        connection.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_project_jobs_one_active_per_project
+               ON project_jobs (user_id, project_id)
                WHERE status IN ('queued', 'running')"""
         )
 

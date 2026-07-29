@@ -12,6 +12,33 @@ clinical, legal or institutional review.
 > clinical decision-support authority. The healthcare professional remains
 > responsible for every use of the output.
 
+> ## Safety-by-design: the LLM is not the workflow authority
+>
+> HPA does not rely on prompt instructions alone. The LLM can interpret a
+> request, propose an allowed next action and generate content, but it cannot
+> approve resources, advance the workflow, validate evidence or authorize
+> export.
+>
+> Deterministic application controls decide whether the LLM may be called:
+>
+> 1. `WorkflowPolicy` validates the current lifecycle transition.
+> 2. `ProductionEvidenceGate` requires selected, human-approved PDF evidence
+>    and sufficient BM25 retrieval support.
+> 3. The guarded LangGraph tool node permits only the action allowed by the
+>    trusted Project state.
+> 4. `EvidenceProvenanceValidator` verifies AI-generated slide citations before
+>    human approval and PowerPoint export.
+>
+> If a required condition is missing, HPA asks the user for the missing action
+> or source instead of generating unsupported scientific content.
+>
+> ```text
+> System decides whether generation is allowed
+> → LLM generates within bounded evidence and instructions
+> → System validates the output
+> → Human approves the deliverable
+> ```
+
 ## What it does
 
 - Creates separate, authenticated local user accounts and Projects.
@@ -28,9 +55,16 @@ clinical, legal or institutional review.
   this selection is used as production evidence.
 - Generates an editable blueprint, an Agenda, slides and a themed PowerPoint
   after the required human review steps.
+- Lets the user add optional title-slide delivery details (presenter, role,
+  organisation, event, venue and date) from either interface or explicitly in
+  the chat. These details are human-supplied, never inferred by the model.
 - Supports direct user editing of blueprint items and slides, while preserving
   an AI-origin snapshot and labelling content as AI-generated, user-edited or
   user-authored.
+- Creates a **user-authored** slide deterministically from a user-authored
+  blueprint item, without calling the LLM. If an AI slide lacks sufficient
+  PDF support, the workflow pauses on that individual slide and offers a
+  recoverable choice: revise the blueprint, add a PDF, or write it directly.
 - Validates evidence provenance for AI-generated slides and exports a final
   *Resources and validation* slide.
 - Persists Projects, conversation transcripts, resource metadata, PDF pages,
@@ -58,8 +92,8 @@ Two modes are intentionally separate:
 | Resource exploration | Summarise or discuss the user’s PDFs before creating slides | Bounded passages from the Project library only |
 | Production | Generate a blueprint or slides | Explicitly attached, user-approved presentation resources only |
 
-For production, HPA uses a local lexical BM25 retrieval layer over extracted
-PDF-page chunks. It selects a small, bounded evidence context; it does not use
+For production, HPA uses a local lexical BM25 retrieval layer over normalized
+SQLite PDF chunks. It selects a small, bounded evidence context; it does not use
 an external vector database, web search or a global knowledge base. If support
 is missing or insufficient, the deterministic evidence gate asks for a better
 PDF or a clarification instead of generating a scientific answer.
@@ -73,6 +107,12 @@ Each AI-generated slide reference must pass system validation:
 This is provenance verification, not a claim that the source itself is
 clinically correct or appropriate for every use.
 
+For readability, `/app` and Streamlit display a citation with the PDF title,
+for example `[APA Depression Guideline, p. 4]`. The original model message,
+including its `resource_id`, remains unchanged in SQLite; every displayed
+citation also exposes its full technical identifier in an expandable details
+section.
+
 ## Controlled workflow
 
 ```text
@@ -80,12 +120,14 @@ Discuss / explore PDFs (optional)
   → Collect and validate presentation context
   → Create presentation
   → Select Project-library PDF(s) for this presentation
-  → Request blueprint generation
   → Human validates the selected resources
+  → Request blueprint generation
   → Generate blueprint
+  → Optionally complete title-slide delivery details
   → Edit and approve Agenda
   → Review blueprint items and approve blueprint
   → Generate and review slides
+     └─ unsupported AI slide → resolve that item (edit / add PDF / write it yourself)
   → Final human approval
   → Export PowerPoint
 ```
@@ -109,6 +151,9 @@ boundary.
 5. `EvidenceProvenanceValidator` checks citations before slide acceptance and
    PowerPoint export.
 6. Agenda, blueprint, slides and final presentation need explicit human review.
+7. Presenter and event details are optional deliverable metadata: they never
+   block the workflow and are never fabricated by the LLM. A change after
+   final approval reopens final approval only.
 
 ## Architecture
 
@@ -141,7 +186,7 @@ State is deliberately separated:
 
 | State | Responsibility |
 |---|---|
-| `GraphState` | Agent orchestration, presentation-chat transcript, resource-chat transcript, library and exploration analysis |
+| `GraphState` | Agent orchestration, presentation-chat transcript, compact continuity memory, resource-chat transcript, library and exploration analysis |
 | `PresentationState` | Durable production lifecycle and approval flags |
 | `ExecutionContext` | Last safe tool outcome or error; never a business approval |
 
@@ -212,7 +257,15 @@ committed to Git.
 Every Project row also has a monotonically increasing `revision`. A save only
 succeeds when its revision still matches the database row; a stale background
 job therefore receives `PROJECT_VERSION_CONFLICT` rather than silently
-overwriting newer human work.
+overwriting newer human work. The job table also permits exactly one queued or
+running state-writing job per Project; a second request receives
+`PROJECT_JOB_ALREADY_RUNNING` and can be retried after the first job finishes.
+
+The full presentation-chat transcript remains durable for the user and audit
+trail. For each model request, only the 16 most recent model messages are kept
+in active context; older turns are compacted into a bounded, non-authoritative
+continuity summary. Trusted workflow state and retrieved PDF passages remain
+the authority.
 
 ## Domain error model
 
@@ -225,7 +278,8 @@ ValueError
     ├── ValidationError                 # Deterministic invalid domain data
     ├── WorkflowError                   # Stable workflow code and retry flag
     │   └── InvalidTransition           # Action forbidden in the current state
-    └── ConcurrentModificationError     # A stale job/save cannot overwrite a Project
+    ├── ConcurrentModificationError     # A stale job/save cannot overwrite a Project
+    └── ProjectJobRunningError           # Another state-writing Project job is active
 ```
 
 All domain errors keep a human-readable `user_message`, a stable `code`, and a
@@ -348,18 +402,18 @@ test contract and a low-cost clinician-reviewed pilot plan.
 - Scanned PDFs require OCR; OCR is not implemented.
 - BM25 is private and transparent, but lexical and conservative. A future
   semantic retrieval layer must remain scoped to user-uploaded resources.
-- Chunks are persisted in SQLite, but the current BM25 implementation rebuilds
-  its in-memory index from the stored pages for each request. Direct retrieval
-  over persisted chunks is a performance improvement still to be implemented.
-- Conversation messages are durable but are not yet summarised or bounded
-  before every model call; very long discussions can become slower and more
-  expensive.
+- Retrieval reads the normalized SQLite chunks directly. BM25 lexical terms
+  and scores are intentionally recomputed in memory per request; for very
+  large Project libraries, an indexed lexical implementation may be useful.
+- Conversation context is bounded with a compact continuity summary. The
+  summary is not a source of truth, and very long conversations may still need
+  user-directed recap for the best quality.
 - Generation records should capture the configured provider and exact model for
   every generation. This is especially important when switching between OpenAI
   and Gemini.
-- Project revisions prevent silent stale writes, but local jobs are not yet
-  serialized per Project; concurrent requests can still waste one model call
-  before the stale write is rejected.
+- Only one local state-writing job can run per Project. This avoids duplicate
+  model calls and concurrent saves, but it is still not a distributed queue or
+  horizontal worker system.
 - `main.py` still contains resource and review endpoints while their routers
   are being migrated incrementally.
 - The resource overview and discussion use bounded PDF passages; they are not

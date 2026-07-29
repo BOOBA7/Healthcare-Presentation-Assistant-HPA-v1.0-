@@ -19,3 +19,4 @@ def test_human_validation_is_not_an_agent_tool():
     assert "validate_blueprint" not in tool_names
     assert "validate_slides" not in tool_names
     assert "validate_final_presentation" not in tool_names
+    assert "record_presentation_details" in tool_names

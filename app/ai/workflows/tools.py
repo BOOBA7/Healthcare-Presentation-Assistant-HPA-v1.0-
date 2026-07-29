@@ -13,15 +13,38 @@ from app.application.use_cases.workflow_steps import (
     ValidateBlueprintWorkflowUseCase, ValidatePresentationContextUseCase,
     ValidateResourcesWorkflowUseCase,
 )
+from app.application.use_cases.update_presentation_details import UpdatePresentationDetailsUseCase
 from app.domain.enums.audience_type import AudienceType
 from app.domain.enums.language import Language
 from app.domain.enums.presentation_type import PresentationType
 
 
 @tool
-def collect_context(state: Annotated[GraphState, InjectedToolArg], topic: str | None = None, audience: AudienceType | None = None, presentation_type: PresentationType | None = None, language: Language | None = None, duration_minutes: int | None = None, objective: str | None = None) -> GraphState:
+def collect_context(state: Annotated[GraphState, InjectedToolArg], topic: str | None = None, audience: AudienceType | None = None, presentation_type: PresentationType | None = None, language: Language | None = None, duration_minutes: int | None = None, objective: str | None = None, presenter_name: str | None = None, presenter_title: str | None = None, organization: str | None = None, event_name: str | None = None, venue: str | None = None, presentation_date: str | None = None) -> GraphState:
     """Store presentation details explicitly supplied by the user."""
-    return CollectPresentationContextUseCase().execute(state, topic=topic, audience=audience, presentation_type=presentation_type, language=language, duration_minutes=duration_minutes, objective=objective)
+    return CollectPresentationContextUseCase().execute(state, topic=topic, audience=audience, presentation_type=presentation_type, language=language, duration_minutes=duration_minutes, objective=objective, presenter_name=presenter_name, presenter_title=presenter_title, organization=organization, event_name=event_name, venue=venue, presentation_date=presentation_date)
+
+
+@tool
+def record_presentation_details(
+    state: Annotated[GraphState, InjectedToolArg],
+    presenter_name: str | None = None,
+    presenter_title: str | None = None,
+    organization: str | None = None,
+    event_name: str | None = None,
+    venue: str | None = None,
+    presentation_date: str | None = None,
+) -> GraphState:
+    """Store only explicitly supplied optional title-slide details; never infer any value."""
+    return UpdatePresentationDetailsUseCase().execute(
+        state,
+        presenter_name=presenter_name,
+        presenter_title=presenter_title,
+        organization=organization,
+        event_name=event_name,
+        venue=venue,
+        presentation_date=presentation_date,
+    )
 
 
 @tool
@@ -84,6 +107,7 @@ def validate_final_presentation(state: Annotated[GraphState, InjectedToolArg], a
 # directly by the interface/API and are deliberately not bound to the LLM.
 COGNITIVE_TOOLS = (
     collect_context,
+    record_presentation_details,
     validate_context,
     create_presentation,
     build_blueprint,

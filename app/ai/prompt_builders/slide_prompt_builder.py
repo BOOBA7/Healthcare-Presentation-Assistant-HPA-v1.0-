@@ -3,6 +3,7 @@ from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuild
 from app.domain.models.presentation import Presentation
 from app.domain.models.slide_outline import SlideOutline
 from app.domain.models.resource import Resource
+from app.domain.models.resource_chunk import ResourceChunk
 
 
 class SlidePromptBuilder:
@@ -16,6 +17,7 @@ class SlidePromptBuilder:
         presentation: Presentation,
         outline: SlideOutline,
         resources: list[Resource] | None = None,
+        chunks: list[ResourceChunk] | None = None,
     ) -> str:
         """
         Build the complete prompt for slide generation.
@@ -23,7 +25,7 @@ class SlidePromptBuilder:
 
         context = presentation.context
 
-        evidence_context = EvidenceContextBuilder().for_slide(presentation, outline, resources)
+        evidence_context = EvidenceContextBuilder().for_slide(presentation, outline, resources, chunks)
 
         blueprint = presentation.blueprint
 

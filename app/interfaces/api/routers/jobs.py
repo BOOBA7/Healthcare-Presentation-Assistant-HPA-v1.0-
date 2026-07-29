@@ -3,11 +3,20 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.application.services.observability import record as record_observability
+from app.domain.exceptions.project_job_running_error import ProjectJobRunningError
 from app.interfaces.api import main as api
 from app.interfaces.api.job_runner import submit as submit_job
 
 
 router = APIRouter(prefix="/api/v1", tags=["jobs"])
+
+
+def _create_project_job(repository, user_id: str, project_id: str, domain: str) -> dict[str, object]:
+    """Map the repository's Project-wide job lock to a stable API conflict."""
+    try:
+        return repository.create_job(user_id, project_id, domain)
+    except ProjectJobRunningError as exc:
+        raise api._workflow_conflict(exc) from exc
 
 
 @router.post("/conversations/jobs", tags=["conversations"], status_code=202)
@@ -20,7 +29,7 @@ def start_conversation_job(
     repository = api.get_repository()
     if repository.load(request.user_id, request.project_id) is None:
         raise HTTPException(status_code=404, detail="Project not found.")
-    job = repository.create_job(request.user_id, request.project_id, "conversation")
+    job = _create_project_job(repository, request.user_id, request.project_id, "conversation")
 
     def work(progress):
         progress(25, "preparing_conversation")
@@ -45,7 +54,7 @@ def start_resource_overview_job(
     repository = api.get_repository()
     if repository.load(user_id, project_id) is None:
         raise HTTPException(status_code=404, detail="Project not found.")
-    job = repository.create_job(user_id, project_id, "resources")
+    job = _create_project_job(repository, user_id, project_id, "resources")
 
     def work(progress):
         progress(30, "retrieving_pdf_passages")
@@ -71,7 +80,7 @@ def start_resource_discussion_job(
     repository = api.get_repository()
     if repository.load(user_id, project_id) is None:
         raise HTTPException(status_code=404, detail="Project not found.")
-    job = repository.create_job(user_id, project_id, "resources")
+    job = _create_project_job(repository, user_id, project_id, "resources")
 
     def work(progress):
         progress(30, "retrieving_pdf_passages")

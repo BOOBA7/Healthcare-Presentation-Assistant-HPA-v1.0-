@@ -64,4 +64,25 @@ def test_async_job_exposes_the_api_message_without_http_exception_noise():
     )
 
     assert _job_error_message(error) == "No relevant PDF passage was found."
+
+
+def test_api_exposes_a_targeted_action_when_one_ai_slide_lacks_evidence():
+    context = PresentationContext(
+        topic="Evidence-based care",
+        audience=AudienceType.SPECIALIST,
+        presentation_type=PresentationType.LECTURE,
+        language=Language.ENGLISH,
+        duration_minutes=10,
+        objective="Review evidence",
+    )
+    presentation = CreatePresentationUseCase().execute("Evidence review", context)
+    presentation.state.workflow_status = "awaiting_slide_resolution"
+    presentation.state.blocked_slide_number = 4
+    presentation.state.slide_generation_error = "Validated PDFs do not support this slide."
+
+    action = _required_human_action(GraphState(presentation=presentation))
+
+    assert action is not None
+    assert action["action"] == "resolve_slide_generation"
+    assert "Slide 4" in action["message"]
 from fastapi import HTTPException

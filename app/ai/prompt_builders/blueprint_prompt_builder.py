@@ -2,6 +2,7 @@ from app.ai.harness.healthcare_harness import HEALTHCARE_HARNESS
 from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuilder
 from app.domain.models.presentation import Presentation
 from app.domain.models.resource import Resource
+from app.domain.models.resource_chunk import ResourceChunk
 
 
 class BlueprintPromptBuilder:
@@ -10,14 +11,19 @@ class BlueprintPromptBuilder:
     the presentation blueprint.
     """
 
-    def build(self, presentation: Presentation, resources: list[Resource] | None = None) -> str:
+    def build(
+        self,
+        presentation: Presentation,
+        resources: list[Resource] | None = None,
+        chunks: list[ResourceChunk] | None = None,
+    ) -> str:
         """
         Build the complete prompt for blueprint generation.
         """
 
         context = presentation.context
 
-        evidence_context = EvidenceContextBuilder().for_presentation(presentation, resources)
+        evidence_context = EvidenceContextBuilder().for_presentation(presentation, resources, chunks)
         review_comments = "\n".join(
             f"- Slide {item.slide_number}: {item.reviewer_comments}"
             for item in (presentation.blueprint.slides if presentation.blueprint else [])

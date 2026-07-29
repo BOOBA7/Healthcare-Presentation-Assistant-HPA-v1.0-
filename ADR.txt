@@ -2,7 +2,7 @@
 
 ## Status
 
-**Accepted — updated 2026-07-28**
+**Accepted — updated 2026-07-29**
 
 This ADR supersedes the earlier agent-centric description. HPA retains one
 cognitive agent, but the LLM is no longer considered the workflow authority.
@@ -26,6 +26,20 @@ this ADR does not claim FDA clearance, approval, or regulatory compliance.
 
 ## Decision
 
+### Architectural principle — the LLM is not the workflow authority
+
+The LLM is a bounded cognitive component, not the authority for business
+transitions, evidence sufficiency, provenance, approvals or export. It may
+propose an action; deterministic application services decide whether that
+action is permitted and executable.
+
+```text
+System decides whether generation is allowed
+→ LLM generates within bounded evidence and instructions
+→ System validates the output
+→ Human approves the deliverable
+```
+
 ### 1. One cognitive agent, bounded by deterministic services
 
 `HealthcarePresentationAgent` is the sole LLM-facing agent. It interprets
@@ -41,7 +55,7 @@ safe workflow errors, and returns tool outcomes to the model as `ToolMessage`s.
 
 | State | Responsibility | Authority |
 |---|---|---|
-| `GraphState` | Agent messages, durable presentation-chat transcript, separate resource-chat transcript, collected context, Project library, resource overview and presentation reference | Agent orchestration |
+| `GraphState` | Agent messages, durable presentation-chat transcript, compact non-authoritative continuity memory, separate resource-chat transcript, collected context, Project library, resource overview and presentation reference | Agent orchestration |
 | `PresentationState` | Workflow status, validation flags, slide progress | Business lifecycle |
 | `ExecutionContext` | Last tool result, safe error code/message | Technical execution only |
 
@@ -58,7 +72,8 @@ ValueError
     ├── ValidationError
     ├── WorkflowError
     │   └── InvalidTransition
-    └── ConcurrentModificationError
+    ├── ConcurrentModificationError
+    └── ProjectJobRunningError
 ```
 
 `DomainError` preserves compatibility with existing `ValueError` handling while
@@ -81,9 +96,11 @@ context_collection
 → awaiting_resource_upload
 → awaiting_resource_validation
 → blueprint_generation
+→ awaiting_scope_clarification (only when the professional scope requires clarification)
 → awaiting_agenda_approval
 → awaiting_blueprint_approval
 → slide_generation
+→ awaiting_slide_resolution (only when one AI slide lacks sufficient PDF evidence)
 → awaiting_slide_approval
 → awaiting_final_approval
 → ready_for_export
@@ -113,8 +130,8 @@ Project PDF library → optional source-only exploration
                     → human validation before blueprint production
 ```
 
-`EvidenceContextBuilder` performs local BM25 chunk retrieval over extracted PDF
-pages selected for the presentation. `ProductionEvidenceGate` checks for
+`EvidenceContextBuilder` performs local BM25 chunk retrieval over normalized
+SQLite passages selected for the presentation. `ProductionEvidenceGate` checks for
 sufficient lexical support before:
 
 - answering a production-scoped scientific question;
@@ -143,6 +160,18 @@ The PowerPoint displays the user-validated resources and associated evidence.
 The separate resource-overview and PDF-discussion features use bounded passages
 from the Project library only; they do not alter the production selection.
 
+The interfaces present user-facing citations with the resource title and page,
+while preserving the raw model message and `resource_id` in SQLite. An
+expandable technical-citation detail keeps the full identifier accessible for
+audit without exposing UUIDs as the primary clinical reading experience.
+
+Title-slide delivery details — presenter name and role, organisation, event,
+venue and date — are optional human-controlled metadata. They may be entered
+in either interface or explicitly recorded from the chat, but the LLM must
+never infer them. They do not participate in evidence gating or block workflow
+progress. Because the title slide is part of the exported deliverable, changing
+these details after final approval reopens final approval only.
+
 ### 5. Prompt, harness, and loop have distinct roles
 
 | Layer | Responsibility | Not responsible for |
@@ -165,6 +194,13 @@ and can drive regeneration. Users may edit blueprint items and slides; HPA
 retains the original AI snapshot and labels content as AI-generated,
 user-edited, or user-authored.
 
+A `user_authored` blueprint item becomes a slide through a deterministic copy
+of the user-provided title, objective and key message; it never invokes the
+LLM. Conversely, an AI-owned item without sufficient retrieved evidence moves
+only that Project to `awaiting_slide_resolution`. Existing slides are retained,
+and the user can revise the item, add a relevant PDF, or convert it to
+user-authored content before resuming the normal approval flow.
+
 ### 7. Persistence and auditability
 
 For local use, `UserSessionRepository` persists user accounts, profile,
@@ -177,9 +213,17 @@ text on every chat turn and keeps API responses metadata-only.
 
 Each Project has an optimistic `revision`. State and audit event are written in
 the same SQLite transaction and a write uses `WHERE revision = expected`.
-When a human action or a second job has already changed the Project, the stale
-write fails as `PROJECT_VERSION_CONFLICT` rather than overwriting the latest
-state.
+When a human action has already changed the Project, a stale write fails as
+`PROJECT_VERSION_CONFLICT` rather than overwriting the latest state. The
+`project_jobs` table additionally enforces one queued or running state-writing
+job per Project. A second request is rejected as `PROJECT_JOB_ALREADY_RUNNING`
+before it can make a duplicate model call.
+
+The full presentation-chat transcript remains durable. Before invoking the
+model, the application keeps only the 16 most recent model messages and
+compacts older turns into a bounded, non-authoritative memory summary. The
+trusted state summary and retrieved PDF excerpts remain authoritative for
+workflow decisions and scientific claims.
 
 Long-running model calls are recorded as durable local `project_jobs` entries.
 The API returns `202`, then clients poll a job for stage/progress/result. The
@@ -252,12 +296,14 @@ migrate without breaking either local interface.
 - SQLite and local files must be replaced for concurrent production deployment.
 - The local job executor provides persistence and progress, not worker retries
   or horizontal scaling.
-- The current BM25 index is reconstructed from persisted page text per request;
-  using the persisted chunk table directly is a planned optimisation.
-- Conversation history is persisted but not yet summarised or context-bounded
-  before every model call.
-- Optimistic Project revision prevents lost writes but does not yet serialize
-  duplicate jobs for one Project.
+- BM25 reads normalized persisted chunks directly, but lexical terms and scores
+  are recomputed per request; extremely large libraries may need an indexed
+  lexical implementation.
+- Conversation history is durable and model context is bounded. Its compact
+  memory is deliberately non-authoritative and may lose fine-grained wording
+  from old turns.
+- One state-writing job is serialized per Project. It remains a local executor
+  without distributed workers or automatic job retry.
 - Generation records include version metadata, but provider-accurate model
   capture must be completed before treating them as fully reproducible records.
 

@@ -8,6 +8,7 @@ from app.domain.enums.language import Language
 from app.domain.enums.presentation_type import PresentationType
 from app.domain.enums.resource_type import ResourceType
 from app.domain.models.resource import Resource
+from app.domain.models.resource_chunk import ResourceChunk
 from app.domain.models.slide import Slide
 from app.domain.models.slide_outline import SlideOutline
 from app.domain.value_objects.presentation_context import PresentationContext
@@ -119,3 +120,27 @@ def test_retrieval_context_is_compact_and_keeps_page_metadata():
     assert "SOURCE ID: pdf-1" in retrieved
     assert "PAGE: 2" in retrieved
     assert len(retrieved) <= EvidenceContextBuilder.max_characters
+
+
+def test_retrieval_prefers_normalized_sqlite_chunks_over_in_state_pdf_pages():
+    evidence = resource()
+    # Presentation selections intentionally do not carry full PDF pages after
+    # resource-library normalization. Retrieval must still work from storage.
+    evidence.extracted_pages = []
+
+    context = EvidenceContextBuilder().for_resources(
+        [evidence],
+        "individualized treatment",
+        [
+            ResourceChunk(
+                resource_id="pdf-1",
+                page=2,
+                position=0,
+                title="Clinical guideline",
+                text="Treatment should be individualized according to patient needs.",
+            )
+        ],
+    )
+
+    assert "SOURCE ID: pdf-1" in context
+    assert "PAGE: 2" in context

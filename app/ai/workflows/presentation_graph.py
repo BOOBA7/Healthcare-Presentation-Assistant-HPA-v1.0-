@@ -10,6 +10,7 @@ from langgraph.graph import END, START, StateGraph
 from app.ai.workflows.graph_state import GraphState
 from app.ai.prompt_builders.state_summary_builder import StateSummaryBuilder
 from app.domain.exceptions.workflow_error import WorkflowError
+from app.domain.enums.workflow_status import WorkflowStatus
 from app.domain.models.execution_context import ExecutionContext
 from app.application.services.observability import observe_llm_call
 
@@ -99,7 +100,19 @@ class PresentationGraph:
                     result = tool.func(current_state, **tool_call.get("args", {}))
                     if isinstance(result, GraphState):
                         current_state = result
-                    content = f"{tool_name} completed."
+                    if (
+                        tool_name == "generate_slides"
+                        and current_state.presentation is not None
+                        and current_state.presentation.state.workflow_status
+                        == WorkflowStatus.AWAITING_SLIDE_RESOLUTION
+                    ):
+                        blocked = current_state.presentation.state.blocked_slide_number
+                        content = (
+                            f"{tool_name} paused. Slide {blocked} requires human resolution: "
+                            f"{current_state.presentation.state.slide_generation_error}"
+                        )
+                    else:
+                        content = f"{tool_name} completed."
                     logger.info(
                         "tool_completed tool=%s duration_ms=%.2f has_presentation=%s",
                         tool_name,

@@ -83,12 +83,12 @@ def test_resource_discussion_has_its_own_history_and_does_not_pollute_presentati
     monkeypatch.setattr(api, "get_repository", lambda: repository)
 
     class FakeResourceDiscussion:
-        def execute(self, resources, question, language):
+        def execute(self, resources, question, language, chunks=None):
             assert resources and question == "What does the PDF say?"
             return "The uploaded PDF supports the requested topic [pdf-1, p. 1]."
 
     class FakeResourceSummary:
-        def execute(self, resources, language):
+        def execute(self, resources, language, chunks=None):
             return ResourceAnalysis(summary="Overview of the uploaded PDF.", resource_ids=[resources[0].id])
 
     monkeypatch.setattr(api, "DiscussResourcesUseCase", lambda: FakeResourceDiscussion())

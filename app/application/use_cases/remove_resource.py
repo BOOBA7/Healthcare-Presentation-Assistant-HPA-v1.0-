@@ -20,6 +20,8 @@ class RemoveResourceUseCase:
         presentation.slides = []
         presentation.state.current_slide = 0
         presentation.state.total_slides = 0
+        presentation.state.blocked_slide_number = None
+        presentation.state.slide_generation_error = None
         presentation.state.resources_validated = False
         presentation.state.blueprint_validated = False
         presentation.state.slides_validated = False

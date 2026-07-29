@@ -45,6 +45,13 @@ class ConversationContext(BaseModel):
         description="Presentation objective.",
     )
 
+    presenter_name: str | None = None
+    presenter_title: str | None = None
+    organization: str | None = None
+    event_name: str | None = None
+    venue: str | None = None
+    presentation_date: str | None = None
+
     def is_complete(self) -> bool:
         """
         Returns True when every mandatory field
@@ -63,7 +70,7 @@ class ConversationContext(BaseModel):
         )
 
     def missing_fields(self) -> list[str]:
-        return [
-            name for name, value in self.model_dump().items()
-            if value is None
-        ]
+        required_fields = (
+            "topic", "audience", "presentation_type", "language", "duration_minutes", "objective"
+        )
+        return [name for name in required_fields if getattr(self, name) is None]

@@ -5,6 +5,7 @@ from app.domain.models.user_profile import UserProfile
 from app.domain.models.resource import Resource
 from app.domain.enums.resource_type import ResourceType
 from app.domain.exceptions.concurrent_modification_error import ConcurrentModificationError
+from app.domain.exceptions.project_job_running_error import ProjectJobRunningError
 from app.interfaces.storage.user_session_repository import UserSessionRepository
 from app.application.services.conversation_history import add_turn, ensure_history
 from langchain_core.messages import AIMessage, HumanMessage
@@ -168,6 +169,22 @@ def test_job_progress_is_durable_and_scoped_to_the_user(tmp_path):
     assert repository.get_job("another-user", job["job_id"]) is None
 
 
+def test_only_one_active_job_can_write_a_project_at_a_time(tmp_path):
+    repository = UserSessionRepository(tmp_path / "sessions.sqlite3")
+    repository.create_empty("user-1", "project-a")
+    first = repository.create_job("user-1", "project-a", "conversation")
+
+    with pytest.raises(ProjectJobRunningError):
+        repository.create_job("user-1", "project-a", "resources")
+
+    repository.update_job(
+        "user-1", first["job_id"], status="completed", progress=100, stage="completed"
+    )
+    second = repository.create_job("user-1", "project-a", "resources")
+
+    assert second["job_id"] != first["job_id"]
+
+
 def test_pdf_pages_and_chunks_are_not_serialized_in_project_state(tmp_path):
     repository = UserSessionRepository(tmp_path / "sessions.sqlite3")
     state = GraphState(
@@ -195,6 +212,30 @@ def test_pdf_pages_and_chunks_are_not_serialized_in_project_state(tmp_path):
     assert "Evidence passage" not in serialized
     assert page_count == 1
     assert chunk_count >= 1
+
+
+def test_normalized_resource_chunks_can_be_loaded_without_pdf_pages_in_state(tmp_path):
+    repository = UserSessionRepository(tmp_path / "sessions.sqlite3")
+    state = GraphState(
+        resource_library=[
+            Resource(
+                id="pdf-1",
+                filename="guideline.pdf",
+                title="Guideline",
+                file_type=ResourceType.PDF,
+                extracted_pages=[{"page": 3, "text": "Direct chunk retrieval evidence."}],
+                is_validated=True,
+            )
+        ]
+    )
+    repository.save("user-1", "project-a", "thread-1", state)
+
+    chunks = repository.load_resource_chunks("user-1", "project-a", ["pdf-1"])
+
+    assert [(chunk.resource_id, chunk.page, chunk.position, chunk.title) for chunk in chunks] == [
+        ("pdf-1", 3, 0, "Guideline")
+    ]
+    assert chunks[0].text == "Direct chunk retrieval evidence."
 
 
 def test_stale_project_revision_is_rejected_instead_of_overwriting(tmp_path):
