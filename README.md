@@ -235,6 +235,8 @@ excluded.
 │       └── langgraph/                   # Experimental checkpointer adapter
 ├── docs/
 │   ├── EVALUATION.md                    # System-level evaluation and test strategy
+│   ├── FANIS_REVIEW.md                   # Applied GenAI architecture review request
+│   ├── HCP_EVALUATION.md                 # Short checkbox-based HCP evaluation form
 │   └── PROMPT_REVIEW.md                 # Historical prompt-engineering review
 ├── tests/                               # Automated unit and workflow tests
 ├── main.py                              # Local CLI entry point
