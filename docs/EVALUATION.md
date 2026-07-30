@@ -35,6 +35,7 @@ outputs and never spends LLM quota. It currently covers, among other things:
 - source-only API responses;
 - PDF page/excerpt provenance, including Arabic excerpts;
 - persisted conversation and Project revision conflicts;
+- bounded model context with durable full conversation history;
 - durable job state;
 - authenticated HTTP Project/PDF lifecycle.
 
@@ -73,6 +74,13 @@ The key release metric is not a generic model score. It is the rate at which
 HPA follows its own evidence and workflow contract: correct refusal, correct
 retrieval, valid provenance and successful human-reviewed export.
 
+For a short qualitative evaluation with a healthcare professional, use
+[HCP_EVALUATION.md](HCP_EVALUATION.md). It includes a checkbox-based protocol
+for testing usefulness, evidence fidelity, citation usability and uncertainty
+handling. It also reserves a controlled comparison between the current BM25
+retrieval and a future bounded direct-PDF-context mode; the latter must not be
+claimed as implemented until it exists in the application.
+
 ## Evaluation boundaries
 
 This process measures application behavior. It does not establish clinical
@@ -86,6 +94,7 @@ The next evaluation additions should be:
 
 1. a full fake-LLM end-to-end test from PDF upload to PowerPoint export;
 2. concurrent-job and server-restart recovery scenarios;
-3. long-conversation tests once context summarisation is implemented;
+3. qualitative long-conversation tests for continuity, relevance and correct
+   use of the compacted-memory summary across multiple workflow stages;
 4. provider/model traceability assertions for every generation record;
 5. clinician-reviewed pilot cases, kept separate from production user data.
