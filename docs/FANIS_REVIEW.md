@@ -151,6 +151,65 @@ The HCP evaluation dimensions would be: faithfulness to sources, relevance,
 important omitted information, citation usefulness, perceived response time,
 and overall preference.
 
+## What I would like you to review
+
+I would especially value feedback on the following review materials.
+
+### 1. Current automated system tests
+
+The repository currently has a provider-free automated suite covering workflow
+transitions, human approvals, evidence provenance (resource / page / excerpt),
+resource deletion invalidation, conversation memory, SQLite persistence, API
+flows, and job state. The suite currently passes 66 tests.
+
+I would like to know whether these tests cover the most important failure modes
+for the current stage of the product, and which missing test would provide the
+highest value next.
+
+### 2. The primary business scenario
+
+```text
+User-provided PDF
+→ human resource validation
+→ blueprint generation
+→ Agenda review and approval
+→ slide generation
+→ human final approval
+→ PowerPoint export
+```
+
+I would like you to assess whether this workflow is coherent and whether you
+see a route through which an LLM, user action, or implementation detail could
+incorrectly bypass an evidence or human-review rule.
+
+### 3. Evaluation matrix
+
+The broader system evaluation matrix is documented in
+[EVALUATION.md](EVALUATION.md). It includes cases such as:
+
+- a scientific question with no PDF;
+- an unrelated PDF;
+- a false citation page or excerpt;
+- a veterinarian using a human-health guideline;
+- deletion of a selected PDF;
+- concurrent state-writing jobs for one Project.
+
+I would value your opinion on whether these cases are well chosen and which
+additional scenario should be required before an HCP pilot.
+
+### 4. HCP evaluation and retrieval comparison
+
+The exploratory HCP form is available in
+[HCP_EVALUATION.md](HCP_EVALUATION.md). I can use its general usability,
+evidence-fidelity, citation, and uncertainty sections immediately on the
+current BM25 implementation.
+
+The BM25 versus bounded direct-PDF-context comparison is intentionally planned
+for a later phase, after Mode B has been implemented. The current question is:
+
+> Is this proposed comparison sufficient for an initial HCP evaluation, and
+> what would you change before I implement the second retrieval mode?
+
 ## Focused questions for this review
 
 1. Is the principle “the LLM is not the workflow authority” translated
