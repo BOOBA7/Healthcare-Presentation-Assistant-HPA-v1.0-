@@ -74,6 +74,42 @@ PowerPoint with resources and authorship attribution
 - FastAPI API, `/app` web interface, Streamlit interface, and CLI;
 - GitHub Actions CI: Python compilation and tests on every push / pull request.
 
+## Personal learning reflection and request for guidance
+
+I understand the core idea behind HPA: an LLM should operate inside a system of
+trusted context, business rules, evidence gates, workflow states, human review,
+and auditable outputs. I am increasingly comfortable with the product and
+healthcare reasoning behind these decisions.
+
+However, I am still developing confidence with software-engineering terminology
+and technical trade-offs. I can identify the questions I care about — for
+example, whether a solution is robust, whether a retrieval approach is
+appropriate, or how to prevent inconsistent workflow behavior — but I do not
+yet always know how to translate those questions into the right technical
+requirements or implementation choices.
+
+At present, given my background, I am not yet able to independently determine
+whether code proposed by Codex is technically sound, robust, or the most
+appropriate technical choice. I can validate some outcomes through tests and
+user behaviour, but I cannot always assess architectural quality, hidden
+trade-offs, or long-term maintainability on my own.
+
+This is the main capability I want to develop: not merely writing code faster,
+but becoming able to review an implementation critically, identify when a
+solution is fragile, and explain why one technical option is preferable to
+another in a given context.
+
+For instance, I now understand that BM25 is transparent, local, and auditable,
+but may miss semantic similarity. My first instinct was to replace it because
+meaning matters in healthcare. I now think the more disciplined approach is to
+define an evaluation protocol, test it with an HCP, and use the results before
+changing the retrieval architecture.
+
+I also use coding assistance to accelerate implementation, but I do not want to
+remain dependent on it for architectural judgment. My goal is to become able to
+define the problem, constraints, failure behavior, acceptance criteria, and
+tests clearly enough to review an implementation critically.
+
 ## Current RAG choice: local BM25
 
 Current retrieval is lexical: BM25 selects PDF passages that share the most
@@ -130,6 +166,8 @@ and overall preference.
    end-to-end tests, API decomposition, RAG evaluation, or something else?
 6. Which repository elements best demonstrate Applied GenAI / AI engineering
    competence, and which ones still look too fragile?
+7. How would you recommend that I build stronger technical judgment when
+   choosing between approaches, rather than only learning terminology?
 
 ## Known limitations and accepted technical debt
 
@@ -147,4 +185,3 @@ and overall preference.
 | Date | Feedback / decision | Product consequence | Author |
 |---|---|---|---|
 | To be completed |  |  |  |
-
