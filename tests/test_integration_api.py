@@ -83,12 +83,12 @@ def test_resource_discussion_has_its_own_history_and_does_not_pollute_presentati
     monkeypatch.setattr(api, "get_repository", lambda: repository)
 
     class FakeResourceDiscussion:
-        def execute(self, resources, question, language, chunks=None):
+        def execute(self, resources, question, language, chunks=None, **kwargs):
             assert resources and question == "What does the PDF say?"
             return "The uploaded PDF supports the requested topic [pdf-1, p. 1]."
 
     class FakeResourceSummary:
-        def execute(self, resources, language, chunks=None):
+        def execute(self, resources, language, chunks=None, **kwargs):
             return ResourceAnalysis(summary="Overview of the uploaded PDF.", resource_ids=[resources[0].id])
 
     monkeypatch.setattr(api, "DiscussResourcesUseCase", lambda: FakeResourceDiscussion())
@@ -127,3 +127,38 @@ def test_resource_discussion_has_its_own_history_and_does_not_pollute_presentati
     payload = response.json()
     assert [turn["role"] for turn in payload["resource_messages"]] == ["user", "assistant"]
     assert payload["messages"] == []
+
+
+def test_project_evidence_settings_are_persisted_and_require_patient_acknowledgement(tmp_path, monkeypatch):
+    repository = UserSessionRepository(tmp_path / "hpa.sqlite3")
+    monkeypatch.setattr(api, "get_repository", lambda: repository)
+    client = TestClient(app)
+    registration = client.post(
+        "/auth/register",
+        json={"user_id": "settings-user", "password": "safe-local-password"},
+    )
+    headers = {"Authorization": f"Bearer {registration.json()['token']}"}
+    assert client.post(
+        "/projects", headers=headers, json={"user_id": "settings-user", "project_id": "comparison"}
+    ).status_code == 200
+
+    missing_acknowledgement = client.put(
+        "/projects/settings-user/comparison/evidence-settings",
+        headers=headers,
+        json={"evidence_context_mode": "direct_bounded", "patient_case_mode": True},
+    )
+    assert missing_acknowledgement.status_code == 409
+    assert missing_acknowledgement.json()["detail"]["code"] == "PATIENT_CASE_ACKNOWLEDGEMENT_REQUIRED"
+
+    updated = client.put(
+        "/projects/settings-user/comparison/evidence-settings",
+        headers=headers,
+        json={
+            "evidence_context_mode": "direct_bounded",
+            "patient_case_mode": True,
+            "patient_case_acknowledged": True,
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["evidence_context_mode"] == "direct_bounded"
+    assert updated.json()["patient_case_mode"] is True

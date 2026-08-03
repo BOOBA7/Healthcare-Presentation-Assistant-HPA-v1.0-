@@ -1,4 +1,4 @@
-from typing import Any, Annotated
+from typing import Annotated
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
@@ -14,6 +14,7 @@ from app.domain.models.resource_chunk import ResourceChunk
 from app.domain.models.resource_analysis import ResourceAnalysis
 from app.domain.value_objects.presentation_context import PresentationContext
 from app.domain.enums.conversation_mode import ConversationMode
+from app.domain.enums.evidence_context_mode import EvidenceContextMode
 
 
 class GraphState(BaseModel):
@@ -33,6 +34,13 @@ class GraphState(BaseModel):
     # Optimistic-lock revision supplied by the SQLite repository.  It is not a
     # workflow approval and must change on every durable Project write.
     project_revision: int = Field(default=0, ge=0)
+    # Project-level evidence experiment setting. It changes passage selection,
+    # never the validation, provenance, or human-approval rules.
+    evidence_context_mode: EvidenceContextMode = EvidenceContextMode.BM25
+    # Patient Case Mode accepts de-identified cases only and enables identifier
+    # checks before content is persisted or sent to the configured LLM.
+    patient_case_mode: bool = False
+    patient_case_acknowledged: bool = False
     conversation_mode: ConversationMode = ConversationMode.GENERAL
     # The project owns uploaded documents. A presentation only keeps an
     # explicit selection from this library for controlled production.

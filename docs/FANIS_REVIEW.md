@@ -64,7 +64,11 @@ PowerPoint with resources and authorship attribution
 - the LLM cannot approve resources, blueprint, slides, or export;
 - PDF library per user and per Project;
 - PDF pages and chunks persisted in SQLite, outside the large `state_json`;
-- local BM25 retrieval with no external document database;
+- project-level local BM25 retrieval or experimental bounded direct-PDF context,
+  with no external document database;
+- de-identified Patient Case Mode with deterministic obvious-identifier
+  blocking before eligible content reaches the configured LLM; this is a
+  guardrail, not a HIPAA compliance claim;
 - `ProductionEvidenceGate` before generation and scientific production-mode
   responses;
 - system validation of slide citations: resource, page, and quoted excerpt;
@@ -72,7 +76,8 @@ PowerPoint with resources and authorship attribution
 - bounded model memory with a complete durable conversation transcript;
 - local jobs with progress and one active state-writing job lock per Project;
 - FastAPI API, `/app` web interface, Streamlit interface, and CLI;
-- GitHub Actions CI: Python compilation and tests on every push / pull request.
+- GitHub Actions CI: Python compilation, Ruff linting, JavaScript syntax check
+  and provider-free tests on every push / pull request.
 
 ## Personal learning reflection and request for guidance
 
@@ -131,6 +136,38 @@ uses synonyms or a semantically close but different formulation. In a healthcare
 context, I believe this should be evaluated empirically rather than resolved by
 an immediate theoretical decision.
 
+## Open question: hospital-owned learning materials and remote LLMs
+
+I realised that "user-provided PDFs" does not automatically mean that a user is
+authorised to disclose those PDFs to an external AI provider. A healthcare
+professional may upload an internal hospital course, teaching material, or
+institutional document that contains no patient information but is still
+confidential or subject to the hospital's intellectual-property policy.
+
+In the current HPA architecture, PDF extraction and SQLite persistence occur
+locally. However, when the user requests a resource overview, resource
+discussion, blueprint, or AI-generated slide, HPA sends a bounded selection of
+the relevant PDF passages to the configured remote LLM provider. BM25 reduces
+the amount of material sent; it does **not** make the material local-only.
+
+My current understanding is that there is no purely technical way to use a
+remote LLM without disclosing the passages given to it. Apart from a fully local
+model, the product would need a clear governance decision. A possible future
+resource classification could be:
+
+| Resource classification | Behaviour |
+|---|---|
+| Approved for external AI | Bounded passages may be sent to the configured LLM. |
+| Confidential — local only | The PDF remains in local storage but is excluded from all LLM overview, discussion and generation calls. |
+| Sanitised copy approved for external AI | Only a human-reviewed de-identified/redacted copy may be used for LLM calls. |
+
+This is not implemented yet. I would value feedback on whether this is the
+right product boundary, where such a classification should live in the domain
+model, and how to ensure no retrieval or workflow path can bypass it. I also
+want to understand how far a small project should go before requiring an
+institutionally approved provider contract, data-processing terms, retention
+controls, and regional processing commitments.
+
 ## Proposed HCP evaluation: BM25 versus bounded direct PDF context
 
 I would like a healthcare professional to test HPA with a short checkbox-based
@@ -142,10 +179,11 @@ context-character limit:
 | Mode | Description | Status |
 |---|---|---|
 | A — BM25 | The system sends the best-ranked BM25 passages. | Implemented |
-| B — bounded direct PDF context | The system sends a wider deterministic portion of the same PDFs without BM25 ranking. | Proposed, not implemented |
+| B — bounded direct PDF context | The system sends a deterministic, source-balanced bounded portion of the same PDFs without BM25 ranking. | Implemented — experimental |
 
-Mode B is **not currently a feature**. It is documented as a controlled
-experiment so that a design choice is not confused with a demonstrated result.
+Mode B is an implemented **experimental comparison**. It must be tested with
+the same PDF set, question, model and context limit as BM25 so that a user
+preference is not confused with a change in evidence boundaries.
 
 The HCP evaluation dimensions would be: faithfulness to sources, relevance,
 important omitted information, citation usefulness, perceived response time,
@@ -160,7 +198,7 @@ I would especially value feedback on the following review materials.
 The repository currently has a provider-free automated suite covering workflow
 transitions, human approvals, evidence provenance (resource / page / excerpt),
 resource deletion invalidation, conversation memory, SQLite persistence, API
-flows, and job state. The suite currently passes 66 tests.
+flows, and job state. The suite currently passes 71 tests.
 
 I would like to know whether these tests cover the most important failure modes
 for the current stage of the product, and which missing test would provide the
@@ -204,11 +242,11 @@ The exploratory HCP form is available in
 evidence-fidelity, citation, and uncertainty sections immediately on the
 current BM25 implementation.
 
-The BM25 versus bounded direct-PDF-context comparison is intentionally planned
-for a later phase, after Mode B has been implemented. The current question is:
+The BM25 versus bounded direct-PDF-context comparison is now implemented as a
+Project-level setting. The current question is:
 
 > Is this proposed comparison sufficient for an initial HCP evaluation, and
-> what would you change before I implement the second retrieval mode?
+> what would you change before or during a first controlled HCP comparison?
 
 ## Focused questions for this review
 
@@ -233,7 +271,7 @@ for a later phase, after Mode B has been implemented. The current question is:
 - jobs have durable SQLite state, but a server restart marks them interrupted;
   they are not automatically resumed;
 - `app/interfaces/api/main.py` is still too central despite the existing routers;
-- CI does not yet validate `/app` JavaScript;
+- CI validates JavaScript syntax but does not yet run browser interaction tests;
 - a complete PDF → workflow → PowerPoint business test with a fake LLM remains
   to be added;
 - the HCP evaluation will not establish global clinical accuracy or regulatory

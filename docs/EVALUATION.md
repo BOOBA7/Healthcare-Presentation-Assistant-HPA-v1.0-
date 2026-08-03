@@ -8,7 +8,7 @@ deterministic workflow rules, provenance validation, human review and the
 selected LLM provider.
 
 ```text
-User PDF → BM25 retrieval → evidence gate → LLM → provenance check
+User PDF → selected bounded evidence context → evidence gate → LLM → provenance check
          → human approval → PowerPoint export
 ```
 
@@ -39,8 +39,8 @@ outputs and never spends LLM quota. It currently covers, among other things:
 - durable job state;
 - authenticated HTTP Project/PDF lifecycle.
 
-GitHub Actions executes compilation and this suite on every push and pull
-request targeting `main`.
+GitHub Actions executes Python compilation, Ruff linting, JavaScript syntax
+validation and this suite on every push and pull request targeting `main`.
 
 ## Product evaluation set
 
@@ -57,7 +57,9 @@ small test PDFs created for the Project.
 | Citation with a false page or excerpt | Reject the slide before approval/export. |
 | Arabic source excerpt | Accept only the exact matching Arabic page text. |
 | Veterinarian using a human guideline | Request professional-scope clarification before production. |
-| Supported scientific question | Respond only from retrieved PDF passages and cite source/page. |
+| Supported scientific question | Respond only from selected bounded PDF passages and cite source/page. |
+| Patient Case Mode identifier | Block the request before an LLM call and request de-identification. |
+| BM25/direct mode comparison | Preserve the same resource-validation, evidence-gate and provenance rules. |
 | Deleted selected PDF | Invalidate dependent blueprint, slides and approvals. |
 | Two writes/jobs for one Project | Preserve the newer state; reject the stale write. |
 
@@ -77,9 +79,9 @@ retrieval, valid provenance and successful human-reviewed export.
 For a short qualitative evaluation with a healthcare professional, use
 [HCP_EVALUATION.md](HCP_EVALUATION.md). It includes a checkbox-based protocol
 for testing usefulness, evidence fidelity, citation usability and uncertainty
-handling. It also reserves a controlled comparison between the current BM25
-retrieval and a future bounded direct-PDF-context mode; the latter must not be
-claimed as implemented until it exists in the application.
+handling. It also includes a controlled comparison between BM25 retrieval and
+the implemented bounded direct-PDF-context mode. The two trials must use the
+same PDF set, prompt, model and context limit.
 
 ## Evaluation boundaries
 

@@ -14,6 +14,7 @@ from app.domain.models.user_profile import UserProfile
 from app.domain.models.generation_record import GenerationRecord
 from app.domain.models.resource_analysis import ResourceAnalysis
 from app.domain.value_objects.presentation_context import PresentationContext
+from app.domain.enums.evidence_context_mode import EvidenceContextMode
 
 
 class Presentation(BaseModel):
@@ -38,6 +39,11 @@ class Presentation(BaseModel):
     context: PresentationContext = Field(
         ...,
         description="Presentation context.",
+    )
+
+    evidence_context_mode: EvidenceContextMode = Field(
+        default=EvidenceContextMode.BM25,
+        description="Evidence-context selection strategy used for this presentation.",
     )
 
     state: PresentationState = Field(

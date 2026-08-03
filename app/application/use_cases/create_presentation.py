@@ -9,6 +9,7 @@ from app.domain.value_objects.presentation_context import (
 )
 from app.domain.models.user_profile import UserProfile
 from app.domain.enums.workflow_status import WorkflowStatus
+from app.domain.enums.evidence_context_mode import EvidenceContextMode
 
 
 class CreatePresentationUseCase:
@@ -21,6 +22,7 @@ class CreatePresentationUseCase:
         title: str,
         context: PresentationContext,
         owner_profile: UserProfile | None = None,
+        evidence_context_mode: EvidenceContextMode = EvidenceContextMode.BM25,
     ) -> Presentation:
         """
         Create and initialize a Presentation domain object.
@@ -52,6 +54,7 @@ class CreatePresentationUseCase:
             id=str(uuid4()),
             title=title,
             context=context,
+            evidence_context_mode=evidence_context_mode,
             state=presentation_state,
             owner_profile=owner_profile or UserProfile(),
             created_at=datetime.now(),

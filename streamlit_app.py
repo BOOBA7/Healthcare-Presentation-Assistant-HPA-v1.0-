@@ -13,6 +13,7 @@ from app.application.use_cases.extract_pdf_resource import ExtractPdfResourceUse
 from app.application.use_cases.summarize_resources import SummarizeResourcesUseCase
 from app.application.use_cases.discuss_resources import DiscussResourcesUseCase
 from app.application.use_cases.update_presentation_details import UpdatePresentationDetailsUseCase
+from app.application.use_cases.update_project_evidence_settings import UpdateProjectEvidenceSettingsUseCase
 from app.application.use_cases.manage_project_resources import (
     AddProjectResourceUseCase,
     AttachResourceToPresentationUseCase,
@@ -39,6 +40,7 @@ from app.interfaces.storage.user_session_repository import UserSessionRepository
 from app.domain.models.user_profile import UserProfile
 from app.domain.enums.presentation_theme import PresentationTheme
 from app.domain.enums.workflow_status import WorkflowStatus
+from app.domain.enums.evidence_context_mode import EvidenceContextMode
 from app.domain.models.execution_context import ExecutionContext
 from app.application.services.conversation_history import (
     add_resource_turn,
@@ -306,6 +308,8 @@ def analyze_uploaded_resources() -> None:
             state.resource_library,
             language=state.user_profile.preferred_language,
             chunks=state.resource_chunks,
+            evidence_context_mode=state.evidence_context_mode,
+            patient_case_mode=state.patient_case_mode,
         )
         state.resource_analysis = analysis
         save_state()
@@ -324,6 +328,8 @@ def discuss_uploaded_resources(question: str) -> None:
             question,
             language=state.user_profile.preferred_language,
             chunks=state.resource_chunks,
+            evidence_context_mode=state.evidence_context_mode,
+            patient_case_mode=state.patient_case_mode,
         )
         add_resource_turn(state, "user", question)
         add_resource_turn(state, "assistant", answer)
@@ -468,6 +474,46 @@ with st.sidebar:
     save_state()
     st.caption(f"Project · Session {st.session_state.thread_id[:8]}")
     st.divider()
+    with st.expander("Evidence and Patient Case Mode", expanded=False):
+        st.caption(
+            "Evidence mode changes passage selection only. Validation, provenance and human approval remain required."
+        )
+        selected_evidence_mode = st.selectbox(
+            "Evidence context mode",
+            options=list(EvidenceContextMode),
+            index=list(EvidenceContextMode).index(state.evidence_context_mode),
+            format_func=lambda mode: {
+                EvidenceContextMode.BM25: "BM25 retrieval — default",
+                EvidenceContextMode.DIRECT_BOUNDED: "Direct bounded PDF context — experimental",
+            }[mode],
+        )
+        patient_case_mode = st.checkbox(
+            "Enable Patient Case Mode (de-identified information only)",
+            value=state.patient_case_mode,
+        )
+        patient_case_acknowledged = st.checkbox(
+            "I confirm that no patient-identifying information will be entered or uploaded.",
+            value=state.patient_case_acknowledged,
+            disabled=not patient_case_mode,
+        )
+        if patient_case_mode:
+            st.warning(
+                "HPA detects obvious identifiers before LLM use, but cannot guarantee de-identification. "
+                "Remove patient names, full dates, identifiers, contact details and addresses."
+            )
+        if st.button("Save evidence settings", use_container_width=True):
+            try:
+                UpdateProjectEvidenceSettingsUseCase().execute(
+                    state,
+                    evidence_context_mode=selected_evidence_mode,
+                    patient_case_mode=patient_case_mode,
+                    patient_case_acknowledged=patient_case_acknowledged,
+                )
+                save_state()
+                st.success("Evidence settings saved.")
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
     st.header("Scientific sources")
     uploaded_pdf = st.file_uploader("Upload a PDF", type=["pdf"])
     if st.button("Add resource", disabled=uploaded_pdf is None, use_container_width=True):
@@ -475,7 +521,11 @@ with st.sidebar:
             st.error("PDF files are limited to 20 MB.")
         else:
             try:
-                resource = ExtractPdfResourceUseCase().execute(uploaded_pdf.name, uploaded_pdf.getvalue())
+                resource = ExtractPdfResourceUseCase().execute(
+                    uploaded_pdf.name,
+                    uploaded_pdf.getvalue(),
+                    patient_case_mode=state.patient_case_mode,
+                )
                 AddProjectResourceUseCase().execute(state, resource)
                 save_state()
                 st.success(
@@ -870,6 +920,8 @@ if prompt := st.chat_input("Discutez d’une idée ou demandez explicitement de 
                     render_model_message(assistant_text, state.resource_library)
                 else:
                     st.write("Aucune réponse reçue.")
+            except ValueError as exc:
+                st.error(str(exc))
             except Exception as exc:
                 text = str(exc)
                 if "RESOURCE_EXHAUSTED" in text or "429" in text:

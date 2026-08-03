@@ -17,6 +17,7 @@ from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuild
 from app.domain.enums.workflow_status import WorkflowStatus
 from app.domain.exceptions.workflow_error import WorkflowError
 from app.domain.models.execution_context import ExecutionContext
+from app.application.services.patient_case_privacy import PatientCasePrivacyGuard
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,8 @@ class HealthcarePresentationAgent:
             ),
             "",
         )
+        if state.patient_case_mode:
+            PatientCasePrivacyGuard().ensure_text_safe(latest_user_message)
         # This is a deterministic human-workflow transition.  Asking the LLM
         # to remember to call a tool after the user has already clarified their
         # scope can leave a Project stuck in the same clarification loop.
@@ -195,7 +198,10 @@ class HealthcarePresentationAgent:
         if not ProductionEvidenceGate._scientific_request.search(message):
             return None
         context = EvidenceContextBuilder().for_resources(
-            resolve_presentation_resources(state), message, state.resource_chunks
+            resolve_presentation_resources(state),
+            message,
+            state.resource_chunks,
+            state.evidence_context_mode,
         )
         return None if context.startswith("No relevant") else context
 

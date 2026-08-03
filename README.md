@@ -23,7 +23,7 @@ clinical, legal or institutional review.
 >
 > 1. `WorkflowPolicy` validates the current lifecycle transition.
 > 2. `ProductionEvidenceGate` requires selected, human-approved PDF evidence
->    and sufficient BM25 retrieval support.
+>    and sufficient deterministic evidence-context support.
 > 3. The guarded LangGraph tool node permits only the action allowed by the
 >    trusted Project state.
 > 4. `EvidenceProvenanceValidator` verifies AI-generated slide citations before
@@ -69,6 +69,14 @@ clinical, legal or institutional review.
   *Resources and validation* slide.
 - Persists Projects, conversation transcripts, resource metadata, PDF pages,
   retrieval chunks, templates, workflow state and audit events in local SQLite.
+- Offers a Project-level evidence-context choice: local BM25 retrieval
+  (default) or **Direct bounded PDF context** (experimental comparison mode).
+  This choice never disables source validation, evidence gating, provenance or
+  human approval.
+- Offers a Patient Case Mode for **de-identified information only**. It blocks
+  obvious identifiers before they are persisted in a patient-case conversation
+  or sent to the configured LLM. It is a guardrail, not HIPAA certification or
+  a guarantee of de-identification.
 - Runs longer model operations as durable local jobs with polling progress and
   lightweight operational counters.
 
@@ -92,11 +100,20 @@ Two modes are intentionally separate:
 | Resource exploration | Summarise or discuss the user’s PDFs before creating slides | Bounded passages from the Project library only |
 | Production | Generate a blueprint or slides | Explicitly attached, user-approved presentation resources only |
 
-For production, HPA uses a local lexical BM25 retrieval layer over normalized
-SQLite PDF chunks. It selects a small, bounded evidence context; it does not use
-an external vector database, web search or a global knowledge base. If support
-is missing or insufficient, the deterministic evidence gate asks for a better
-PDF or a clarification instead of generating a scientific answer.
+Each Project selects one bounded local evidence-context strategy before
+generation starts:
+
+| Strategy | Use | What reaches the LLM |
+|---|---|---|
+| **BM25 retrieval** (default) | Normal use | The highest lexical-match PDF chunks for the question or generation task. |
+| **Direct bounded PDF context** (experimental) | HCP comparison | A deterministic, source-balanced window of PDF chunks, with no relevance ranking. |
+
+Neither strategy uses an external vector database, web search or a shared
+knowledge base. Both keep source/page metadata, context limits, the deterministic
+evidence gate and provenance validation. If support is missing or insufficient,
+HPA asks for a better PDF or a clarification instead of generating a scientific
+answer. Changing the strategy after blueprint or slide generation requires a
+new Project so the comparison remains auditable.
 
 Each AI-generated slide reference must pass system validation:
 
@@ -145,7 +162,8 @@ boundary.
    instruct the system to bypass its workflow.
 2. Only selected and human-approved presentation PDFs can support production
    claims and citations.
-3. `ProductionEvidenceGate` checks evidence availability and BM25 support
+3. `ProductionEvidenceGate` checks evidence availability and support from the
+   selected evidence-context strategy
    before model generation.
 4. `WorkflowPolicy` rejects invalid lifecycle transitions.
 5. `EvidenceProvenanceValidator` checks citations before slide acceptance and
@@ -154,6 +172,11 @@ boundary.
 7. Presenter and event details are optional deliverable metadata: they never
    block the workflow and are never fabricated by the LLM. A change after
    final approval reopens final approval only.
+8. In Patient Case Mode, obvious identifiers (for example email address, phone
+   number, full date, record identifier or address) are blocked before the
+   conversation or uploaded PDF reaches the LLM. The user must confirm that
+   their case is de-identified. This is an aid to privacy-conscious use, not a
+   claim of HIPAA compliance or a substitute for institutional policy.
 
 ## Architecture
 

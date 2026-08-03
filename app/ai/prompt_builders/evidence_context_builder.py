@@ -12,6 +12,7 @@ from app.domain.models.resource import Resource
 from app.domain.models.resource_chunk import ResourceChunk
 from app.domain.models.slide_outline import SlideOutline
 from app.application.services.observability import record
+from app.domain.enums.evidence_context_mode import EvidenceContextMode
 
 
 @dataclass(frozen=True)
@@ -53,7 +54,12 @@ class EvidenceContextBuilder:
         query = " ".join(
             [presentation.context.topic, presentation.context.objective, presentation.context.audience.value]
         )
-        return self._select(resources or presentation.resources, query, chunks)
+        return self._select(
+            resources or presentation.resources,
+            query,
+            chunks,
+            presentation.evidence_context_mode,
+        )
 
     def for_slide(
         self,
@@ -65,7 +71,12 @@ class EvidenceContextBuilder:
         query = " ".join(
             [presentation.context.topic, outline.title, outline.objective, outline.key_message]
         )
-        return self._select(resources or presentation.resources, query, chunks)
+        return self._select(
+            resources or presentation.resources,
+            query,
+            chunks,
+            presentation.evidence_context_mode,
+        )
 
     def assess(
         self,
@@ -86,9 +97,22 @@ class EvidenceContextBuilder:
         if not query_terms:
             return EvidenceAssessment(True, False, 0.0, ())
 
-        scores = self._bm25_scores(evidence_chunks, list(query_terms))
-        best_index, best_score = max(enumerate(scores), key=lambda item: item[1])
-        matched_terms = tuple(sorted(set(query_terms).intersection(evidence_chunks[best_index].terms)))
+        mode = presentation.evidence_context_mode
+        candidates = (
+            self._direct_chunks(evidence_chunks)
+            if mode == EvidenceContextMode.DIRECT_BOUNDED
+            else evidence_chunks
+        )
+        if not candidates:
+            return EvidenceAssessment(True, False, 0.0, ())
+        if mode == EvidenceContextMode.DIRECT_BOUNDED:
+            available_terms = set().union(*(set(chunk.terms) for chunk in candidates))
+            matched_terms = tuple(sorted(set(query_terms).intersection(available_terms)))
+            best_score = len(matched_terms) / len(query_terms)
+        else:
+            scores = self._bm25_scores(candidates, list(query_terms))
+            best_index, best_score = max(enumerate(scores), key=lambda item: item[1])
+            matched_terms = tuple(sorted(set(query_terms).intersection(candidates[best_index].terms)))
         minimum_matches = 1 if len(query_terms) <= 2 else 2
         return EvidenceAssessment(
             has_validated_resources=True,
@@ -98,14 +122,29 @@ class EvidenceContextBuilder:
         )
 
     def for_resources(
-        self, resources: list[Resource], query: str, chunks: list[ResourceChunk] | None = None
+        self,
+        resources: list[Resource],
+        query: str,
+        chunks: list[ResourceChunk] | None = None,
+        mode: EvidenceContextMode = EvidenceContextMode.BM25,
     ) -> str:
         """Retrieve bounded, cited passages for Project-library exploration."""
-        return self._select(resources, query, chunks)
+        return self._select(resources, query, chunks, mode)
 
-    def for_overview(self, resources: list[Resource], chunks: list[ResourceChunk] | None = None) -> str:
+    def for_overview(
+        self,
+        resources: list[Resource],
+        chunks: list[ResourceChunk] | None = None,
+        mode: EvidenceContextMode = EvidenceContextMode.BM25,
+    ) -> str:
         """Build a balanced bounded context for a resource-library overview."""
         evidence_chunks = self._chunks_for_resources(resources, chunks)
+        if mode == EvidenceContextMode.DIRECT_BOUNDED:
+            return self._format_selected(
+                self._direct_chunks(evidence_chunks),
+                purpose="overview",
+                mode=mode,
+            )
         selected: list[str] = []
         selected_chunks: list[EvidenceChunk] = []
         total = 0
@@ -126,6 +165,7 @@ class EvidenceContextBuilder:
         record(
             "bm25_retrieval",
             purpose="overview",
+            mode=mode.value,
             selected_passages=len(selected_chunks),
             resource_ids=sorted(by_resource),
             context_characters=len(context),
@@ -133,12 +173,24 @@ class EvidenceContextBuilder:
         return context
 
     def _select(
-        self, resources: list[Resource], query: str, persisted_chunks: list[ResourceChunk] | None = None
+        self,
+        resources: list[Resource],
+        query: str,
+        persisted_chunks: list[ResourceChunk] | None = None,
+        mode: EvidenceContextMode = EvidenceContextMode.BM25,
     ) -> str:
         chunks = self._chunks_for_resources(resources, persisted_chunks)
         query_terms = self._terms(query)
         if not chunks or not query_terms:
             return "No relevant validated PDF passages are available."
+
+        if mode == EvidenceContextMode.DIRECT_BOUNDED:
+            return self._format_selected(
+                self._direct_chunks(chunks),
+                purpose="query",
+                mode=mode,
+                query_terms=query_terms,
+            )
 
         scores = self._bm25_scores(chunks, query_terms)
         ranked = sorted(
@@ -167,9 +219,66 @@ class EvidenceContextBuilder:
         record(
             "bm25_retrieval",
             purpose="query",
+            mode=mode.value,
             query_terms=len(set(query_terms)),
             selected_passages=len(selected_chunks),
             selected_locations=[f"{chunk.resource_id}:p{chunk.page}" for chunk in selected_chunks],
+            context_characters=len(context),
+        )
+        return context
+
+    def _direct_chunks(self, chunks: list[EvidenceChunk]) -> list[EvidenceChunk]:
+        """Use a deterministic, source-balanced window without relevance ranking.
+
+        This is intentionally an experimental *direct bounded context* mode:
+        it does not score, rank, or query-select passages. It still retains the
+        same source/page metadata and hard context limit as BM25 mode.
+        """
+        by_resource: dict[str, list[EvidenceChunk]] = {}
+        for chunk in sorted(chunks, key=lambda item: (item.resource_id, item.page, item.position)):
+            by_resource.setdefault(chunk.resource_id, []).append(chunk)
+        indexes = {resource_id: 0 for resource_id in by_resource}
+        selected: list[EvidenceChunk] = []
+        total_characters = 0
+        while len(selected) < self.max_chunks:
+            added = False
+            for resource_id in sorted(by_resource):
+                index = indexes[resource_id]
+                candidates = by_resource[resource_id]
+                if index >= len(candidates):
+                    continue
+                candidate = candidates[index]
+                indexes[resource_id] += 1
+                entry = self._format_chunk(candidate)
+                if total_characters + len(entry) > self.max_characters:
+                    continue
+                selected.append(candidate)
+                total_characters += len(entry)
+                added = True
+                if len(selected) >= self.max_chunks:
+                    break
+            if not added:
+                break
+        return selected
+
+    def _format_selected(
+        self,
+        chunks: list[EvidenceChunk],
+        *,
+        purpose: str,
+        mode: EvidenceContextMode,
+        query_terms: list[str] | None = None,
+    ) -> str:
+        context = "\n\n".join(self._format_chunk(chunk) for chunk in chunks)
+        if not context:
+            return "No relevant validated PDF passages are available."
+        record(
+            "evidence_context",
+            purpose=purpose,
+            mode=mode.value,
+            query_terms=len(set(query_terms or [])),
+            selected_passages=len(chunks),
+            selected_locations=[f"{chunk.resource_id}:p{chunk.page}" for chunk in chunks],
             context_characters=len(context),
         )
         return context

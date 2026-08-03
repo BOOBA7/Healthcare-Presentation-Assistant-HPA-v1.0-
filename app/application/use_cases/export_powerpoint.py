@@ -98,7 +98,9 @@ class ExportPowerPointUseCase:
         slide = deck.slides.add_slide(self._blank_layout(deck))
         self._background(slide, palette["primary"])
         accent = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0), Inches(0), Inches(0.25), Inches(7.5))
-        accent.fill.solid(); accent.fill.fore_color.rgb = self._rgb(palette["accent"]); accent.line.fill.background()
+        accent.fill.solid()
+        accent.fill.fore_color.rgb = self._rgb(palette["accent"])
+        accent.line.fill.background()
         self._textbox(slide, "HEALTHCARE PRESENTATION", 0.8, 1.25, 10.8, 0.35, size=12, color=palette["accent"], bold=True)
         self._textbox(slide, presentation.title, 0.8, 1.8, 11.5, 1.6, size=34, color=(255, 255, 255), bold=True)
         self._textbox(slide, presentation.context.objective, 0.8, 3.75, 10.7, 0.62, size=17, color=(220, 235, 235))
@@ -125,7 +127,9 @@ class ExportPowerPointUseCase:
         for index, item in enumerate(presentation.agenda.items):
             top = 1.55 + index * 0.78
             badge = slide.shapes.add_shape(MSO_SHAPE.OVAL, Inches(0.8), Inches(top), Inches(0.38), Inches(0.38))
-            badge.fill.solid(); badge.fill.fore_color.rgb = self._rgb(palette["accent"]); badge.line.fill.background()
+            badge.fill.solid()
+            badge.fill.fore_color.rgb = self._rgb(palette["accent"])
+            badge.line.fill.background()
             self._textbox(slide, str(index + 1), 0.8, top + 0.02, 0.38, 0.25, size=10, color=(255, 255, 255), bold=True, align=PP_ALIGN.CENTER)
             self._textbox(slide, item, 1.4, top - 0.02, 10.7, 0.45, size=20, color=palette["ink"], bold=True)
         self._footer(slide, palette)
@@ -151,7 +155,9 @@ class ExportPowerPointUseCase:
 
     def _header(self, slide, title: str, palette: dict[str, tuple[int, int, int]]) -> None:
         bar = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0), Inches(0), Inches(13.333), Inches(1.05))
-        bar.fill.solid(); bar.fill.fore_color.rgb = self._rgb(palette["primary"]); bar.line.fill.background()
+        bar.fill.solid()
+        bar.fill.fore_color.rgb = self._rgb(palette["primary"])
+        bar.line.fill.background()
         self._textbox(slide, title, 0.8, 0.29, 11.9, 0.47, size=26, color=(255, 255, 255), bold=True)
 
     def _footer(self, slide, palette: dict[str, tuple[int, int, int]], provenance: str | None = None) -> None:
@@ -164,8 +170,13 @@ class ExportPowerPointUseCase:
         if not references:
             return
         box = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(0.8), Inches(5.65), Inches(11.7), Inches(1.15))
-        box.fill.solid(); box.fill.fore_color.rgb = self._rgb((230, 240, 239)); box.line.color.rgb = self._rgb(palette["accent"])
-        frame = box.text_frame; frame.clear(); frame.margin_left = Inches(0.14); frame.margin_top = Inches(0.08)
+        box.fill.solid()
+        box.fill.fore_color.rgb = self._rgb((230, 240, 239))
+        box.line.color.rgb = self._rgb(palette["accent"])
+        frame = box.text_frame
+        frame.clear()
+        frame.margin_left = Inches(0.14)
+        frame.margin_top = Inches(0.08)
         for index, reference in enumerate(references):
             title = str(reference.get("title") or "Source")
             excerpt = " ".join(str(reference.get("evidence_excerpt") or "").split())
@@ -176,7 +187,9 @@ class ExportPowerPointUseCase:
 
     def _add_authorship_box(self, slide, source_slide, palette: dict[str, tuple[int, int, int]]) -> None:
         box = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(0.8), Inches(5.82), Inches(11.7), Inches(0.72))
-        box.fill.solid(); box.fill.fore_color.rgb = self._rgb((255, 247, 237)); box.line.color.rgb = self._rgb(palette["accent"])
+        box.fill.solid()
+        box.fill.fore_color.rgb = self._rgb((255, 247, 237))
+        box.line.color.rgb = self._rgb(palette["accent"])
         message = (
             "User-authored content · Human-approved"
             if source_slide.content_origin == "user_authored"

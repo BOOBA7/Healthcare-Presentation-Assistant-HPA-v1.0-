@@ -20,8 +20,10 @@ class StateSummaryBuilder:
                 f"- User professional role: {profile.professional_role}",
                 f"- User preferred response language: {profile.preferred_language}",
                 f"- Conversation mode: {state.conversation_mode.value}",
+                f"- Evidence context mode: {state.evidence_context_mode.value}",
+                f"- Patient Case Mode: {'active — de-identified information only' if state.patient_case_mode else 'inactive'}",
                 f"- Presentation output language: {presentation.context.language.value if presentation else 'not set'}",
-                f"- Title-slide details: {self._title_slide_details(presentation)}",
+                f"- Title-slide details: {self._title_slide_details(presentation, state.patient_case_mode)}",
                 "- Adapt terminology, depth and examples to this role. For veterinarians, do not present human clinical guidance as veterinary guidance.",
                 f"- Context complete: {'yes' if context.is_complete() else 'no'}",
                 f"- Missing context fields: {', '.join(context.missing_fields()) or 'none'}",
@@ -41,6 +43,7 @@ class StateSummaryBuilder:
                 f"- Allowed next tools: {', '.join(self.allowed_tools(state)) or 'none; ask the user for the required information or PDF'}",
                 "- In GENERAL mode, do not answer scientific or clinical questions: collect context, explain the workflow, or request a user PDF.",
                 "- In PRODUCTION mode, scientific discussion is allowed only when grounded in retrieved user-PDF passages.",
+                "- When Patient Case Mode is active, work only with de-identified case information. Do not request, repeat, or infer patient identifiers.",
                 "- Resource, blueprint, slide and final validations are human actions performed in the interface, never LLM tools.",
                 "- Title-slide details are optional human-supplied metadata. Store them only when the user explicitly gives them; never invent or require them.",
                 "- If scope clarification is required, ask the user for one concise explanation, then call record_professional_scope with that explanation.",
@@ -80,9 +83,14 @@ class StateSummaryBuilder:
         return ("record_presentation_details",)
 
     @staticmethod
-    def _title_slide_details(presentation) -> str:
+    def _title_slide_details(presentation, patient_case_mode: bool) -> str:
         if presentation is None:
             return "not set"
+        if patient_case_mode:
+            # Title-slide metadata is a user-controlled PowerPoint artefact,
+            # not evidence. Keep it out of remote model context for a
+            # patient-case Project.
+            return "withheld from model in Patient Case Mode"
         context = presentation.context
         labels = (
             ("presenter", context.presenter_name),

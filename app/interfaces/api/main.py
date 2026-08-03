@@ -16,6 +16,7 @@ from app.application.use_cases.extract_pdf_resource import ExtractPdfResourceUse
 from app.application.use_cases.summarize_resources import SummarizeResourcesUseCase
 from app.application.use_cases.discuss_resources import DiscussResourcesUseCase
 from app.application.use_cases.update_presentation_details import UpdatePresentationDetailsUseCase
+from app.application.use_cases.update_project_evidence_settings import UpdateProjectEvidenceSettingsUseCase
 from app.application.use_cases.manage_project_resources import (
     AddProjectResourceUseCase,
     AttachResourceToPresentationUseCase,
@@ -28,12 +29,12 @@ from app.application.services.resource_library import ensure_resource_library, r
 from app.core.config import get_settings
 from app.core.versioning import HARNESS_VERSION, RETRIEVAL_VERSION, WORKFLOW_VERSION
 from app.interfaces.storage.user_session_repository import UserSessionRepository
-from app.domain.models.user_profile import UserProfile
 from app.domain.enums.presentation_theme import PresentationTheme
+from app.domain.enums.evidence_context_mode import EvidenceContextMode
 from app.domain.enums.workflow_status import WorkflowStatus
-from app.domain.exceptions.workflow_error import WorkflowError
 from app.domain.exceptions.domain_error import DomainError
 from app.domain.models.execution_context import ExecutionContext
+from app.application.services.patient_case_privacy import PatientCasePrivacyGuard
 from app.application.use_cases.workflow_steps import (
     RegenerateBlueprintUseCase,
     RegenerateSlideUseCase,
@@ -129,6 +130,12 @@ class PresentationDetailsRequest(BaseModel):
     presentation_date: str = Field(default="", max_length=100)
 
 
+class ProjectEvidenceSettingsRequest(BaseModel):
+    evidence_context_mode: EvidenceContextMode = EvidenceContextMode.BM25
+    patient_case_mode: bool = False
+    patient_case_acknowledged: bool = False
+
+
 class ResourceDiscussionRequest(BaseModel):
     question: str = Field(min_length=1, max_length=20_000)
 
@@ -163,6 +170,9 @@ def _project_response(user_id: str, project_id: str, thread_id: str, state: Grap
         "messages": messages,
         "resource_messages": resource_messages,
         "conversation_context": state.conversation_context.model_dump(mode="json"),
+        "evidence_context_mode": state.evidence_context_mode.value,
+        "patient_case_mode": state.patient_case_mode,
+        "patient_case_acknowledged": state.patient_case_acknowledged,
         "user_profile": state.user_profile.model_dump(mode="json"),
         "last_tool": state.execution.last_tool,
         "workflow_status": (
@@ -266,6 +276,8 @@ def _audit_payload(state: GraphState, extra: dict[str, object] | None = None) ->
         "workflow_status": presentation.state.workflow_status.value if presentation else None,
         "last_tool": state.execution.last_tool,
         "error": state.execution.error,
+        "evidence_context_mode": state.evidence_context_mode.value,
+        "patient_case_mode": state.patient_case_mode,
     }
     if presentation and presentation.generation_records:
         payload["last_generation"] = presentation.generation_records[-1].model_dump(mode="json")
@@ -349,6 +361,11 @@ def chat(request: ChatRequest, authenticated_user: str = Depends(_authenticated_
         else get_repository().create_empty(request.user_id, request.project_id)
     )
     state.resource_chunks = get_repository().load_resource_chunks(request.user_id, request.project_id)
+    if state.patient_case_mode:
+        try:
+            PatientCasePrivacyGuard().ensure_text_safe(request.message)
+        except ValueError as exc:
+            raise _workflow_conflict(exc) from exc
     ensure_history(state)
     state.messages.append(HumanMessage(content=request.message))
     add_turn(state, "user", request.message)
@@ -429,7 +446,11 @@ async def upload_pdf_resource(user_id: str, project_id: str, file: UploadFile = 
     if len(content) > 20 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="PDF files are limited to 20 MB.")
     try:
-        resource = ExtractPdfResourceUseCase().execute(filename, content)
+        resource = ExtractPdfResourceUseCase().execute(
+            filename,
+            content,
+            patient_case_mode=state.patient_case_mode,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     ensure_resource_library(state)
@@ -456,7 +477,11 @@ def summarize_resources(user_id: str, project_id: str, authenticated_user: str =
         ensure_resource_library(state)
         language = state.user_profile.preferred_language
         analysis = SummarizeResourcesUseCase().execute(
-            state.resource_library, language=language, chunks=state.resource_chunks
+            state.resource_library,
+            language=language,
+            chunks=state.resource_chunks,
+            evidence_context_mode=state.evidence_context_mode,
+            patient_case_mode=state.patient_case_mode,
         )
     except ValueError as exc:
         raise _workflow_conflict(exc) from exc
@@ -492,6 +517,8 @@ def discuss_resources(
             request.question,
             language=state.user_profile.preferred_language,
             chunks=state.resource_chunks,
+            evidence_context_mode=state.evidence_context_mode,
+            patient_case_mode=state.patient_case_mode,
         )
     except ValueError as exc:
         raise _workflow_conflict(exc) from exc
@@ -699,6 +726,34 @@ def update_theme(user_id: str, project_id: str, request: ThemeRequest, authentic
     return _save_project(user_id, project_id, thread_id, state, event_type="PRESENTATION_THEME_SELECTED", actor="user")
 
 
+@app.put("/projects/{user_id}/{project_id}/evidence-settings")
+def update_project_evidence_settings(
+    user_id: str,
+    project_id: str,
+    request: ProjectEvidenceSettingsRequest,
+    authenticated_user: str = Depends(_authenticated_user),
+):
+    """Persist human-controlled retrieval and patient-case privacy settings."""
+    _assert_owner(user_id, authenticated_user)
+    thread_id, state = _get_project(user_id, project_id)
+    try:
+        state = UpdateProjectEvidenceSettingsUseCase().execute(state, **request.model_dump())
+    except ValueError as exc:
+        raise _workflow_conflict(exc) from exc
+    return _save_project(
+        user_id,
+        project_id,
+        thread_id,
+        state,
+        event_type="PROJECT_EVIDENCE_SETTINGS_UPDATED",
+        actor="user",
+        extra_audit={
+            "evidence_context_mode": state.evidence_context_mode.value,
+            "patient_case_mode": state.patient_case_mode,
+        },
+    )
+
+
 @app.put("/projects/{user_id}/{project_id}/presentation/details")
 def update_presentation_details(
     user_id: str,
@@ -859,7 +914,7 @@ def export_powerpoint(user_id: str, project_id: str, authenticated_user: str = D
     return FileResponse(path, media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation", filename=f"{state.presentation.title}.pptx")
 
 
-from app.interfaces.api.routers import auth, jobs, platform, projects
+from app.interfaces.api.routers import auth, jobs, platform, projects  # noqa: E402
 
 # Versioned platform and asynchronous workload endpoints are isolated from the
 # legacy compatibility routes above.  More domains can migrate incrementally

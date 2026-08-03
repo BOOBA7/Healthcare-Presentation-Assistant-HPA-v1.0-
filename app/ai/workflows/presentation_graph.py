@@ -127,7 +127,7 @@ class PresentationGraph:
                     error = WorkflowError("WORKFLOW_VALIDATION_FAILED", str(exc))
                     content = f"TOOL_BLOCKED {error.code}: {error.user_message}"
                     logger.info("tool_validation_failed tool=%s error=%s", tool_name, exc)
-                except Exception as exc:
+                except Exception:
                     error = WorkflowError(
                         "WORKFLOW_EXECUTION_FAILED",
                         "The workflow action could not be completed. Please retry.",

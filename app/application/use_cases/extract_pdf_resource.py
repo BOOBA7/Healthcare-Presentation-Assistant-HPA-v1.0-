@@ -5,12 +5,13 @@ import fitz
 
 from app.domain.enums.resource_type import ResourceType
 from app.domain.models.resource import Resource
+from app.application.services.patient_case_privacy import PatientCasePrivacyGuard
 
 
 class ExtractPdfResourceUseCase:
     """Extract readable text and basic metadata from an uploaded PDF."""
 
-    def execute(self, filename: str, content: bytes) -> Resource:
+    def execute(self, filename: str, content: bytes, *, patient_case_mode: bool = False) -> Resource:
         if not content:
             raise ValueError("The uploaded PDF is empty.")
 
@@ -32,7 +33,7 @@ class ExtractPdfResourceUseCase:
         if not text:
             raise ValueError("No selectable text was found in this PDF.")
 
-        return Resource(
+        resource = Resource(
             id=str(uuid4()),
             filename=filename,
             file_type=ResourceType.PDF,
@@ -42,3 +43,6 @@ class ExtractPdfResourceUseCase:
             extracted_pages=pages,
             is_validated=True,
         )
+        if patient_case_mode:
+            PatientCasePrivacyGuard().ensure_resource_safe(resource)
+        return resource

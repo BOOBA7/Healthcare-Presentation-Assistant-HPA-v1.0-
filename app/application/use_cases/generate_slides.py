@@ -104,6 +104,7 @@ class GenerateSlidesUseCase:
                 model_name=get_settings().gemini_model,
                 prompt_version=PROMPT_VERSION,
                 retrieval_version=RETRIEVAL_VERSION,
+                retrieval_mode=presentation.evidence_context_mode.value,
                 harness_version=HARNESS_VERSION,
                 workflow_version=WORKFLOW_VERSION,
             )

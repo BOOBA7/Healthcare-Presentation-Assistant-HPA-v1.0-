@@ -1,6 +1,5 @@
 """Deterministic checks for evidence citations produced by the language model."""
 
-import re
 import unicodedata
 
 from app.domain.models.resource import Resource

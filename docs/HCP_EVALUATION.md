@@ -85,10 +85,11 @@ Lorsque les PDF ne répondaient pas suffisamment à la question, HPA :
 
 ## Comparaison retrieval — à remplir seulement si les deux modes sont disponibles
 
-> Important : le **mode B** ci-dessous est expérimental. Il ne doit être évalué
-> que lorsqu'il aura été activé dans l'application. Les deux modes doivent
-> recevoir les mêmes PDF, la même question, le même modèle et la même limite de
-> contexte.
+> Important : le **mode B** ci-dessous est expérimental. Il est disponible dans
+> les paramètres du Project sous le nom « Direct bounded PDF context ». Les deux
+> modes doivent recevoir les mêmes PDF, la même question, le même modèle et la
+> même limite de contexte. Le choix de mode ne retire jamais la validation des
+> ressources, le contrôle de preuve, la provenance ni les validations humaines.
 
 | Critère | Mode A — BM25 | Mode B — contexte PDF direct borné | Préférence |
 |---|---|---|---|
@@ -126,4 +127,3 @@ Seriez-vous volontaire pour un second test après amélioration ?
 ## Commentaire facultatif — une seule idée prioritaire
 
 `__________________________________________________________________________`
-

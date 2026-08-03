@@ -6,9 +6,6 @@ from app.application.use_cases.create_presentation import CreatePresentationUseC
 from app.application.use_cases.generate_slides import GenerateSlidesUseCase
 from app.application.use_cases.validate_resources import ValidateResourcesUseCase
 from app.application.validators.audience_validator import AudienceValidator
-from app.domain.enums.audience_type import AudienceType
-from app.domain.enums.language import Language
-from app.domain.enums.presentation_type import PresentationType
 from app.domain.models.conversation_context import ConversationContext
 from app.domain.value_objects.presentation_context import PresentationContext
 from app.domain.enums.workflow_status import WorkflowStatus
@@ -18,6 +15,7 @@ from app.application.services.production_evidence_gate import ProductionEvidence
 from app.application.validators.presentation_compatibility_validator import PresentationCompatibilityValidator
 from app.application.services.resource_library import resolve_presentation_resources
 from app.domain.enums.conversation_mode import ConversationMode
+from app.application.services.patient_case_privacy import PatientCasePrivacyGuard
 
 
 class CollectPresentationContextUseCase:
@@ -52,6 +50,7 @@ class CreatePresentationWorkflowUseCase:
             state.presentation_context.topic,
             state.presentation_context,
             state.user_profile,
+            state.evidence_context_mode,
         )
         return state.model_copy(update={"presentation": presentation, "conversation_mode": ConversationMode.PRODUCTION})
 
@@ -219,6 +218,8 @@ class EditBlueprintItemUseCase:
         key_message: str,
         content_origin: str,
     ) -> GraphState:
+        if state.patient_case_mode:
+            PatientCasePrivacyGuard().ensure_texts_safe((title, objective, key_message))
         if state.presentation is None or state.presentation.blueprint is None:
             raise ValueError("Generate a blueprint before editing it.")
         WorkflowPolicy.require_status(
@@ -293,6 +294,10 @@ class EditSlideUseCase:
         speaker_notes: str | None,
         content_origin: str,
     ) -> GraphState:
+        if state.patient_case_mode:
+            PatientCasePrivacyGuard().ensure_texts_safe(
+                (title, objective, *key_messages, content, speaker_notes)
+            )
         if state.presentation is None or not state.presentation.slides:
             raise ValueError("Generate slides before editing one.")
         WorkflowPolicy.require_status(

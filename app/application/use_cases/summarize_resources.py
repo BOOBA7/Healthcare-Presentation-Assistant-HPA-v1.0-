@@ -8,6 +8,8 @@ from app.domain.models.resource import Resource
 from app.domain.models.resource_chunk import ResourceChunk
 from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuilder
 from app.application.services.observability import observe_llm_call
+from app.application.services.patient_case_privacy import PatientCasePrivacyGuard
+from app.domain.enums.evidence_context_mode import EvidenceContextMode
 
 
 class SummarizeResourcesUseCase:
@@ -18,11 +20,16 @@ class SummarizeResourcesUseCase:
         resources: list[Resource],
         language: str = "en",
         chunks: list[ResourceChunk] | None = None,
+        evidence_context_mode: EvidenceContextMode = EvidenceContextMode.BM25,
+        patient_case_mode: bool = False,
     ) -> ResourceAnalysis:
         if not resources:
             raise ValueError("Upload at least one PDF before requesting a resource overview.")
 
-        context = EvidenceContextBuilder().for_overview(resources, chunks)
+        if patient_case_mode:
+            for resource in resources:
+                PatientCasePrivacyGuard().ensure_resource_safe(resource)
+        context = EvidenceContextBuilder().for_overview(resources, chunks, evidence_context_mode)
         prompt = [
                 SystemMessage(
                     content=(
@@ -46,8 +53,13 @@ class SummarizeResourcesUseCase:
         )
         return analysis
 
-    def build_context(self, resources: list[Resource], chunks: list[ResourceChunk] | None = None) -> str:
-        context = EvidenceContextBuilder().for_overview(resources, chunks)
+    def build_context(
+        self,
+        resources: list[Resource],
+        chunks: list[ResourceChunk] | None = None,
+        evidence_context_mode: EvidenceContextMode = EvidenceContextMode.BM25,
+    ) -> str:
+        context = EvidenceContextBuilder().for_overview(resources, chunks, evidence_context_mode)
         if context.startswith("No relevant"):
             raise ValueError("No readable text is available in the uploaded PDFs.")
         return context

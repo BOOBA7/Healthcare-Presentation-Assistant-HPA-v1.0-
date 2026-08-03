@@ -8,6 +8,8 @@ from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuild
 from app.domain.models.resource import Resource
 from app.domain.models.resource_chunk import ResourceChunk
 from app.application.services.observability import observe_llm_call
+from app.application.services.patient_case_privacy import PatientCasePrivacyGuard
+from app.domain.enums.evidence_context_mode import EvidenceContextMode
 
 
 class DiscussResourcesUseCase:
@@ -17,11 +19,18 @@ class DiscussResourcesUseCase:
         question: str,
         language: str = "en",
         chunks: list[ResourceChunk] | None = None,
+        evidence_context_mode: EvidenceContextMode = EvidenceContextMode.BM25,
+        patient_case_mode: bool = False,
     ) -> str:
         question = question.strip()
         if not question:
             raise ValueError("Enter a question about the uploaded resources.")
-        context = EvidenceContextBuilder().for_resources(resources, question, chunks)
+        if patient_case_mode:
+            guard = PatientCasePrivacyGuard()
+            guard.ensure_text_safe(question)
+            for resource in resources:
+                guard.ensure_resource_safe(resource)
+        context = EvidenceContextBuilder().for_resources(resources, question, chunks, evidence_context_mode)
         if context.startswith("No relevant"):
             raise ValueError("The uploaded PDFs do not contain relevant readable passages for this question.")
         prompt = [

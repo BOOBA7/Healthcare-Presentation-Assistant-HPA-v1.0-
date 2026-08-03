@@ -1,3 +1,5 @@
+from fastapi import HTTPException
+
 from app.ai.workflows.graph_state import GraphState
 from app.application.use_cases.add_resource import AddResourceUseCase
 from app.application.use_cases.create_presentation import CreatePresentationUseCase
@@ -85,4 +87,3 @@ def test_api_exposes_a_targeted_action_when_one_ai_slide_lacks_evidence():
     assert action is not None
     assert action["action"] == "resolve_slide_generation"
     assert "Slide 4" in action["message"]
-from fastapi import HTTPException

@@ -2,7 +2,7 @@
 
 ## Status
 
-**Accepted — updated 2026-07-29**
+**Accepted — updated 2026-08-03**
 
 This ADR supersedes the earlier agent-centric description. HPA retains one
 cognitive agent, but the LLM is no longer considered the workflow authority.
@@ -130,9 +130,16 @@ Project PDF library → optional source-only exploration
                     → human validation before blueprint production
 ```
 
-`EvidenceContextBuilder` performs local BM25 chunk retrieval over normalized
-SQLite passages selected for the presentation. `ProductionEvidenceGate` checks for
-sufficient lexical support before:
+Each Project explicitly selects an evidence-context strategy before generation:
+local BM25 retrieval (the default) or **Direct bounded PDF context** for a
+controlled HCP comparison. Direct context uses a deterministic source-balanced
+window over the same normalized SQLite chunks; it does not rank passages and
+does not send a complete PDF. The strategy is recorded with generation metadata.
+Changing it after blueprint or slide generation requires a new Project, keeping
+the experiment auditable.
+
+`ProductionEvidenceGate` checks for sufficient deterministic support from the
+selected strategy before:
 
 - answering a production-scoped scientific question;
 - generating a blueprint;
@@ -143,7 +150,25 @@ returns a fixed request for a suitable PDF or clarification instead of calling
 the LLM. Resource validation is contextual: it is requested when the user
 starts blueprint production, not when they merely upload or discuss a PDF.
 This conservative policy may produce false negatives for multilingual or
-semantically indirect queries; that trade-off is accepted for safety.
+semantically indirect queries; that trade-off is accepted for safety. Neither
+mode changes resource selection, human validation, citation provenance or export
+approval.
+
+### 4a. Patient Case Mode is de-identification-by-guardrail, not compliance
+
+A Project can opt into Patient Case Mode only after the user confirms that the
+case is de-identified. Before an eligible conversation, resource overview,
+resource discussion, or PDF upload reaches the configured LLM, a deterministic
+guard blocks obvious identifiers such as email addresses, phone numbers, full
+dates, medical-record identifiers, social-security identifiers and addresses.
+Detected values are never stored in the error or audit message.
+
+The detector is intentionally conservative and cannot reliably detect every
+identifier (for example names in arbitrary prose). Therefore this decision is
+not a HIPAA compliance claim, certification, formal de-identification method,
+or substitute for the user's institutional policy. It provides a clear product
+boundary: patient-identifying content must not be entered or uploaded in this
+mode.
 
 Every slide reference is validated by `EvidenceProvenanceValidator`:
 

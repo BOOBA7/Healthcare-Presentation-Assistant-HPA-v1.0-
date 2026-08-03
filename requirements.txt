@@ -24,6 +24,7 @@ pymupdf==1.28.0
 tiktoken==0.13.0
 
 pytest==9.1.1
+ruff==0.12.11
 
 httpx==0.28.1
 python-multipart==0.0.32

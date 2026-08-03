@@ -1,7 +1,6 @@
 """Project, template and audit routes."""
 
 import io
-from pathlib import Path
 from zipfile import BadZipFile, ZipFile
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile

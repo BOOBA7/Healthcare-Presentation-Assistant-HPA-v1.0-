@@ -7,6 +7,7 @@ from app.domain.enums.audience_type import AudienceType
 from app.domain.enums.language import Language
 from app.domain.enums.presentation_type import PresentationType
 from app.domain.enums.resource_type import ResourceType
+from app.domain.enums.evidence_context_mode import EvidenceContextMode
 from app.domain.models.resource import Resource
 from app.domain.models.resource_chunk import ResourceChunk
 from app.domain.models.slide import Slide
@@ -144,3 +145,53 @@ def test_retrieval_prefers_normalized_sqlite_chunks_over_in_state_pdf_pages():
 
     assert "SOURCE ID: pdf-1" in context
     assert "PAGE: 2" in context
+
+
+def test_direct_bounded_context_remains_source_bound_without_bm25_ranking():
+    context = PresentationContext(
+        topic="Depression treatment",
+        audience=AudienceType.SPECIALIST,
+        presentation_type=PresentationType.LECTURE,
+        language=Language.ENGLISH,
+        duration_minutes=10,
+        objective="Review treatment options",
+    )
+    presentation = CreatePresentationUseCase().execute(
+        "Depression treatment",
+        context,
+        evidence_context_mode=EvidenceContextMode.DIRECT_BOUNDED,
+    )
+    evidence = resource()
+    chunks = [
+        ResourceChunk(
+            resource_id="pdf-1",
+            page=1,
+            position=0,
+            title="Clinical guideline",
+            text="Background and methods for this clinical guideline.",
+        ),
+        ResourceChunk(
+            resource_id="pdf-1",
+            page=2,
+            position=0,
+            title="Clinical guideline",
+            text="Depression treatment should be individualized according to clinical response.",
+        ),
+    ]
+
+    retrieved = EvidenceContextBuilder().for_resources(
+        [evidence],
+        "individualized depression treatment",
+        chunks,
+        EvidenceContextMode.DIRECT_BOUNDED,
+    )
+    assessment = EvidenceContextBuilder().assess(
+        presentation,
+        "individualized depression treatment",
+        [evidence],
+        chunks,
+    )
+
+    assert "PAGE: 1" in retrieved
+    assert "PAGE: 2" in retrieved
+    assert assessment.is_sufficient
