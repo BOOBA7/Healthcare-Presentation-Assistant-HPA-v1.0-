@@ -153,6 +153,38 @@ def _message_text(content: object) -> str:
     return str(content)
 
 
+def _configured_model_identity() -> dict[str, str]:
+    """Return configured provider metadata without exposing credentials."""
+    provider = settings.llm_provider.lower()
+    model = settings.openai_model if provider == "openai" else settings.gemini_model
+    return {"provider": provider, "model": model}
+
+
+def _provider_failure(exc: Exception) -> tuple[str, bool, int, str]:
+    """Classify provider failures for safe audit records and HTTP responses."""
+    message = str(exc)
+    if "RESOURCE_EXHAUSTED" in message or "429" in message:
+        return (
+            "quota_exhausted",
+            True,
+            429,
+            "The language-model quota is exhausted. Retry later or use an API project with available quota.",
+        )
+    if isinstance(exc, httpx.ConnectError) or "nodename nor servname" in message:
+        return (
+            "connection_failed",
+            True,
+            503,
+            "Cannot reach the language-model provider. Check your Internet connection, DNS, or firewall, then retry.",
+        )
+    return (
+        "provider_failed",
+        False,
+        502,
+        "The language-model provider could not process this request. Check the selected model and API key.",
+    )
+
+
 def _project_response(user_id: str, project_id: str, thread_id: str, state: GraphState) -> dict:
     """Return only JSON-safe state needed by the browser interface."""
     ensure_history(state)
@@ -389,21 +421,30 @@ def chat(request: ChatRequest, authenticated_user: str = Depends(_authenticated_
         result = get_agent().invoke(state, thread_id=thread_id)
     except Exception as exc:
         logger.exception("Language-model request failed for user=%s project=%s", request.user_id, request.project_id)
-        error_message = str(exc)
-        if "RESOURCE_EXHAUSTED" in error_message or "429" in error_message:
-            raise HTTPException(
-                status_code=429,
-                detail="Gemini quota is exhausted. Retry later or use an API project with available quota.",
-            ) from exc
-        if isinstance(exc, httpx.ConnectError) or "nodename nor servname" in error_message:
-            raise HTTPException(
-                status_code=503,
-                detail="Cannot reach Gemini. Check your Internet connection, DNS, or firewall, then retry.",
-            ) from exc
-        raise HTTPException(
-            status_code=502,
-            detail="The language-model provider could not process this request. Check the selected model and API key.",
-        ) from exc
+        failure_category, retryable, status_code, detail = _provider_failure(exc)
+        state.execution = ExecutionContext(
+            tool_output={
+                "status": "failed",
+                "error_code": "LLM_PROVIDER_FAILURE",
+                "retryable": retryable,
+            },
+            error=detail,
+        )
+        _save_project(
+            request.user_id,
+            request.project_id,
+            thread_id,
+            state,
+            event_type="AGENT_TURN_FAILED",
+            actor="system",
+            extra_audit={
+                "message_length": len(request.message),
+                "failure_category": failure_category,
+                "retryable": retryable,
+                **_configured_model_identity(),
+            },
+        )
+        raise HTTPException(status_code=status_code, detail=detail) from exc
     saved_state = GraphState(**result)
     ensure_history(saved_state)
     last_assistant_message = next(
@@ -522,8 +563,25 @@ def discuss_resources(
     """Discuss project PDFs independently from the presentation workflow."""
     _assert_owner(user_id, authenticated_user)
     thread_id, state = _get_project(user_id, project_id)
+    ensure_resource_library(state)
+    if state.patient_case_mode:
+        try:
+            PatientCasePrivacyGuard().ensure_text_safe(request.question)
+        except ValueError as exc:
+            raise _workflow_conflict(exc) from exc
+    # The resource workspace has its own durable transcript. Persist the user
+    # question before provider work so a failed analysis cannot erase it.
+    add_resource_turn(state, "user", request.question)
+    _save_project(
+        user_id,
+        project_id,
+        thread_id,
+        state,
+        event_type="RESOURCE_DISCUSSION_MESSAGE_RECEIVED",
+        actor="user",
+        extra_audit={"question_length": len(request.question)},
+    )
     try:
-        ensure_resource_library(state)
         answer = DiscussResourcesUseCase().execute(
             state.resource_library,
             request.question,
@@ -533,11 +591,43 @@ def discuss_resources(
             patient_case_mode=state.patient_case_mode,
         )
     except ValueError as exc:
+        state.execution = ExecutionContext(error=str(exc))
+        _save_project(
+            user_id,
+            project_id,
+            thread_id,
+            state,
+            event_type="RESOURCE_DISCUSSION_REJECTED",
+            actor="system",
+            extra_audit={"question_length": len(request.question)},
+        )
         raise _workflow_conflict(exc) from exc
     except Exception as exc:
         logger.exception("Resource discussion failed for user=%s project=%s", user_id, project_id)
-        raise HTTPException(status_code=502, detail="The model could not discuss the uploaded resources. Please retry.") from exc
-    add_resource_turn(state, "user", request.question)
+        failure_category, retryable, status_code, detail = _provider_failure(exc)
+        state.execution = ExecutionContext(
+            tool_output={
+                "status": "failed",
+                "error_code": "LLM_PROVIDER_FAILURE",
+                "retryable": retryable,
+            },
+            error=detail,
+        )
+        _save_project(
+            user_id,
+            project_id,
+            thread_id,
+            state,
+            event_type="RESOURCE_DISCUSSION_FAILED",
+            actor="system",
+            extra_audit={
+                "question_length": len(request.question),
+                "failure_category": failure_category,
+                "retryable": retryable,
+                **_configured_model_identity(),
+            },
+        )
+        raise HTTPException(status_code=status_code, detail=detail) from exc
     add_resource_turn(state, "assistant", answer)
     return _save_project(
         user_id, project_id, thread_id, state,

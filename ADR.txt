@@ -248,13 +248,18 @@ When a human action has already changed the Project, a stale write fails as
 job per Project. A second request is rejected as `PROJECT_JOB_ALREADY_RUNNING`
 before it can make a duplicate model call.
 
-The full presentation-chat transcript remains durable. Each submitted user turn
-is committed with a `USER_MESSAGE_RECEIVED` audit event before any provider
-call, so quota, network and model failures cannot make that user message
-disappear. Before invoking the model, the application keeps only the 16 most
-recent model messages and compacts older turns into a bounded,
-non-authoritative memory summary. The trusted state summary and retrieved PDF
-excerpts remain authoritative for workflow decisions and scientific claims.
+The presentation-chat and independent Resource Chat transcripts remain durable.
+Each submitted user turn is committed before any provider call, so quota,
+network and model failures cannot make that message disappear. The audit trail
+records `USER_MESSAGE_RECEIVED` or `RESOURCE_DISCUSSION_MESSAGE_RECEIVED`, then
+records a safe failure event when needed (`AGENT_TURN_FAILED` or
+`RESOURCE_DISCUSSION_FAILED`). Failure payloads contain only a category,
+retryability and configured provider/model identity; raw provider error text
+and user source content are not copied into the audit event. Before invoking
+the model, the application keeps only the 16 most recent presentation-chat
+model messages and compacts older turns into a bounded, non-authoritative memory
+summary. The trusted state summary and retrieved PDF excerpts remain
+authoritative for workflow decisions and scientific claims.
 
 Long-running model calls are recorded as durable local `project_jobs` entries.
 The API returns `202`, then clients poll a job for stage/progress/result. The

@@ -36,7 +36,8 @@ outputs and never spends LLM quota. It currently covers, among other things:
 - PDF page/excerpt provenance, including Arabic excerpts;
 - persisted conversation and Project revision conflicts;
 - evidence-bound short or indirect questions that must not bypass PDF retrieval;
-- persistence of a submitted user turn when a model provider fails;
+- persistence and safe audit events for submitted presentation-chat and
+  Resource Chat turns when a model provider fails;
 - Patient Case Mode acceptance of normal PDF publication dates while direct
   identifiers remain blocked;
 - bounded model context with durable full conversation history;
@@ -65,7 +66,7 @@ small test PDFs created for the Project.
 | Supported scientific question | Respond only from selected bounded PDF passages and cite source/page. |
 | Patient Case Mode identifier | Block the request before an LLM call and request de-identification. |
 | Patient Case Mode + guideline publication date | Accept the PDF date alone; continue to block direct identifiers. |
-| Provider quota/network failure | Keep the submitted user turn in the durable transcript and audit trail. |
+| Provider quota/network failure | Keep the submitted chat turn in its durable transcript and record a safe failure category, retryability and configured provider/model in the audit trail. |
 | BM25/direct mode comparison | Preserve the same resource-validation, evidence-gate and provenance rules. |
 | Deleted selected PDF | Invalidate dependent blueprint, slides and approvals. |
 | Two writes/jobs for one Project | Preserve the newer state; reject the stale write. |

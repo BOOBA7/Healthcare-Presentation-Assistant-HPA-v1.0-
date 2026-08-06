@@ -185,10 +185,12 @@ boundary.
    confirm that their case is de-identified. This is an aid to
    privacy-conscious use, not a claim of HIPAA compliance or a substitute for
    institutional policy.
-9. A submitted presentation-chat user turn is persisted before provider work
-   starts. A quota, network or provider failure therefore cannot remove that
-   turn from the durable transcript; the audit trail records
-   `USER_MESSAGE_RECEIVED`.
+9. A submitted presentation-chat or Resource Chat user turn is persisted before
+   provider work starts. A quota, network or provider failure therefore cannot
+   remove that turn from its durable transcript. The audit trail records the
+   received turn and a safe failure event (`AGENT_TURN_FAILED` or
+   `RESOURCE_DISCUSSION_FAILED`) containing only failure category, retryability
+   and configured provider/model identity — never the raw provider error.
 
 ## Architecture
 

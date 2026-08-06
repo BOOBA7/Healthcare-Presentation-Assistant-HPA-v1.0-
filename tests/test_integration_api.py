@@ -168,6 +168,53 @@ def test_chat_persists_user_turn_when_the_model_provider_fails(tmp_path, monkeyp
     ]
     events = client.get("/projects/history-user/history-project/audit-events", headers=headers).json()["events"]
     assert any(event["event_type"] == "USER_MESSAGE_RECEIVED" for event in events)
+    failure = next(event for event in events if event["event_type"] == "AGENT_TURN_FAILED")
+    assert failure["payload"]["failure_category"] == "provider_failed"
+    assert failure["payload"]["provider"] in {"openai", "gemini"}
+    assert "provider unavailable" not in str(failure["payload"])
+
+
+def test_resource_discussion_persists_question_and_audits_provider_failure(tmp_path, monkeypatch):
+    repository = UserSessionRepository(tmp_path / "hpa.sqlite3")
+    monkeypatch.setattr(api, "get_repository", lambda: repository)
+
+    class FailingResourceDiscussion:
+        def execute(self, *args, **kwargs):
+            raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(api, "DiscussResourcesUseCase", lambda: FailingResourceDiscussion())
+    client = TestClient(app)
+    registration = client.post(
+        "/auth/register",
+        json={"user_id": "resource-history-user", "password": "safe-local-password"},
+    )
+    headers = {"Authorization": f"Bearer {registration.json()['token']}"}
+    assert client.post(
+        "/projects",
+        headers=headers,
+        json={"user_id": "resource-history-user", "project_id": "resource-history-project"},
+    ).status_code == 200
+
+    response = client.post(
+        "/projects/resource-history-user/resource-history-project/resources/discuss",
+        headers=headers,
+        json={"question": "What does this PDF say?"},
+    )
+
+    assert response.status_code == 502
+    project = client.get(
+        "/projects/resource-history-user/resource-history-project", headers=headers
+    ).json()
+    assert [(turn["role"], turn["text"]) for turn in project["resource_messages"]] == [
+        ("user", "What does this PDF say?")
+    ]
+    events = client.get(
+        "/projects/resource-history-user/resource-history-project/audit-events", headers=headers
+    ).json()["events"]
+    assert {event["event_type"] for event in events} >= {
+        "RESOURCE_DISCUSSION_MESSAGE_RECEIVED",
+        "RESOURCE_DISCUSSION_FAILED",
+    }
 
 
 def test_project_evidence_settings_are_persisted_and_require_patient_acknowledgement(tmp_path, monkeypatch):
