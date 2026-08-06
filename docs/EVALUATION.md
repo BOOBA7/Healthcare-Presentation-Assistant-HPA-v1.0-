@@ -35,6 +35,10 @@ outputs and never spends LLM quota. It currently covers, among other things:
 - source-only API responses;
 - PDF page/excerpt provenance, including Arabic excerpts;
 - persisted conversation and Project revision conflicts;
+- evidence-bound short or indirect questions that must not bypass PDF retrieval;
+- persistence of a submitted user turn when a model provider fails;
+- Patient Case Mode acceptance of normal PDF publication dates while direct
+  identifiers remain blocked;
 - bounded model context with durable full conversation history;
 - durable job state;
 - authenticated HTTP Project/PDF lifecycle.
@@ -53,12 +57,15 @@ small test PDFs created for the Project.
 | Scenario | Expected system behavior |
 |---|---|
 | Medical question without a PDF | Refuse scientific answer and request a user-provided PDF. |
+| Short or indirect factual question without a PDF | Treat it as evidence-bound; do not rely on medical-keyword matching. |
 | PDF unrelated to the question | Request a more suitable source or clarification. |
 | Citation with a false page or excerpt | Reject the slide before approval/export. |
 | Arabic source excerpt | Accept only the exact matching Arabic page text. |
 | Veterinarian using a human guideline | Request professional-scope clarification before production. |
 | Supported scientific question | Respond only from selected bounded PDF passages and cite source/page. |
 | Patient Case Mode identifier | Block the request before an LLM call and request de-identification. |
+| Patient Case Mode + guideline publication date | Accept the PDF date alone; continue to block direct identifiers. |
+| Provider quota/network failure | Keep the submitted user turn in the durable transcript and audit trail. |
 | BM25/direct mode comparison | Preserve the same resource-validation, evidence-gate and provenance rules. |
 | Deleted selected PDF | Invalidate dependent blueprint, slides and approvals. |
 | Two writes/jobs for one Project | Preserve the newer state; reject the stale write. |

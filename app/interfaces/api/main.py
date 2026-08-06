@@ -373,6 +373,18 @@ def chat(request: ChatRequest, authenticated_user: str = Depends(_authenticated_
     if state.presentation is not None:
         # Keep future blueprint/slide generations aligned with a profile update.
         state.presentation.owner_profile = state.user_profile
+    # Persist the user's turn before any provider work. Quota, network, or
+    # model failures must never make a submitted message disappear from the
+    # durable conversation history.
+    _save_project(
+        request.user_id,
+        request.project_id,
+        thread_id,
+        state,
+        event_type="USER_MESSAGE_RECEIVED",
+        actor="user",
+        extra_audit={"message_length": len(request.message)},
+    )
     try:
         result = get_agent().invoke(state, thread_id=thread_id)
     except Exception as exc:

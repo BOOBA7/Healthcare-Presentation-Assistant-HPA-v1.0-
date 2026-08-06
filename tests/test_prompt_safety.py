@@ -79,6 +79,7 @@ def test_production_evidence_gate_blocks_unsupported_or_missing_evidence_in_fren
 
 def test_production_evidence_gate_allows_a_question_supported_by_validated_pdf():
     presentation = _presentation()
+    presentation.state.resources_validated = True
     state = GraphState(presentation=presentation, user_profile=presentation.owner_profile)
 
     assert ProductionEvidenceGate().block_reason(
@@ -94,6 +95,20 @@ def test_general_mode_refuses_scientific_chat_without_user_pdf():
 
     assert answer is not None
     assert "PDF" in answer
+
+
+def test_evidence_gate_uses_a_safe_default_for_short_or_unexpected_factual_questions():
+    """A keyword list must not let factual questions bypass PDF retrieval."""
+    state = GraphState(conversation_mode=ConversationMode.GENERAL)
+
+    assert ProductionEvidenceGate().block_reason(state, "What about CBT?") is not None
+    assert ProductionEvidenceGate().block_reason(state, "Et la fatigue ?") is not None
+
+
+def test_evidence_gate_keeps_clear_workflow_planning_natural():
+    state = GraphState(conversation_mode=ConversationMode.GENERAL)
+
+    assert ProductionEvidenceGate().block_reason(state, "I want to create a presentation project.") is None
 
 
 def test_production_chat_receives_the_same_retrieved_pdf_context():

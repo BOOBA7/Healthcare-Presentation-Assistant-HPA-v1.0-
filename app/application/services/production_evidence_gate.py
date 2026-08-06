@@ -28,38 +28,48 @@ class ProductionEvidenceGate:
         r"continuer|modifier|régénère|regenerer|construis|أنشئ|انشئ|ول[ّ]?د|تابع)\b",
         re.IGNORECASE,
     )
-    _scientific_request = re.compile(
-        r"\b(what is|what are|what does|what do|explain|treatment|therapy|diagnos|dose|dosing|drug|medication|"
-        r"guideline|recommend\w*|indication|contraindication|adverse|disease|depression|clinical|"
-        r"qu.est.ce|explique|traitement|th.rapie|diagnostic|dose|posologie|m.dicament|recommand\w*|"
-        r"indication|contre.indication|effet ind.sirable|maladie|d.pression|clinique|"
-        r"ما هو|ما هي|اشرح|علاج|تشخيص|جرعة|دواء|توصي|مرض|اكتئاب|سريري)\b",
+    _planning_or_navigation = re.compile(
+        r"\b(presentation|presentations|slide|slides|blueprint|agenda|outline|project|workflow|"
+        r"présentation|diapositive|diapositives|projet|ordre du jour|workflow|"
+        r"عرض|شرائح|شريحة|مشروع|مخطط|أجندة)\b",
         re.IGNORECASE,
     )
+
+    @classmethod
+    def requires_evidence(cls, user_message: str) -> bool:
+        """Return whether a chat turn needs user-PDF evidence before LLM use.
+
+        This is deliberately an allow-list, not a medical-keyword detector.
+        A factual question can be expressed with an unlimited number of terms,
+        languages, abbreviations, or short follow-ups (for example, “What
+        about CBT?”).  Only clearly non-factual social, profile, and workflow
+        coordination turns may reach the LLM without retrieved PDF passages.
+        """
+        return not (
+            cls._social_only.match(user_message)
+            or cls._personal_context.search(user_message)
+            or (
+                cls._explicit_action.search(user_message)
+                and cls._planning_or_navigation.search(user_message)
+            )
+        )
 
     def block_reason(self, state: GraphState, user_message: str) -> str | None:
         """Return a safe user message, or ``None`` when the LLM may answer."""
         presentation = state.presentation
-        if self._social_only.match(user_message) or self._personal_context.search(user_message):
+        if not self.requires_evidence(user_message):
             return None
 
         # A presentation implies production for legacy persisted states created
         # before ``conversation_mode`` was introduced.
         mode = ConversationMode.PRODUCTION if presentation is not None else state.conversation_mode
         if mode == ConversationMode.GENERAL:
-            if self._scientific_request.search(user_message):
-                record("evidence_refusal", reason="general_mode_scientific_request")
-                return self._message(state, "general")
-            return None
+            record("evidence_refusal", reason="general_mode_evidence_bound_request")
+            return self._message(state, "general")
 
         if presentation is None:
             record("evidence_refusal", reason="production_without_presentation")
             return self._message(state, "missing")
-
-        # The production conversation becomes evidence-bound only for a
-        # scientific/factual request. Planning and navigation remain natural.
-        if not self._scientific_request.search(user_message):
-            return None
 
         resources = resolve_presentation_resources(state)
         if not presentation.state.resources_validated:
@@ -72,10 +82,6 @@ class ProductionEvidenceGate:
             record("evidence_refusal", reason="no_validated_resources")
             return self._message(state, "missing")
 
-        # Explicit workflow commands do not answer a scientific question; their
-        # corresponding use case performs the same evidence check before LLM use.
-        if self._explicit_action.search(user_message):
-            return None
         if not assessment.is_sufficient:
             record("evidence_refusal", reason="insufficient_retrieved_evidence", score=assessment.best_score)
             return self._message(state, "insufficient")

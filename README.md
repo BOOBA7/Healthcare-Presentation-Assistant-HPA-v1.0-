@@ -23,7 +23,8 @@ clinical, legal or institutional review.
 >
 > 1. `WorkflowPolicy` validates the current lifecycle transition.
 > 2. `ProductionEvidenceGate` requires selected, human-approved PDF evidence
->    and sufficient deterministic evidence-context support.
+>    and sufficient deterministic evidence-context support for every
+>    evidence-bound chat turn or generation.
 > 3. The guarded LangGraph tool node permits only the action allowed by the
 >    trusted Project state.
 > 4. `EvidenceProvenanceValidator` verifies AI-generated slide citations before
@@ -74,9 +75,10 @@ clinical, legal or institutional review.
   This choice never disables source validation, evidence gating, provenance or
   human approval.
 - Offers a Patient Case Mode for **de-identified information only**. It blocks
-  obvious identifiers before they are persisted in a patient-case conversation
-  or sent to the configured LLM. It is a guardrail, not HIPAA certification or
-  a guarantee of de-identification.
+  obvious direct identifiers before user-entered patient-case content is
+  persisted or sent to the configured LLM. Dates in scientific PDFs are not
+  treated as identifiers by themselves. It is a guardrail, not HIPAA
+  certification or a guarantee of de-identification.
 - Runs longer model operations as durable local jobs with polling progress and
   lightweight operational counters.
 
@@ -164,7 +166,10 @@ boundary.
    claims and citations.
 3. `ProductionEvidenceGate` checks evidence availability and support from the
    selected evidence-context strategy
-   before model generation.
+   before any evidence-bound model response or generation. It uses a safe
+   default: only clearly non-factual social, profile and presentation-workflow
+   coordination turns may reach the LLM without retrieved PDF passages; it does
+   not depend on a list of medical keywords.
 4. `WorkflowPolicy` rejects invalid lifecycle transitions.
 5. `EvidenceProvenanceValidator` checks citations before slide acceptance and
    PowerPoint export.
@@ -172,11 +177,18 @@ boundary.
 7. Presenter and event details are optional deliverable metadata: they never
    block the workflow and are never fabricated by the LLM. A change after
    final approval reopens final approval only.
-8. In Patient Case Mode, obvious identifiers (for example email address, phone
-   number, full date, record identifier or address) are blocked before the
-   conversation or uploaded PDF reaches the LLM. The user must confirm that
-   their case is de-identified. This is an aid to privacy-conscious use, not a
-   claim of HIPAA compliance or a substitute for institutional policy.
+8. In Patient Case Mode, user-entered patient-case text is screened for obvious
+   identifiers (for example email address, phone number, full date, record
+   identifier or address) before it is persisted or reaches the LLM. Uploaded
+   scientific PDFs are still screened for direct identifiers, but a publication
+   date alone does not block a normal guideline or article. The user must
+   confirm that their case is de-identified. This is an aid to
+   privacy-conscious use, not a claim of HIPAA compliance or a substitute for
+   institutional policy.
+9. A submitted presentation-chat user turn is persisted before provider work
+   starts. A quota, network or provider failure therefore cannot remove that
+   turn from the durable transcript; the audit trail records
+   `USER_MESSAGE_RECEIVED`.
 
 ## Architecture
 

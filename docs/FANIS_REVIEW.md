@@ -67,13 +67,16 @@ PowerPoint with resources and authorship attribution
 - project-level local BM25 retrieval or experimental bounded direct-PDF context,
   with no external document database;
 - de-identified Patient Case Mode with deterministic obvious-identifier
-  blocking before eligible content reaches the configured LLM; this is a
-  guardrail, not a HIPAA compliance claim;
+  blocking before eligible user-entered content reaches the configured LLM;
+  normal PDF publication dates are allowed, while direct identifiers remain
+  blocked; this is a guardrail, not a HIPAA compliance claim;
 - `ProductionEvidenceGate` before generation and scientific production-mode
-  responses;
+  responses, using a safe default rather than a medical-keyword list;
 - system validation of slide citations: resource, page, and quoted excerpt;
 - visible provenance: AI-generated, user-edited, or user-authored content;
 - bounded model memory with a complete durable conversation transcript;
+- persistence of every submitted user presentation-chat turn before provider
+  work, so provider failures cannot erase it from the transcript;
 - local jobs with progress and one active state-writing job lock per Project;
 - FastAPI API, `/app` web interface, Streamlit interface, and CLI;
 - GitHub Actions CI: Python compilation, Ruff linting, JavaScript syntax check

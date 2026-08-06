@@ -129,6 +129,47 @@ def test_resource_discussion_has_its_own_history_and_does_not_pollute_presentati
     assert payload["messages"] == []
 
 
+def test_chat_persists_user_turn_when_the_model_provider_fails(tmp_path, monkeypatch):
+    """A provider failure must not make a submitted conversation turn disappear."""
+    repository = UserSessionRepository(tmp_path / "hpa.sqlite3")
+    monkeypatch.setattr(api, "get_repository", lambda: repository)
+
+    class FailingAgent:
+        def invoke(self, state, thread_id):
+            raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(api, "get_agent", lambda: FailingAgent())
+    client = TestClient(app)
+    registration = client.post(
+        "/auth/register",
+        json={"user_id": "history-user", "password": "safe-local-password"},
+    )
+    headers = {"Authorization": f"Bearer {registration.json()['token']}"}
+    assert client.post(
+        "/projects", headers=headers, json={"user_id": "history-user", "project_id": "history-project"}
+    ).status_code == 200
+
+    response = client.post(
+        "/chat",
+        headers=headers,
+        json={
+            "user_id": "history-user",
+            "project_id": "history-project",
+            "message": "Please keep this message even if the provider fails.",
+        },
+    )
+
+    assert response.status_code == 502
+    project = client.get("/projects/history-user/history-project", headers=headers)
+    assert project.status_code == 200
+    messages = project.json()["messages"]
+    assert [(turn["role"], turn["text"]) for turn in messages] == [
+        ("user", "Please keep this message even if the provider fails.")
+    ]
+    events = client.get("/projects/history-user/history-project/audit-events", headers=headers).json()["events"]
+    assert any(event["event_type"] == "USER_MESSAGE_RECEIVED" for event in events)
+
+
 def test_project_evidence_settings_are_persisted_and_require_patient_acknowledgement(tmp_path, monkeypatch):
     repository = UserSessionRepository(tmp_path / "hpa.sqlite3")
     monkeypatch.setattr(api, "get_repository", lambda: repository)

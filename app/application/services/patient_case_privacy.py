@@ -36,14 +36,27 @@ class PatientCasePrivacyGuard:
         ),
     }
 
-    def findings(self, text: str) -> list[str]:
+    def findings(self, text: str, *, include_dates: bool = True) -> list[str]:
         """Return identifier categories only; never retain or expose matched text."""
         if not text:
             return []
-        return [label for label, pattern in self._patterns.items() if pattern.search(text)]
 
-    def ensure_text_safe(self, text: str) -> None:
-        findings = self.findings(text)
+        findings: list[str] = []
+        for label, pattern in self._patterns.items():
+            if label == "full date" and not include_dates:
+                continue
+            for match in pattern.finditer(text):
+                # Numeric dates can otherwise look like phone numbers to a
+                # broad phone-number pattern. A publication date in a
+                # guideline is not, by itself, patient-identifying data.
+                if label == "phone number" and self._patterns["full date"].fullmatch(match.group()):
+                    continue
+                findings.append(label)
+                break
+        return findings
+
+    def ensure_text_safe(self, text: str, *, include_dates: bool = True) -> None:
+        findings = self.findings(text, include_dates=include_dates)
         if findings:
             raise WorkflowError(
                 "PATIENT_IDENTIFIER_DETECTED",
@@ -52,15 +65,26 @@ class PatientCasePrivacyGuard:
                 retryable=False,
             )
 
-    def ensure_texts_safe(self, values: Iterable[str]) -> None:
+    def ensure_texts_safe(self, values: Iterable[str], *, include_dates: bool = True) -> None:
         for value in values:
-            self.ensure_text_safe(value)
+            self.ensure_text_safe(value, include_dates=include_dates)
 
     def ensure_resource_safe(self, resource) -> None:
+        """Screen PDF text for high-confidence identifiers only.
+
+        Scientific PDFs commonly contain publication dates.  A date alone is
+        insufficient to identify a patient, so it must not make Patient Case
+        Mode unusable for normal guidelines or articles. Obvious identifiers
+        such as emails, phone numbers, record numbers and addresses remain
+        blocked anywhere in an uploaded resource.
+        """
         self.ensure_texts_safe(
-            value
-            for value in (resource.filename, resource.title, resource.source, resource.extracted_text)
-            if isinstance(value, str)
+            (
+                value
+                for value in (resource.filename, resource.title, resource.source, resource.extracted_text)
+                if isinstance(value, str)
+            ),
+            include_dates=False,
         )
 
     def ensure_state_safe(self, state) -> None:
@@ -69,12 +93,69 @@ class PatientCasePrivacyGuard:
         values.extend(
             turn.text
             for turn in [*state.conversation_history, *state.resource_conversation_history]
-            if isinstance(turn.text, str)
+            if turn.role == "user" and isinstance(turn.text, str)
         )
         for message in state.messages:
             content = getattr(message, "content", "")
-            if isinstance(content, str):
+            if getattr(message, "type", "") == "human" and isinstance(content, str):
                 values.append(content)
+        context = state.conversation_context
+        values.extend(
+            value
+            for value in (context.topic, context.objective)
+            if isinstance(value, str)
+        )
+        presentation = state.presentation
+        if presentation is not None:
+            values.extend(
+                value
+                for value in (
+                    presentation.title,
+                    presentation.professional_scope,
+                    presentation.context.topic,
+                    presentation.context.objective,
+                )
+                if isinstance(value, str)
+            )
+            if presentation.blueprint is not None:
+                blueprint = presentation.blueprint
+                values.extend(
+                    value
+                    for value in (
+                        blueprint.title,
+                        blueprint.learning_objective,
+                        blueprint.storytelling,
+                        blueprint.reviewer_comments,
+                        *blueprint.sections,
+                    )
+                    if isinstance(value, str)
+                )
+                for outline in blueprint.slides:
+                    if outline.content_origin != "ai_generated":
+                        values.extend(
+                            value
+                            for value in (
+                                outline.title,
+                                outline.objective,
+                                outline.key_message,
+                                outline.reviewer_comments,
+                            )
+                            if isinstance(value, str)
+                        )
+            for slide in presentation.slides:
+                if slide.content_origin != "ai_generated":
+                    values.extend(
+                        value
+                        for value in (
+                            slide.title,
+                            slide.objective,
+                            slide.content,
+                            slide.speaker_notes,
+                            slide.reviewer_comments,
+                            *slide.key_messages,
+                        )
+                        if isinstance(value, str)
+                    )
         self.ensure_texts_safe(values)
         for resource in state.resource_library:
             self.ensure_resource_safe(resource)

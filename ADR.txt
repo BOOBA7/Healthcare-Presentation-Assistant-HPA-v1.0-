@@ -2,7 +2,7 @@
 
 ## Status
 
-**Accepted — updated 2026-08-03**
+**Accepted — updated 2026-08-04**
 
 This ADR supersedes the earlier agent-centric description. HPA retains one
 cognitive agent, but the LLM is no longer considered the workflow authority.
@@ -141,27 +141,31 @@ the experiment auditable.
 `ProductionEvidenceGate` checks for sufficient deterministic support from the
 selected strategy before:
 
-- answering a production-scoped scientific question;
+- answering an evidence-bound production-scoped question;
 - generating a blueprint;
 - generating or regenerating a slide.
 
-If there is no selected and approved PDF, or retrieval is insufficient, HPA
-returns a fixed request for a suitable PDF or clarification instead of calling
-the LLM. Resource validation is contextual: it is requested when the user
-starts blueprint production, not when they merely upload or discuss a PDF.
-This conservative policy may produce false negatives for multilingual or
-semantically indirect queries; that trade-off is accepted for safety. Neither
-mode changes resource selection, human validation, citation provenance or export
-approval.
+The gate uses a safe default rather than a vocabulary of medical keywords:
+only clearly non-factual social, profile and presentation-workflow coordination
+turns may reach the LLM without PDF passages. A short, indirect or multilingual
+factual question is therefore evidence-bound by default. If there is no selected
+and approved PDF, or retrieval is insufficient, HPA returns a fixed request for
+a suitable PDF or clarification instead of calling the LLM. Resource validation
+is contextual: it is requested when the user starts blueprint production, not
+when they merely upload or discuss a PDF. Neither mode changes resource
+selection, human validation, citation provenance or export approval.
 
 ### 4a. Patient Case Mode is de-identification-by-guardrail, not compliance
 
 A Project can opt into Patient Case Mode only after the user confirms that the
-case is de-identified. Before an eligible conversation, resource overview,
-resource discussion, or PDF upload reaches the configured LLM, a deterministic
-guard blocks obvious identifiers such as email addresses, phone numbers, full
-dates, medical-record identifiers, social-security identifiers and addresses.
-Detected values are never stored in the error or audit message.
+case is de-identified. User-entered case text — including prior user turns,
+Project context and user-edited content — is screened before it is persisted or
+reaches the configured LLM. A deterministic guard blocks obvious identifiers
+such as email addresses, phone numbers, full dates, medical-record identifiers,
+social-security identifiers and addresses. Uploaded PDFs are screened for
+direct identifiers, but publication dates are not treated as patient identifiers
+by themselves, so normal guidelines and articles remain usable. Detected values
+are never stored in the error or audit message.
 
 The detector is intentionally conservative and cannot reliably detect every
 identifier (for example names in arbitrary prose). Therefore this decision is
@@ -244,11 +248,13 @@ When a human action has already changed the Project, a stale write fails as
 job per Project. A second request is rejected as `PROJECT_JOB_ALREADY_RUNNING`
 before it can make a duplicate model call.
 
-The full presentation-chat transcript remains durable. Before invoking the
-model, the application keeps only the 16 most recent model messages and
-compacts older turns into a bounded, non-authoritative memory summary. The
-trusted state summary and retrieved PDF excerpts remain authoritative for
-workflow decisions and scientific claims.
+The full presentation-chat transcript remains durable. Each submitted user turn
+is committed with a `USER_MESSAGE_RECEIVED` audit event before any provider
+call, so quota, network and model failures cannot make that user message
+disappear. Before invoking the model, the application keeps only the 16 most
+recent model messages and compacts older turns into a bounded,
+non-authoritative memory summary. The trusted state summary and retrieved PDF
+excerpts remain authoritative for workflow decisions and scientific claims.
 
 Long-running model calls are recorded as durable local `project_jobs` entries.
 The API returns `202`, then clients poll a job for stage/progress/result. The

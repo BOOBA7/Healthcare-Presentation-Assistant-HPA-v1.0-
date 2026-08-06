@@ -195,7 +195,7 @@ class HealthcarePresentationAgent:
         is_production = presentation is not None
         if not is_production or not presentation.state.resources_validated:
             return None
-        if not ProductionEvidenceGate._scientific_request.search(message):
+        if not ProductionEvidenceGate.requires_evidence(message):
             return None
         context = EvidenceContextBuilder().for_resources(
             resolve_presentation_resources(state),
