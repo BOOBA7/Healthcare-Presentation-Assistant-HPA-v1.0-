@@ -34,6 +34,8 @@ outputs and never spends LLM quota. It currently covers, among other things:
 - Project resource selection and deletion invalidation;
 - source-only API responses;
 - PDF page/excerpt provenance, including Arabic excerpts;
+- slide-level citation provenance checks; Resource Overview and Resource Chat
+  citation validation is intentionally not yet implemented;
 - persisted conversation and Project revision conflicts;
 - evidence-bound short or indirect questions that must not bypass PDF retrieval;
 - persistence and safe audit events for submitted presentation-chat and
@@ -108,3 +110,5 @@ The next evaluation additions should be:
    use of the compacted-memory summary across multiple workflow stages;
 4. provider/model traceability assertions for every generation record;
 5. clinician-reviewed pilot cases, kept separate from production user data.
+6. adversarial evidence-gate phrasing tests, especially presentation commands
+   that also contain an unsupported scientific request.

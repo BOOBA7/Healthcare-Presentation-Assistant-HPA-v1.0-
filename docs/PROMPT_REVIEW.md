@@ -3,7 +3,7 @@
 > This review predates the evidence gate, explicit `WorkflowStatus` state
 > machine, `ExecutionContext`, SQLite audit events, and generation versioning.
 > It is retained as a learning record. The current architecture is defined by
-> [ADR-0007](../ADR.txt); do not use the historic production-readiness score as
+> [ADR-0007](../ADR.md); do not use the historic production-readiness score as
 > a description of the current codebase.
 
 ## Executive assessment

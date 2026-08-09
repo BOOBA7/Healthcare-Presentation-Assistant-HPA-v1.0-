@@ -227,7 +227,7 @@ State is deliberately separated:
 | `PresentationState` | Durable production lifecycle and approval flags |
 | `ExecutionContext` | Last safe tool outcome or error; never a business approval |
 
-The full architecture rationale is in [ADR-0007](ADR.txt). The historical
+The full architecture rationale is in [ADR-0007](ADR.md). The historical
 prompt-engineering review is retained in [docs/PROMPT_REVIEW.md](docs/PROMPT_REVIEW.md).
 The system-level evaluation approach is documented in
 [docs/EVALUATION.md](docs/EVALUATION.md).
@@ -274,12 +274,14 @@ excluded.
 │   ├── EVALUATION.md                    # System-level evaluation and test strategy
 │   ├── FANIS_REVIEW.md                   # Applied GenAI architecture review request
 │   ├── HCP_EVALUATION.md                 # Short checkbox-based HCP evaluation form
+│   ├── HCP_HOW_TO_USE_EN.md              # English HCP user guide
+│   ├── HCP_HOW_TO_USE_FR.md              # French HCP user guide
 │   └── PROMPT_REVIEW.md                 # Historical prompt-engineering review
 ├── tests/                               # Automated unit and workflow tests
 ├── main.py                              # Local CLI entry point
 ├── streamlit_app.py                     # Streamlit interface entry point
 ├── list_models.py                       # Utility to inspect available provider models
-├── ADR.txt                              # Current architecture decision record
+├── ADR.md                               # Current architecture decision record
 ├── README.md                            # Project documentation
 ├── requirements.txt                     # Python dependencies
 ├── pytest.ini                           # Pytest configuration
@@ -425,8 +427,9 @@ venv/bin/pytest -q
 
 The test suite uses fake model responses and does not consume provider quota.
 It includes repository concurrency/persistence tests and an HTTP integration
-test for the authenticated Project/PDF lifecycle. GitHub Actions runs
-compilation and this suite for every push and pull request to `main`.
+test for the authenticated Project/PDF lifecycle. GitHub Actions runs Python
+compilation, Ruff linting, JavaScript syntax validation and this suite for every
+push and pull request to `main`.
 
 This is not a clinical benchmark score. HPA should be evaluated as a complete
 evidence-gated system: uploaded PDF → retrieval → gate → workflow → human
@@ -456,7 +459,13 @@ test contract and a low-cost clinician-reviewed pilot plan.
 - `main.py` still contains resource and review endpoints while their routers
   are being migrated incrementally.
 - The resource overview and discussion use bounded PDF passages; they are not
-  a replacement for full evidence synthesis or clinical review.
+  a replacement for full evidence synthesis or clinical review. Their citations
+  are requested from the model but are not yet validated resource-by-resource,
+  page-by-page and excerpt-by-excerpt by the system as slide citations are.
+- `ProductionEvidenceGate` is deterministic, but its current conversational
+  classification still uses explicit text patterns to recognise non-factual
+  coordination turns. Any future extension must keep scientific content
+  evidence-bound by default and add regression tests for bypass attempts.
 - Public deployment needs production authentication, rate limits, secure file
   storage, redacted logging, monitoring and incident procedures.
 - HPA does not establish regulatory, legal, clinical or hospital compliance.

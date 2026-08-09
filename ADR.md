@@ -2,7 +2,7 @@
 
 ## Status
 
-**Accepted — updated 2026-08-04**
+**Accepted — updated 2026-08-09**
 
 This ADR supersedes the earlier agent-centric description. HPA retains one
 cognitive agent, but the LLM is no longer considered the workflow authority.
@@ -188,6 +188,9 @@ strings were reduced to empty ASCII text.
 The PowerPoint displays the user-validated resources and associated evidence.
 The separate resource-overview and PDF-discussion features use bounded passages
 from the Project library only; they do not alter the production selection.
+Their citations are requested from the LLM for exploration, but do not yet
+receive the slide-level system check of resource identifier, page and excerpt.
+They must not be presented as provenance-verified production evidence.
 
 The interfaces present user-facing citations with the resource title and page,
 while preserving the raw model message and `resource_id` in SQLite. An
@@ -342,6 +345,13 @@ migrate without breaking either local interface.
   without distributed workers or automatic job retry.
 - Generation records include version metadata, but provider-accurate model
   capture must be completed before treating them as fully reproducible records.
+- The deterministic evidence gate uses explicit text patterns to distinguish
+  non-factual coordination from evidence-bound content. It is intentionally
+  conservative, but this classifier needs regression coverage for phrasing
+  that combines presentation commands with scientific requests.
+- Resource Overview and Resource Chat are source-bounded exploratory features;
+  unlike AI-generated slides, their displayed citations are not yet validated
+  programmatically against a resource page and excerpt.
 
 ## Explicit non-decisions
 
