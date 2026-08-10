@@ -225,8 +225,8 @@ class HealthcarePresentationAgent:
     @staticmethod
     def _resource_validation_message(language: str) -> str:
         messages = {
-            "fr": "Avant de générer le blueprint, validez les ressources PDF importées. Utilisez le bouton « Valider les ressources et continuer », puis demandez-moi de générer le blueprint.",
-            "ar": "قبل إنشاء المخطط، اعتمد ملفات PDF المرفوعة. استخدم زر «اعتماد المصادر والمتابعة» ثم اطلب مني إنشاء المخطط.",
-            "en": "Before generating the blueprint, validate the uploaded PDF resources. Use the “Validate resources and continue” button, then ask me to generate the blueprint.",
+            "fr": "Avant de générer le blueprint, validez les ressources PDF sélectionnées dans Ressources. Ensuite, ouvrez Presentation Studio et cliquez sur « Générer le blueprint ».",
+            "ar": "قبل إنشاء المخطط، اعتمد ملفات PDF المحددة في قسم الموارد. بعد ذلك، افتح استوديو العرض وانقر على «إنشاء المخطط».",
+            "en": "Before generating the blueprint, validate the selected PDF resources in Resources. Then open Presentation Studio and click “Generate blueprint”.",
         }
         return messages.get(language, messages["en"])

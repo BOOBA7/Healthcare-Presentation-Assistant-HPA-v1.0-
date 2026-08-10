@@ -492,6 +492,17 @@ class UserSessionRepository:
             "error": row[7], "created_at": row[8], "updated_at": row[9],
         }
 
+    def active_job(self, user_id: str, project_id: str) -> dict[str, object] | None:
+        """Return the one durable state-writing job currently running for a Project."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT job_id FROM project_jobs
+                   WHERE user_id = ? AND project_id = ? AND status IN ('queued', 'running')
+                   ORDER BY created_at DESC LIMIT 1""",
+                (user_id, project_id),
+            ).fetchone()
+        return self.get_job(user_id, row[0]) if row else None
+
     @staticmethod
     def _serialize_state(state: GraphState) -> dict[str, object]:
         # Resource documents/pages are persisted in dedicated tables. Keeping

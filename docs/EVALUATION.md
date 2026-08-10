@@ -45,6 +45,13 @@ outputs and never spends LLM quota. It currently covers, among other things:
 - bounded model context with durable full conversation history;
 - durable job state;
 - authenticated HTTP Project/PDF lifecycle.
+- a deterministic end-to-end HCP workflow from account creation through PDF
+  upload, Resource Overview, Resource Chat, source selection, human approvals,
+  direct slide authoring and PowerPoint export. It asserts that the Resource
+  workspace transcript remains separate from the production-chat transcript.
+  The LLM boundary is replaced by a local structured-output test double, while
+  the real API, SQLite persistence, background job, evidence validation and
+  export code execute unchanged.
 
 GitHub Actions executes Python compilation, Ruff linting, JavaScript syntax
 validation and this suite on every push and pull request targeting `main`.
@@ -104,11 +111,10 @@ scientific interpretation and final presentation.
 
 The next evaluation additions should be:
 
-1. a full fake-LLM end-to-end test from PDF upload to PowerPoint export;
-2. concurrent-job and server-restart recovery scenarios;
-3. qualitative long-conversation tests for continuity, relevance and correct
+1. concurrent-job and server-restart recovery scenarios;
+2. qualitative long-conversation tests for continuity, relevance and correct
    use of the compacted-memory summary across multiple workflow stages;
-4. provider/model traceability assertions for every generation record;
-5. clinician-reviewed pilot cases, kept separate from production user data.
-6. adversarial evidence-gate phrasing tests, especially presentation commands
+3. provider/model traceability assertions for every generation record;
+4. clinician-reviewed pilot cases, kept separate from production user data.
+5. adversarial evidence-gate phrasing tests, especially presentation commands
    that also contain an unsupported scientific request.

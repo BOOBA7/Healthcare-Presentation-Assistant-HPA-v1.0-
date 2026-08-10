@@ -21,6 +21,9 @@ from app.application.use_cases.manage_project_resources import (
     RemoveProjectResourceUseCase,
 )
 from app.application.use_cases.workflow_steps import (
+    BuildBlueprintWorkflowUseCase,
+    CollectPresentationContextUseCase,
+    CreatePresentationWorkflowUseCase,
     RejectBlueprintItemUseCase,
     RejectSlideUseCase,
     EditBlueprintItemUseCase,
@@ -29,18 +32,21 @@ from app.application.use_cases.workflow_steps import (
     RegenerateSlideUseCase,
     ReviewBlueprintItemUseCase,
     ReviewSlideUseCase,
+    GenerateSlidesWorkflowUseCase,
+    ValidatePresentationContextUseCase,
 )
 from app.ai.workflows.tools import (
-    validate_blueprint,
     validate_final_presentation,
     validate_resources,
-    validate_slides,
 )
 from app.interfaces.storage.user_session_repository import UserSessionRepository
 from app.domain.models.user_profile import UserProfile
 from app.domain.enums.presentation_theme import PresentationTheme
 from app.domain.enums.workflow_status import WorkflowStatus
 from app.domain.enums.evidence_context_mode import EvidenceContextMode
+from app.domain.enums.audience_type import AudienceType
+from app.domain.enums.language import Language
+from app.domain.enums.presentation_type import PresentationType
 from app.domain.models.execution_context import ExecutionContext
 from app.application.services.conversation_history import (
     add_resource_turn,
@@ -259,6 +265,49 @@ def run_action(use_case, *arguments: object) -> None:
         st.error(str(exc))
 
 
+def create_presentation_from_setup(
+    topic: str,
+    audience: AudienceType,
+    presentation_type: PresentationType,
+    language: Language,
+    duration_minutes: int,
+    objective: str,
+) -> None:
+    """Create a draft through explicit human input, never through chat intent."""
+    try:
+        state = st.session_state.state
+        state = CollectPresentationContextUseCase().execute(
+            state,
+            topic=topic,
+            audience=audience,
+            presentation_type=presentation_type,
+            language=language,
+            duration_minutes=duration_minutes,
+            objective=objective,
+        )
+        state = ValidatePresentationContextUseCase().execute(state)
+        st.session_state.state = CreatePresentationWorkflowUseCase().execute(state)
+        save_state()
+        st.success("Presentation created. Select and validate its PDF evidence in Resources.")
+    except ValueError as exc:
+        st.error(str(exc))
+
+
+def run_explicit_generation(action: str) -> None:
+    """Run a human-clicked generation command; chat never advances this state."""
+    try:
+        with st.spinner(f"Generating {action} from validated resources..."):
+            if action == "blueprint":
+                st.session_state.state = BuildBlueprintWorkflowUseCase().execute(st.session_state.state)
+            else:
+                st.session_state.state = GenerateSlidesWorkflowUseCase().execute(st.session_state.state)
+        st.session_state.state.execution = ExecutionContext(last_tool=f"generate_{action}")
+        save_state()
+        st.success(f"{action.title()} generation completed.")
+    except ValueError as exc:
+        st.error(str(exc))
+
+
 def save_blueprint_edit(index: int, title: str, objective: str, key_message: str, origin: str) -> None:
     try:
         st.session_state.state = EditBlueprintItemUseCase().execute(
@@ -473,7 +522,19 @@ with st.sidebar:
     state.user_profile = profile
     save_state()
     st.caption(f"Project · Session {st.session_state.thread_id[:8]}")
-    st.divider()
+
+workspace_key = f"active_workspace_{user_id}_{project_id}"
+workspace = st.segmented_control(
+    "Workspace",
+    options=("Presentation Studio", "Resources", "Resource Analysis"),
+    default="Presentation Studio",
+    key=workspace_key,
+)
+resource_validation_required = WorkflowPolicy.requires_resource_validation(state.presentation)
+
+if workspace == "Resources":
+    st.header("Resources")
+    st.caption("Upload, select and validate the PDF evidence used for presentation production.")
     with st.expander("Evidence and Patient Case Mode", expanded=False):
         st.caption(
             "Evidence mode changes passage selection only. Validation, provenance and human approval remain required."
@@ -514,7 +575,7 @@ with st.sidebar:
                 st.rerun()
             except ValueError as exc:
                 st.error(str(exc))
-    st.header("Scientific sources")
+
     uploaded_pdf = st.file_uploader("Upload a PDF", type=["pdf"])
     if st.button("Add resource", disabled=uploaded_pdf is None, use_container_width=True):
         if uploaded_pdf.size > 20 * 1024 * 1024:
@@ -528,15 +589,15 @@ with st.sidebar:
                 )
                 AddProjectResourceUseCase().execute(state, resource)
                 save_state()
-                st.success(
-                    f"{resource.filename} added to the Project library "
-                    f"({len(resource.extracted_text or '')} extracted characters)."
-                )
+                st.success(f"{resource.filename} was added to this Project library.")
+                st.rerun()
             except ValueError as exc:
                 st.error(str(exc))
 
-    if state.resource_library:
-        st.caption("Project resource library")
+    if not state.resource_library:
+        st.info("Upload a PDF to build this Project's source library.")
+    else:
+        st.subheader("Project resource library")
         attached_ids = {resource.id for resource in state.presentation.resources} if state.presentation else set()
         for resource in state.resource_library:
             label, action, remove = st.columns([5, 2, 1])
@@ -558,7 +619,7 @@ with st.sidebar:
                     try:
                         AttachResourceToPresentationUseCase().execute(state, resource.id)
                         save_state()
-                        st.success("Resource selected. Validate selected resources when you request a blueprint.")
+                        st.success("Resource selected for production evidence.")
                         st.rerun()
                     except ValueError as exc:
                         st.error(str(exc))
@@ -566,7 +627,7 @@ with st.sidebar:
                 st.session_state.pending_resource_delete = resource.id
         pending_resource = st.session_state.get("pending_resource_delete")
         if pending_resource:
-            st.warning("Removing a resource resets generated content and approvals based on the resources.")
+            st.warning("Removing a resource resets generated content and approvals based on that evidence.")
             confirm, cancel = st.columns(2)
             if confirm.button("Remove resource", type="primary", use_container_width=True):
                 remove_resource(pending_resource)
@@ -574,90 +635,6 @@ with st.sidebar:
             if cancel.button("Cancel", use_container_width=True):
                 st.session_state.pop("pending_resource_delete", None)
                 st.rerun()
-    if st.session_state.pop("resource_deleted", False):
-        st.success("Resource removed. Dependent generated content and approvals were reset.")
-    if resource_error := st.session_state.pop("resource_error", None):
-        st.error(resource_error)
-
-    st.divider()
-    if state.presentation:
-        with st.expander("Title-slide details", expanded=False):
-            st.caption("Optional human-supplied details. Empty fields are not shown on the PowerPoint title slide.")
-            context = state.presentation.context
-            presenter_name = st.text_input("Presenter name", value=context.presenter_name or "")
-            presenter_title = st.text_input("Professional title", value=context.presenter_title or "")
-            organization = st.text_input("Organization", value=context.organization or "")
-            event_name = st.text_input("Event name", value=context.event_name or "")
-            venue = st.text_input("Venue", value=context.venue or "")
-            presentation_date = st.text_input("Presentation date", value=context.presentation_date or "")
-            if st.button("Save title-slide details", use_container_width=True):
-                try:
-                    UpdatePresentationDetailsUseCase().execute(
-                        state,
-                        presenter_name=presenter_name,
-                        presenter_title=presenter_title,
-                        organization=organization,
-                        event_name=event_name,
-                        venue=venue,
-                        presentation_date=presentation_date,
-                    )
-                    save_state()
-                    st.success("Title-slide details saved.")
-                    st.rerun()
-                except ValueError as exc:
-                    st.error(str(exc))
-        selected_theme = st.selectbox(
-            "PowerPoint template",
-            options=list(PresentationTheme),
-            index=list(PresentationTheme).index(state.presentation.theme),
-            format_func=lambda theme: {
-                PresentationTheme.CLINICAL: "Clinical clarity",
-                PresentationTheme.ACADEMIC: "Academic prestige",
-                PresentationTheme.EXECUTIVE: "Executive impact",
-                PresentationTheme.MIDNIGHT: "Midnight focus",
-            }[theme],
-        )
-        if selected_theme != state.presentation.theme:
-            state.presentation.theme = selected_theme
-            save_state()
-        st.write(f"**Présentation :** {state.presentation.title}")
-        st.write(f"**Ressources :** {len(state.presentation.resources)}")
-        st.write(f"**Slides :** {len(state.presentation.slides)}")
-        if state.presentation.blueprint and not state.presentation.state.blueprint_validated:
-            all_blueprint_items_validated = all(item.is_validated for item in state.presentation.blueprint.slides)
-            st.button("Approuver le blueprint complet", disabled=not all_blueprint_items_validated, on_click=run_validation, args=(validate_blueprint,), kwargs={"approved": True})
-        if state.presentation.slides and not state.presentation.state.slides_validated:
-            all_slides_validated = all(slide.is_validated for slide in state.presentation.slides)
-            st.button("Approuver toutes les slides", disabled=not all_slides_validated, on_click=run_validation, args=(validate_slides,), kwargs={"approved": True})
-        if state.presentation.state.slides_validated and not state.presentation.state.presentation_validated:
-            st.button("Approuver la présentation finale", on_click=run_validation, args=(validate_final_presentation,), kwargs={"approved": True})
-        if st.button("Préparer le PowerPoint", disabled=not state.presentation.state.presentation_validated):
-            try:
-                with TemporaryDirectory() as directory:
-                    path = ExportPowerPointUseCase().execute(
-                        state.presentation,
-                        Path(directory),
-                        resources=resolve_presentation_resources(state),
-                    )
-                    st.session_state.pptx_data = path.read_bytes()
-                    st.session_state.pptx_name = f"{state.presentation.title}.pptx"
-            except ValueError as exc:
-                st.error(str(exc))
-    if "pptx_data" in st.session_state:
-        st.download_button("Télécharger le PowerPoint", st.session_state.pptx_data, st.session_state.pptx_name, "application/vnd.openxmlformats-officedocument.presentationml.presentation")
-
-workspace_key = f"active_workspace_{user_id}_{project_id}"
-workspace = st.segmented_control(
-    "Workspace",
-    options=("Presentation assistant", "Resources workspace"),
-    default="Presentation assistant",
-    key=workspace_key,
-)
-resource_validation_required = WorkflowPolicy.requires_resource_validation(state.presentation)
-
-if workspace == "Resources workspace":
-    st.header("Resources workspace")
-    st.caption("Explore this Project's PDF library without changing the presentation workflow.")
     if resource_validation_required:
         st.info("The selected resources need your approval before the blueprint can be generated.")
         st.button(
@@ -667,8 +644,17 @@ if workspace == "Resources workspace":
             args=(validate_resources,),
             key="resource_workspace_validate_resources",
         )
+    if st.session_state.pop("resource_deleted", False):
+        st.success("Resource removed. Dependent generated content and approvals were reset.")
+    if resource_error := st.session_state.pop("resource_error", None):
+        st.error(resource_error)
+    st.stop()
+
+if workspace == "Resource Analysis":
+    st.header("Resource Analysis")
+    st.caption("Explore uploaded PDFs without selecting, validating or generating presentation content.")
     if not state.resource_library:
-        st.info("Upload a PDF from the Scientific sources section in the sidebar to begin.")
+        st.info("Upload a PDF first in Resources.")
         st.stop()
 
     analyze_column, status_column = st.columns([1, 2])
@@ -716,6 +702,140 @@ if workspace == "Resources workspace":
         st.rerun()
     st.stop()
 
+st.header("Presentation Studio")
+st.caption("Human-controlled workflow. Chat can assist with discussion, but it cannot create or generate presentation content.")
+
+if state.presentation:
+    with st.expander("Title-slide details", expanded=False):
+        st.caption("Optional human-supplied details. Empty fields are not shown on the PowerPoint title slide.")
+        context = state.presentation.context
+        presenter_name = st.text_input("Presenter name", value=context.presenter_name or "")
+        presenter_title = st.text_input("Professional title", value=context.presenter_title or "")
+        organization = st.text_input("Organization", value=context.organization or "")
+        event_name = st.text_input("Event name", value=context.event_name or "")
+        venue = st.text_input("Venue", value=context.venue or "")
+        presentation_date = st.text_input("Presentation date", value=context.presentation_date or "")
+        if st.button("Save title-slide details", use_container_width=True):
+            try:
+                UpdatePresentationDetailsUseCase().execute(
+                    state,
+                    presenter_name=presenter_name,
+                    presenter_title=presenter_title,
+                    organization=organization,
+                    event_name=event_name,
+                    venue=venue,
+                    presentation_date=presentation_date,
+                )
+                save_state()
+                st.success("Title-slide details saved.")
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
+    selected_theme = st.selectbox(
+        "PowerPoint template",
+        options=list(PresentationTheme),
+        index=list(PresentationTheme).index(state.presentation.theme),
+        format_func=lambda theme: {
+            PresentationTheme.CLINICAL: "Clinical clarity",
+            PresentationTheme.ACADEMIC: "Academic prestige",
+            PresentationTheme.EXECUTIVE: "Executive impact",
+            PresentationTheme.MIDNIGHT: "Midnight focus",
+        }[theme],
+    )
+    if selected_theme != state.presentation.theme:
+        state.presentation.theme = selected_theme
+        save_state()
+    if state.presentation.state.slides_validated and not state.presentation.state.presentation_validated:
+        st.button(
+            "Approve final presentation",
+            on_click=run_validation,
+            args=(validate_final_presentation,),
+            kwargs={"approved": True},
+            use_container_width=True,
+        )
+    if st.button("Prepare PowerPoint", disabled=not state.presentation.state.presentation_validated):
+        try:
+            with TemporaryDirectory() as directory:
+                path = ExportPowerPointUseCase().execute(
+                    state.presentation,
+                    Path(directory),
+                    resources=resolve_presentation_resources(state),
+                )
+                st.session_state.pptx_data = path.read_bytes()
+                st.session_state.pptx_name = f"{state.presentation.title}.pptx"
+        except ValueError as exc:
+            st.error(str(exc))
+    if "pptx_data" in st.session_state:
+        st.download_button(
+            "Download PowerPoint",
+            st.session_state.pptx_data,
+            st.session_state.pptx_name,
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+
+if state.presentation is None:
+    st.caption("Create the presentation through explicit human-controlled fields.")
+    collected_context = state.conversation_context
+    default_audience = (
+        collected_context.audience
+        if isinstance(collected_context.audience, AudienceType)
+        else AudienceType.GENERAL_PRACTITIONER
+    )
+    default_type = (
+        collected_context.presentation_type
+        if isinstance(collected_context.presentation_type, PresentationType)
+        else PresentationType.LECTURE
+    )
+    default_language = (
+        collected_context.language
+        if isinstance(collected_context.language, Language)
+        else Language.ENGLISH
+    )
+    with st.form("presentation_setup_form"):
+        setup_topic = st.text_input("Presentation topic", value=collected_context.topic or "", max_chars=500)
+        first, second, third = st.columns(3)
+        setup_audience = first.selectbox(
+            "Target audience",
+            options=list(AudienceType),
+            index=list(AudienceType).index(default_audience),
+        )
+        setup_type = second.selectbox(
+            "Presentation type",
+            options=list(PresentationType),
+            index=list(PresentationType).index(default_type),
+        )
+        setup_language = third.selectbox(
+            "Presentation language",
+            options=list(Language),
+            index=list(Language).index(default_language),
+        )
+        setup_duration = st.number_input(
+            "Duration (minutes)",
+            min_value=1,
+            max_value=480,
+            value=collected_context.duration_minutes or 10,
+        )
+        setup_objective = st.text_area(
+            "Presentation objective",
+            value=collected_context.objective or "",
+            max_chars=4000,
+        )
+        setup_submit = st.form_submit_button("Create presentation", type="primary")
+    if setup_submit:
+        if not setup_topic.strip() or not setup_objective.strip():
+            st.error("Presentation topic and objective are required.")
+        else:
+            create_presentation_from_setup(
+                setup_topic.strip(),
+                setup_audience,
+                setup_type,
+                setup_language,
+                int(setup_duration),
+                setup_objective.strip(),
+            )
+            st.rerun()
+    st.info("After creation, select PDFs in Resources and validate them before blueprint generation.")
+
 if resource_validation_required:
     st.divider()
     st.subheader("Human validation required")
@@ -736,6 +856,28 @@ if (
     st.warning(
         f"Slide {blocked_slide} cannot be generated by AI from the validated PDFs. "
         "Edit its blueprint item, add a relevant PDF, or select ‘Written by user’."
+    )
+
+if state.presentation and state.presentation.state.workflow_status == WorkflowStatus.BLUEPRINT_GENERATION:
+    st.subheader("Blueprint generation")
+    st.caption("This action is controlled by the workflow and uses only selected, human-validated PDFs.")
+    st.button(
+        "Generate blueprint",
+        type="primary",
+        on_click=run_explicit_generation,
+        args=("blueprint",),
+        key="generate_blueprint_command",
+    )
+
+if state.presentation and state.presentation.state.workflow_status == WorkflowStatus.SLIDE_GENERATION:
+    st.subheader("Slide generation")
+    st.caption("This action is controlled by the workflow and validates available evidence before model generation.")
+    st.button(
+        "Generate slides",
+        type="primary",
+        on_click=run_explicit_generation,
+        args=("slides",),
+        key="generate_slides_command",
     )
 
 if state.presentation and state.presentation.blueprint:

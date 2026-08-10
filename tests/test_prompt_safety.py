@@ -111,6 +111,26 @@ def test_evidence_gate_keeps_clear_workflow_planning_natural():
     assert ProductionEvidenceGate().block_reason(state, "I want to create a presentation project.") is None
 
 
+def test_evidence_gate_allows_presentation_context_collection_before_pdf_validation():
+    state = GraphState(conversation_mode=ConversationMode.GENERAL)
+    gate = ProductionEvidenceGate()
+
+    assert gate.block_reason(
+        state,
+        "Je veux faire une FMC sur les actualités de la vitamine D en rhumatologie.",
+    ) is None
+    assert gate.block_reason(
+        state,
+        "Médecins généralistes, atelier, 10 minutes, mise à jour des connaissances.",
+    ) is None
+    assert gate.block_reason(state, "What is the treatment for depression?") is not None
+
+
+def test_system_prompt_requires_persisting_chat_context_fields():
+    assert "CONTEXT COLLECTION IS A REQUIRED WORKFLOW ACTION" in SYSTEM_PROMPT
+    assert "Do not merely repeat those fields" in SYSTEM_PROMPT
+
+
 def test_production_chat_receives_the_same_retrieved_pdf_context():
     presentation = _presentation()
     presentation.state.resources_validated = True

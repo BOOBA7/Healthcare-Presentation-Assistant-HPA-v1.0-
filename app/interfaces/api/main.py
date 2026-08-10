@@ -5,7 +5,7 @@ from pathlib import Path
 import httpx
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 
@@ -17,6 +17,11 @@ from app.application.use_cases.summarize_resources import SummarizeResourcesUseC
 from app.application.use_cases.discuss_resources import DiscussResourcesUseCase
 from app.application.use_cases.update_presentation_details import UpdatePresentationDetailsUseCase
 from app.application.use_cases.update_project_evidence_settings import UpdateProjectEvidenceSettingsUseCase
+from app.application.use_cases.workflow_steps import (
+    CollectPresentationContextUseCase,
+    CreatePresentationWorkflowUseCase,
+    ValidatePresentationContextUseCase,
+)
 from app.application.use_cases.manage_project_resources import (
     AddProjectResourceUseCase,
     AttachResourceToPresentationUseCase,
@@ -24,6 +29,7 @@ from app.application.use_cases.manage_project_resources import (
     RemoveProjectResourceUseCase,
 )
 from app.application.services.workflow_policy import WorkflowPolicy
+from app.application.services.workflow_view import WorkflowViewBuilder
 from app.application.services.conversation_history import add_resource_turn, add_turn, ensure_history
 from app.application.services.resource_library import ensure_resource_library, resolve_presentation_resources
 from app.core.config import get_settings
@@ -31,6 +37,9 @@ from app.core.versioning import HARNESS_VERSION, RETRIEVAL_VERSION, WORKFLOW_VER
 from app.interfaces.storage.user_session_repository import UserSessionRepository
 from app.domain.enums.presentation_theme import PresentationTheme
 from app.domain.enums.evidence_context_mode import EvidenceContextMode
+from app.domain.enums.audience_type import AudienceType
+from app.domain.enums.language import Language
+from app.domain.enums.presentation_type import PresentationType
 from app.domain.enums.workflow_status import WorkflowStatus
 from app.domain.exceptions.domain_error import DomainError
 from app.domain.models.execution_context import ExecutionContext
@@ -136,6 +145,25 @@ class ProjectEvidenceSettingsRequest(BaseModel):
     patient_case_acknowledged: bool = False
 
 
+class PresentationSetupRequest(BaseModel):
+    """Human-entered fields required to create a production presentation."""
+
+    topic: str = Field(min_length=1, max_length=500)
+    audience: AudienceType
+    presentation_type: PresentationType
+    language: Language
+    duration_minutes: int = Field(gt=0, le=480)
+    objective: str = Field(min_length=1, max_length=4_000)
+    # Title-slide details are optional and must remain explicitly human supplied.
+    # They are never inferred by the LLM.
+    presenter_name: str | None = Field(default=None, max_length=200)
+    presenter_title: str | None = Field(default=None, max_length=200)
+    organization: str | None = Field(default=None, max_length=300)
+    event_name: str | None = Field(default=None, max_length=300)
+    venue: str | None = Field(default=None, max_length=300)
+    presentation_date: str | None = Field(default=None, max_length=100)
+
+
 class ResourceDiscussionRequest(BaseModel):
     question: str = Field(min_length=1, max_length=20_000)
 
@@ -212,6 +240,10 @@ def _project_response(user_id: str, project_id: str, thread_id: str, state: Grap
         ),
         "error": state.execution.error,
         "required_human_action": _required_human_action(state),
+        "workflow": WorkflowViewBuilder.build(
+            state,
+            get_repository().active_job(user_id, project_id),
+        ),
     }
 
 
@@ -359,11 +391,8 @@ def get_repository() -> UserSessionRepository:
 
 @app.get("/")
 def root():
-    return {
-        "application": settings.app_name,
-        "status": "running",
-        "version": "0.1.0",
-    }
+    """Open the local web interface from the server's base URL."""
+    return RedirectResponse(url="/app", status_code=307)
 
 
 @app.get("/health")
@@ -380,6 +409,51 @@ def web_app():
 
 
 app.mount("/web", StaticFiles(directory=_web_dir), name="web")
+
+
+@app.post("/projects/{user_id}/{project_id}/presentation/setup")
+def setup_presentation(
+    user_id: str,
+    project_id: str,
+    request: PresentationSetupRequest,
+    authenticated_user: str = Depends(_authenticated_user),
+):
+    """Create a presentation from explicit human input, without an LLM decision."""
+    _assert_owner(user_id, authenticated_user)
+    thread_id, state = _get_project(user_id, project_id)
+    if state.presentation is not None:
+        raise HTTPException(status_code=409, detail="A presentation already exists for this Project.")
+    if state.patient_case_mode:
+        try:
+            PatientCasePrivacyGuard().ensure_texts_safe((request.topic, request.objective))
+        except ValueError as exc:
+            raise _workflow_conflict(exc) from exc
+
+    state.user_profile = get_repository().get_user_profile(user_id)
+    try:
+        state = CollectPresentationContextUseCase().execute(state, **request.model_dump())
+        state = ValidatePresentationContextUseCase().execute(state)
+        state = CreatePresentationWorkflowUseCase().execute(state)
+    except ValueError as exc:
+        raise _workflow_conflict(exc) from exc
+
+    state.execution = ExecutionContext(last_tool="create_presentation")
+    return _save_project(
+        user_id,
+        project_id,
+        thread_id,
+        state,
+        event_type="PRESENTATION_CREATED_FROM_FORM",
+        actor="user",
+        extra_audit={
+            "topic_length": len(request.topic),
+            "objective_length": len(request.objective),
+            "duration_minutes": request.duration_minutes,
+            "audience": request.audience.value,
+            "presentation_type": request.presentation_type.value,
+            "language": request.language.value,
+        },
+    )
 
 
 @app.post("/chat")
@@ -483,7 +557,7 @@ def chat(request: ChatRequest, authenticated_user: str = Depends(_authenticated_
 
 @app.post("/resources/pdf/{user_id}/{project_id}")
 async def upload_pdf_resource(user_id: str, project_id: str, file: UploadFile = File(...), authenticated_user: str = Depends(_authenticated_user)):
-    """Extract a PDF and attach it as validated evidence to a presentation."""
+    """Extract a PDF into the Project library; production selection is explicit."""
     _assert_owner(user_id, authenticated_user)
     filename = Path(file.filename or "resource.pdf").name
     # Some browsers/local proxies send application/octet-stream for a valid

@@ -6,6 +6,11 @@
 
 This ADR supersedes the earlier agent-centric description. HPA retains one
 cognitive agent, but the LLM is no longer considered the workflow authority.
+Superseded decisions are intentionally retained as learning records in
+[`docs/architecture-history/`](docs/architecture-history/) rather than being
+rewritten as though they never existed. See
+[`docs/ARCHITECTURE_EVOLUTION.md`](docs/ARCHITECTURE_EVOLUTION.md) for the
+cross-stage rationale and the project owner's learning reflection.
 
 ## Context
 
@@ -119,10 +124,16 @@ presentation production. A user must explicitly attach library resources to a
 presentation; only this selection can become production evidence. There is no
 global document folder and no external retrieval by default.
 
-The UI exposes this separation as two persistent workspaces: **Resources** for
-the library, overview and PDF-only discussion, and **Presentation assistant**
-for workflow-controlled conversation and generation. Resource overview and PDF
-discussion turns are never appended to the presentation-assistant transcript.
+The UI exposes this separation as three persistent workspaces: **Resources**
+for the library and production source selection, **Resource Analysis** for the
+overview and PDF-only discussion, and **Presentation Studio** for deterministic
+workflow commands, review and export. Resource overview and PDF discussion
+turns are never appended to the presentation-assistant transcript.
+
+Blueprint and slide generation are explicit `202` API jobs initiated by a
+human click. The server rechecks the current Project revision, workflow status,
+selected validated evidence and professional-scope compatibility before the LLM
+is invoked. The chat can explain these actions, but cannot trigger them.
 
 ```text
 Project PDF library → optional source-only exploration

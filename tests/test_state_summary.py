@@ -15,6 +15,9 @@ def test_state_summary_describes_the_initial_workflow_state():
 def test_human_validation_is_not_an_agent_tool():
     tool_names = {tool.name for tool in COGNITIVE_TOOLS}
 
+    assert "create_presentation" not in tool_names
+    assert "build_blueprint" not in tool_names
+    assert "generate_slides" not in tool_names
     assert "validate_resources" not in tool_names
     assert "validate_blueprint" not in tool_names
     assert "validate_slides" not in tool_names

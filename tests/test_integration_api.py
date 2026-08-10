@@ -9,6 +9,15 @@ from app.domain.models.resource_analysis import ResourceAnalysis
 app = api.app
 
 
+def test_root_redirects_to_the_web_application():
+    client = TestClient(app)
+
+    response = client.get("/", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/app"
+
+
 def test_versioned_health_endpoint_is_available_without_model_access():
     client = TestClient(app)
 
@@ -16,6 +25,66 @@ def test_versioned_health_endpoint_is_available_without_model_access():
 
     assert response.status_code == 200
     assert response.json() == {"status": "healthy", "api_version": "v1"}
+
+
+def test_human_presentation_setup_creates_a_production_draft_without_model_access(tmp_path, monkeypatch):
+    repository = UserSessionRepository(tmp_path / "hpa.sqlite3")
+    monkeypatch.setattr(api, "get_repository", lambda: repository)
+    client = TestClient(app)
+    registration = client.post(
+        "/auth/register",
+        json={"user_id": "clinician", "password": "safe-local-password"},
+    )
+    headers = {"Authorization": f"Bearer {registration.json()['token']}"}
+    assert client.post(
+        "/projects",
+        headers=headers,
+        json={"user_id": "clinician", "project_id": "draft-1", "project_name": "Draft"},
+    ).status_code == 200
+
+    response = client.post(
+        "/projects/clinician/draft-1/presentation/setup",
+        headers=headers,
+        json={
+            "topic": "Vitamin D supplementation",
+            "audience": "general_practitioner",
+            "presentation_type": "Lecture",
+            "language": "English",
+            "duration_minutes": 12,
+            "objective": "Review the supplied evidence.",
+            "presenter_name": "Dr Ada Martin",
+            "presenter_title": "Medical Affairs Lead",
+            "organization": "Example Hospital",
+            "event_name": "Clinical Update 2026",
+            "venue": "Algiers",
+            "presentation_date": "9 August 2026",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    presentation = payload["presentation"]
+    assert presentation["title"] == "Vitamin D supplementation"
+    assert presentation["state"]["workflow_status"] == "awaiting_resource_upload"
+    assert presentation["context"]["presenter_name"] == "Dr Ada Martin"
+    assert presentation["context"]["event_name"] == "Clinical Update 2026"
+
+    # The browser receives a server-owned explanation of the exact business
+    # blocker. It must not infer whether blueprint generation is allowed.
+    workflow = payload["workflow"]
+    assert workflow["status"] == "blocked"
+    assert workflow["allowed_actions"] == []
+    assert workflow["blockers"][0]["code"] == "RESOURCE_SELECTION_REQUIRED"
+    assert workflow["blockers"][0]["stage"] == "evidence_selection"
+
+    # A direct HTTP call cannot bypass that workflow state or queue an LLM
+    # operation. This is a deterministic rejection, independent of a model.
+    blocked_generation = client.post(
+        "/api/v1/projects/clinician/draft-1/blueprint/jobs",
+        headers=headers,
+    )
+    assert blocked_generation.status_code == 409
+    assert blocked_generation.json()["detail"]["code"] == "INVALID_WORKFLOW_TRANSITION"
 
 
 def test_observability_endpoint_returns_safe_counters_only():

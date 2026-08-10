@@ -49,9 +49,11 @@ clinical, legal or institutional review.
   library**, even before a presentation exists.
 - Provides a source-only resource overview and a dedicated PDF discussion mode
   to explore the uploaded material without changing a presentation.
-- Keeps the **Resources workspace** (PDF library, overview and PDF chat)
-  separate from the **Presentation assistant** (workflow and generation), with
-  independent durable conversation histories in both `/app` and Streamlit.
+- Separates three workspaces in `/app` and Streamlit: **Resources** (PDF
+  library and production selection), **Resource Analysis** (overview and
+  PDF-only discussion), and **Presentation Studio** (deterministic workflow,
+  review and export). Resource and presentation-chat histories remain
+  independent.
 - Lets the user explicitly select library resources for a presentation. Only
   this selection is used as production evidence.
 - Generates an editable blueprint, an Agenda, slides and a themed PowerPoint
@@ -140,12 +142,11 @@ Discuss / explore PDFs (optional)
   → Create presentation
   → Select Project-library PDF(s) for this presentation
   → Human validates the selected resources
-  → Request blueprint generation
-  → Generate blueprint
+  → Click Generate blueprint
   → Optionally complete title-slide delivery details
   → Edit and approve Agenda
   → Review blueprint items and approve blueprint
-  → Generate and review slides
+  → Click Generate slides, then review slides
      └─ unsupported AI slide → resolve that item (edit / add PDF / write it yourself)
   → Final human approval
   → Export PowerPoint
@@ -227,7 +228,10 @@ State is deliberately separated:
 | `PresentationState` | Durable production lifecycle and approval flags |
 | `ExecutionContext` | Last safe tool outcome or error; never a business approval |
 
-The full architecture rationale is in [ADR-0007](ADR.md). The historical
+The full current architecture rationale is in [ADR-0007](ADR.md). Earlier
+architectural decisions and the project owner's historical reflection are
+preserved in [docs/ARCHITECTURE_EVOLUTION.md](docs/ARCHITECTURE_EVOLUTION.md)
+and [docs/architecture-history](docs/architecture-history/). The historical
 prompt-engineering review is retained in [docs/PROMPT_REVIEW.md](docs/PROMPT_REVIEW.md).
 The system-level evaluation approach is documented in
 [docs/EVALUATION.md](docs/EVALUATION.md).
@@ -271,6 +275,8 @@ excluded.
 │       ├── web/                         # JavaScript app: persistent Presentation/Resources workspaces
 │       └── langgraph/                   # Experimental checkpointer adapter
 ├── docs/
+│   ├── ARCHITECTURE_EVOLUTION.md         # Architecture history and learning reflection
+│   ├── architecture-history/             # Superseded architecture records (V1–V3)
 │   ├── EVALUATION.md                    # System-level evaluation and test strategy
 │   ├── FANIS_REVIEW.md                   # Applied GenAI architecture review request
 │   ├── HCP_EVALUATION.md                 # Short checkbox-based HCP evaluation form
@@ -397,6 +403,8 @@ owner-scoped. Main endpoint groups include:
 
 - `POST /auth/register`, `POST /auth/login`
 - `POST /projects`, `GET /users/{user_id}/projects`, `POST /chat`
+- `POST /api/v1/projects/{user_id}/{project_id}/blueprint/jobs`
+- `POST /api/v1/projects/{user_id}/{project_id}/slides/jobs`
 - `POST /resources/pdf/{user_id}/{project_id}`
 - `POST /projects/{user_id}/{project_id}/resources/summary`
 - `POST /projects/{user_id}/{project_id}/resources/discuss`
@@ -426,10 +434,13 @@ venv/bin/pytest -q
 ```
 
 The test suite uses fake model responses and does not consume provider quota.
-It includes repository concurrency/persistence tests and an HTTP integration
-test for the authenticated Project/PDF lifecycle. GitHub Actions runs Python
-compilation, Ruff linting, JavaScript syntax validation and this suite for every
-push and pull request to `main`.
+It includes repository concurrency/persistence tests, authenticated
+Project/PDF API integration, and a deterministic end-to-end HCP workflow:
+account → Project → PDF → Resource Overview/Resource Chat → explicit source
+selection → human validation → blueprint/slide review → final approval →
+PowerPoint export. GitHub Actions runs Python compilation, Ruff linting,
+JavaScript syntax validation and this suite for every push and pull request to
+`main`.
 
 This is not a clinical benchmark score. HPA should be evaluated as a complete
 evidence-gated system: uploaded PDF → retrieval → gate → workflow → human

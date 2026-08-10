@@ -34,6 +34,16 @@ class ProductionEvidenceGate:
         r"عرض|شرائح|شريحة|مشروع|مخطط|أجندة)\b",
         re.IGNORECASE,
     )
+    _presentation_context_turn = re.compile(
+        r"\b(presentation|presentations|présentation|présentations|fmc|formation\s+m[eé]dicale\s+continue|"
+        r"workshop|atelier|lecture|symposium|webinar|webinaire|congress|congr[eè]s|"
+        r"audience|public|m[eé]decin(?:s)?|general practitioner|g[eé]n[eé]raliste(?:s)?|"
+        r"r[eé]sident(?:s)?|specialist(?:s)?|sp[eé]cialiste(?:s)?|pharmacist(?:s)?|pharmacien(?:s)?|"
+        r"duration|dur[eé]e|minute(?:s)?|objectif|objective|mise\s+[àa]\s+jour|update|"
+        r"knowledge|connaissance(?:s)?|formation|training|resource(?:s)?|ressource(?:s)?|"
+        r"source(?:s)?|document(?:s)?|pdf|عرض|تقديمي|شرائح|جمهور|مدة|دقائق|هدف|مصدر|مراجع)\b",
+        re.IGNORECASE,
+    )
 
     @classmethod
     def requires_evidence(cls, user_message: str) -> bool:
@@ -54,15 +64,28 @@ class ProductionEvidenceGate:
             )
         )
 
+    @classmethod
+    def is_presentation_context_turn(cls, user_message: str) -> bool:
+        """Recognise human workflow metadata without treating it as a scientific query.
+
+        A user must be able to create a presentation through chat before PDFs
+        are selected and validated.  This narrow allow-list permits the model
+        to collect *presentation metadata* in GENERAL mode; the system prompt
+        still prohibits factual scientific answers in that mode.
+        """
+        return bool(cls._presentation_context_turn.search(user_message))
+
     def block_reason(self, state: GraphState, user_message: str) -> str | None:
         """Return a safe user message, or ``None`` when the LLM may answer."""
         presentation = state.presentation
+        mode = ConversationMode.PRODUCTION if presentation is not None else state.conversation_mode
+        if mode == ConversationMode.GENERAL and self.is_presentation_context_turn(user_message):
+            return None
         if not self.requires_evidence(user_message):
             return None
 
         # A presentation implies production for legacy persisted states created
         # before ``conversation_mode`` was introduced.
-        mode = ConversationMode.PRODUCTION if presentation is not None else state.conversation_mode
         if mode == ConversationMode.GENERAL:
             record("evidence_refusal", reason="general_mode_evidence_bound_request")
             return self._message(state, "general")

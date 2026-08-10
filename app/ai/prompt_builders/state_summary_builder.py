@@ -42,6 +42,8 @@ class StateSummaryBuilder:
                 f"- Final presentation approved: {'yes' if workflow_state and workflow_state.presentation_validated else 'no'}",
                 f"- Allowed next tools: {', '.join(self.allowed_tools(state)) or 'none; ask the user for the required information or PDF'}",
                 "- In GENERAL mode, do not answer scientific or clinical questions: collect context, explain the workflow, or request a user PDF.",
+                "- When `collect_context` is the only allowed next tool, call it immediately with every presentation field explicitly supplied by the user; do not only acknowledge or repeat the information.",
+                "- Chat never creates a presentation and never generates a blueprint or slides. Direct the user to the explicit Presentation Studio action after context collection.",
                 "- In PRODUCTION mode, scientific discussion is allowed only when grounded in retrieved user-PDF passages.",
                 "- When Patient Case Mode is active, work only with de-identified case information. Do not request, repeat, or infer patient identifiers.",
                 "- Resource, blueprint, slide and final validations are human actions performed in the interface, never LLM tools.",
@@ -58,9 +60,9 @@ class StateSummaryBuilder:
         if not context.is_complete():
             return ("collect_context",)
         if state.presentation_context is None:
-            return ("validate_context",)
+            return ()
         if presentation is None:
-            return ("create_presentation",)
+            return ()
         status = presentation.state.workflow_status
         if status in {
             WorkflowStatus.AWAITING_RESOURCE_UPLOAD,
@@ -75,11 +77,11 @@ class StateSummaryBuilder:
         }:
             return ("record_presentation_details",)
         if status == WorkflowStatus.BLUEPRINT_GENERATION:
-            return ("build_blueprint", "record_presentation_details")
+            return ("record_presentation_details",)
         if status == WorkflowStatus.AWAITING_SCOPE_CLARIFICATION:
             return ("record_professional_scope", "record_presentation_details")
         if status == WorkflowStatus.SLIDE_GENERATION:
-            return ("generate_slides", "record_presentation_details")
+            return ("record_presentation_details",)
         return ("record_presentation_details",)
 
     @staticmethod

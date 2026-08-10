@@ -103,16 +103,13 @@ def validate_final_presentation(state: Annotated[GraphState, InjectedToolArg], a
     return ValidateFinalPresentationWorkflowUseCase().execute(state, approved)
 
 
-# The cognitive agent can advance production only. Human approvals are invoked
-# directly by the interface/API and are deliberately not bound to the LLM.
+# Chat can collect explicitly supplied context, but it cannot create a
+# presentation or trigger content generation. Those transitions are explicit
+# human commands executed by the API.
 COGNITIVE_TOOLS = (
     collect_context,
     record_presentation_details,
-    validate_context,
-    create_presentation,
-    build_blueprint,
     record_professional_scope,
-    generate_slides,
 )
 
 HUMAN_VALIDATION_TOOLS = (
