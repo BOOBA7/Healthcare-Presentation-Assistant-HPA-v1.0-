@@ -1,5 +1,7 @@
 # Healthcare Presentation Assistant (HPA)
 
+**Project documentation owner and maintainer: Anis Boubala.**
+
 HPA is a local, evidence-gated assistant that helps healthcare professionals
 prepare scientific PowerPoint presentations from **PDF resources they upload**.
 It accelerates drafting, review and export; it does not replace scientific,
@@ -14,10 +16,11 @@ clinical, legal or institutional review.
 
 > ## Safety-by-design: the LLM is not the workflow authority
 >
-> HPA does not rely on prompt instructions alone. The LLM can interpret a
-> request, propose an allowed next action and generate content, but it cannot
-> approve resources, advance the workflow, validate evidence or authorize
-> export.
+> HPA does not rely on prompt instructions alone. The conversational LLM can
+> interpret a request and explain the next action. A bounded LLM use case can
+> generate content only after an explicit human command has passed the server
+> checks. Neither can approve resources, advance the workflow, validate
+> evidence or authorize export.
 >
 > Deterministic application controls decide whether the LLM may be called:
 >
@@ -25,8 +28,8 @@ clinical, legal or institutional review.
 > 2. `ProductionEvidenceGate` requires selected, human-approved PDF evidence
 >    and sufficient deterministic evidence-context support for every
 >    evidence-bound chat turn or generation.
-> 3. The guarded LangGraph tool node permits only the action allowed by the
->    trusted Project state.
+> 3. The guarded LangGraph node permits only chat-safe actions from the trusted
+>    Project state. Production commands are explicit server-side use cases.
 > 4. `EvidenceProvenanceValidator` verifies AI-generated slide citations before
 >    human approval and PowerPoint export.
 >
@@ -81,8 +84,8 @@ clinical, legal or institutional review.
   persisted or sent to the configured LLM. Dates in scientific PDFs are not
   treated as identifiers by themselves. It is a guardrail, not HIPAA
   certification or a guarantee of de-identification.
-- Runs longer model operations as durable local jobs with polling progress and
-  lightweight operational counters.
+- Runs longer operations submitted through the asynchronous API as durable
+  local jobs with polling progress and lightweight operational counters.
 
 ## Resource library and evidence model
 
@@ -196,20 +199,22 @@ boundary.
 ## Architecture
 
 ```text
-Web app (/app) · Streamlit · CLI
+Interface adapters
+├─ `/app` → FastAPI routes and asynchronous jobs
+├─ Streamlit → local application use cases
+└─ CLI → local conversational agent
                 │
-                ▼
-              FastAPI
-                │
-                ▼
-    HealthcarePresentationAgent
-                │
-     trusted state summary + prompts
-                ▼
-  LangGraph guarded agent/tool loop
-                │
-                ▼
- Application use cases and domain rules
+        ┌───────┴─────────────────────────────────────┐
+        ▼                                             ▼
+ Presentation chat                         Explicit user commands
+        │                              (Resources / Analysis / Studio)
+        ▼                                             │
+ HealthcarePresentationAgent                          ▼
+        │                             Bounded LLM use cases and workflow jobs
+ trusted state + guarded chat tools                    │
+        └───────────────────────┬─────────────────────┘
+                                ▼
+ Shared application use cases and domain rules
   ├─ Project resource library
   ├─ WorkflowPolicy and presentation state machine
   ├─ ProductionEvidenceGate + local BM25
@@ -226,10 +231,10 @@ State is deliberately separated:
 |---|---|
 | `GraphState` | Agent orchestration, presentation-chat transcript, compact continuity memory, resource-chat transcript, library and exploration analysis |
 | `PresentationState` | Durable production lifecycle and approval flags |
-| `ExecutionContext` | Last safe tool outcome or error; never a business approval |
+| `ExecutionContext` | Last safe operation outcome or error; never a business approval |
 
 The full current architecture rationale is in [ADR-0007](ADR.md). Earlier
-architectural decisions and the project owner's historical reflection are
+architectural decisions and the author's historical reflection are
 preserved in [docs/ARCHITECTURE_EVOLUTION.md](docs/ARCHITECTURE_EVOLUTION.md)
 and [docs/architecture-history](docs/architecture-history/). The historical
 prompt-engineering review is retained in [docs/PROMPT_REVIEW.md](docs/PROMPT_REVIEW.md).
@@ -272,9 +277,10 @@ excluded.
 │       ├── api/main.py                  # FastAPI composition, legacy-compatible routes and `/app`
 │       │   └── routers/                 # Authentication, Project, platform and job routers
 │       ├── storage/                     # SQLite UserSessionRepository
-│       ├── web/                         # JavaScript app: persistent Presentation/Resources workspaces
+│       ├── web/                         # JavaScript app: Resources, Resource Analysis and Presentation Studio
 │       └── langgraph/                   # Experimental checkpointer adapter
 ├── docs/
+│   ├── README.md                         # Documentation index and ownership
 │   ├── ARCHITECTURE_EVOLUTION.md         # Architecture history and learning reflection
 │   ├── architecture-history/             # Superseded architecture records (V1–V3)
 │   ├── EVALUATION.md                    # System-level evaluation and test strategy
@@ -309,9 +315,9 @@ running state-writing job per Project; a second request receives
 `PROJECT_JOB_ALREADY_RUNNING` and can be retried after the first job finishes.
 
 The full presentation-chat transcript remains durable for the user and audit
-trail. For each model request, only the 16 most recent model messages are kept
-in active context; older turns are compacted into a bounded, non-authoritative
-continuity summary. Trusted workflow state and retrieved PDF passages remain
+trail. For each model request, only the 16 most recent presentation-chat
+messages are kept in active context; older turns are compacted into a bounded,
+non-authoritative continuity summary. Trusted workflow state and retrieved PDF passages remain
 the authority.
 
 ## Domain error model

@@ -1,10 +1,12 @@
 # HPA — Journal d’évolution de l’architecture et de la réflexion
 
+**Auteur : Anis Boubala**
+
 ## But de ce document
 
-Ce document conserve le cheminement qui a conduit à l’architecture actuelle de
+Ce document conserve mon cheminement vers l’architecture actuelle de
 Healthcare Presentation Assistant (HPA). Il ne décrit pas seulement le résultat
-final : il garde les hypothèses initiales, les difficultés rencontrées, les
+final : j’y garde mes hypothèses initiales, les difficultés rencontrées, les
 solutions essayées et les questions qui restent ouvertes.
 
 L’objectif est qu’un senior en Applied GenAI, software architecture ou produit

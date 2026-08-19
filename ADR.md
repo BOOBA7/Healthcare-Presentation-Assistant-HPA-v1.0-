@@ -1,8 +1,10 @@
 # ADR-0007 — Evidence-Gated, Human-Validated Architecture for HPA
 
+**Document owner: Anis Boubala.**
+
 ## Status
 
-**Accepted — updated 2026-08-09**
+**Accepted — updated 2026-08-15**
 
 This ADR supersedes the earlier agent-centric description. HPA retains one
 cognitive agent, but the LLM is no longer considered the workflow authority.
@@ -10,7 +12,7 @@ Superseded decisions are intentionally retained as learning records in
 [`docs/architecture-history/`](docs/architecture-history/) rather than being
 rewritten as though they never existed. See
 [`docs/ARCHITECTURE_EVOLUTION.md`](docs/ARCHITECTURE_EVOLUTION.md) for the
-cross-stage rationale and the project owner's learning reflection.
+cross-stage rationale and my learning reflection during this project.
 
 ## Context
 
@@ -45,16 +47,28 @@ System decides whether generation is allowed
 → Human approves the deliverable
 ```
 
-### 1. One cognitive agent, bounded by deterministic services
+### 1. One conversational agent and explicit production commands
 
-`HealthcarePresentationAgent` is the sole LLM-facing agent. It interprets
-conversation and may select an allowed production tool. It does not own
-business decisions.
+`HealthcarePresentationAgent` is the conversational LLM-facing component. It
+handles natural discussion, presentation-context collection, optional
+title-slide details and professional-scope clarification. It cannot create a
+presentation, validate resources, build a blueprint, generate slides, approve
+content or export PowerPoint.
 
-LangGraph orchestrates the `agent → tool → agent` loop. HPA deliberately uses
-a custom guarded tool node rather than a generic `ToolNode` / tool executor.
-The node permits one tool action per turn, validates its availability, catches
-safe workflow errors, and returns tool outcomes to the model as `ToolMessage`s.
+LangGraph orchestrates a bounded `agent → conversational tool → agent` loop
+for the small set of chat-safe tools. HPA deliberately uses a custom guarded
+tool node rather than a generic `ToolNode` / tool executor. The node permits
+one allowed conversational action per turn, validates its availability, catches
+safe errors and returns safe `ToolMessage` outcomes to the model.
+
+Resource Overview, Resource Chat, blueprint generation and slide generation
+use dedicated bounded LLM use cases. Presentation creation, resource
+validation, blueprint generation, slide generation, approval and export are
+explicit human commands in Presentation Studio. For API blueprint and slide
+generation, the server creates a durable job, reloads the authoritative Project
+state and rechecks workflow status, validated evidence and professional-scope
+compatibility before it invokes the generation use case. The chat can explain
+the next command, but it cannot trigger it.
 
 ### 2. State has three responsibilities
 
@@ -89,8 +103,8 @@ domain validation such as invalid evidence provenance.
 
 The API maps these typed domain failures to predictable client responses. This
 allows Web and Streamlit interfaces to react to an error category or code
-rather than parsing an arbitrary error string. The LLM receives safe tool
-outcomes, never raw stack traces.
+rather than parsing an arbitrary error string. When an allowed conversational
+tool is used, the LLM receives a safe tool outcome, never a raw stack trace.
 
 ### 3. Business state machine is the source of truth
 
@@ -112,9 +126,10 @@ context_collection
 → exported
 ```
 
-`WorkflowPolicy` rejects invalid transitions. API routes, human-review use
-cases, and LLM tools must obey the same transitions. Prompts describe the flow,
-but code is the final authority.
+`WorkflowPolicy` rejects invalid transitions. Explicit API commands and
+human-review use cases must obey the same transitions. Conversational tools may
+record only the chat-safe data described above; they cannot perform a production
+transition. Prompts describe the flow, but code is the final authority.
 
 ### 4. Evidence is user-scoped and system-verified
 
@@ -185,7 +200,8 @@ or substitute for the user's institutional policy. It provides a clear product
 boundary: patient-identifying content must not be entered or uploaded in this
 mode.
 
-Every slide reference is validated by `EvidenceProvenanceValidator`:
+Every AI-generated slide citation is validated by
+`EvidenceProvenanceValidator`:
 
 1. `resource_id` must exist in the presentation;
 2. the cited page must exist in that resource;
@@ -221,7 +237,7 @@ these details after final approval reopens final approval only.
 |---|---|---|
 | System prompt | identity, trust boundary, role/language adaptation | enforcing permissions |
 | Healthcare harness | evidence, uncertainty, presentation safety | verifying evidence |
-| Loop policy | concise turn behavior and tool discipline | state transitions |
+| Loop policy | concise turn behavior and bounded chat-tool discipline | state transitions |
 | Prompt builders | blueprint/slide task instructions and retrieved excerpts | business rules |
 
 Trusted state is injected separately from untrusted user messages and PDF
@@ -271,13 +287,15 @@ records a safe failure event when needed (`AGENT_TURN_FAILED` or
 retryability and configured provider/model identity; raw provider error text
 and user source content are not copied into the audit event. Before invoking
 the model, the application keeps only the 16 most recent presentation-chat
-model messages and compacts older turns into a bounded, non-authoritative memory
+messages and compacts older turns into a bounded, non-authoritative memory
 summary. The trusted state summary and retrieved PDF excerpts remain
 authoritative for workflow decisions and scientific claims.
 
-Long-running model calls are recorded as durable local `project_jobs` entries.
-The API returns `202`, then clients poll a job for stage/progress/result. The
-process records content-free observability counters such as LLM duration,
+Long-running operations submitted through asynchronous API endpoints are
+recorded as durable local `project_jobs` entries. Those endpoints return `202`,
+then clients poll a job for stage, progress and result. Streamlit and the CLI
+remain local interfaces and may execute an explicit operation synchronously.
+The process records content-free observability counters such as LLM duration,
 prompt size, retrieval selections, generation failures and evidence refusals.
 This is deliberately a local executor, not a distributed queue.
 
