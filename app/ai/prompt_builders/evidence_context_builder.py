@@ -26,13 +26,41 @@ class EvidenceChunk:
 
 
 @dataclass(frozen=True)
+class EvidenceSelection:
+    """Passages selected for one task before the common evidence decision."""
+
+    mode: EvidenceContextMode
+    query_terms: tuple[str, ...]
+    chunks: tuple[EvidenceChunk, ...]
+    retrieval_scores: tuple[float, ...]
+
+
+@dataclass(frozen=True)
 class EvidenceAssessment:
-    """Deterministic retrieval decision used before scientific generation."""
+    """Mode-independent sufficiency decision used before scientific generation."""
 
     has_validated_resources: bool
     is_sufficient: bool
     best_score: float
     matched_terms: tuple[str, ...]
+    mode: EvidenceContextMode
+    query_term_count: int
+    required_matches: int
+    selected_locations: tuple[str, ...]
+    anchor_location: str | None = None
+    selection_scores: tuple[float, ...] = ()
+
+    def diagnostic(self) -> dict[str, object]:
+        """Return safe metadata for an audit record or an actionable UI blocker."""
+        return {
+            "mode": self.mode.value,
+            "query_term_count": self.query_term_count,
+            "required_matches": self.required_matches,
+            "matched_term_count": len(self.matched_terms),
+            "selected_locations": list(self.selected_locations),
+            "selection_scores": [round(score, 4) for score in self.selection_scores],
+            "anchor_location": self.anchor_location,
+        }
 
 
 class EvidenceContextBuilder:
@@ -45,15 +73,36 @@ class EvidenceContextBuilder:
     bm25_k1 = 1.2
     bm25_b = 0.75
 
+    @staticmethod
+    def presentation_query(presentation: Presentation) -> str:
+        """Single source of truth for blueprint gate and prompt retrieval."""
+        return " ".join(
+            [
+                presentation.context.topic,
+                presentation.context.objective,
+                presentation.context.audience.value,
+            ]
+        )
+
+    @staticmethod
+    def slide_query(presentation: Presentation, outline: SlideOutline) -> str:
+        """Single source of truth for slide gate and prompt retrieval."""
+        return " ".join(
+            [
+                presentation.context.topic,
+                outline.title,
+                outline.objective,
+                outline.key_message,
+            ]
+        )
+
     def for_presentation(
         self,
         presentation: Presentation,
         resources: list[Resource] | None = None,
         chunks: list[ResourceChunk] | None = None,
     ) -> str:
-        query = " ".join(
-            [presentation.context.topic, presentation.context.objective, presentation.context.audience.value]
-        )
+        query = self.presentation_query(presentation)
         return self._select(
             resources or presentation.resources,
             query,
@@ -68,9 +117,7 @@ class EvidenceContextBuilder:
         resources: list[Resource] | None = None,
         chunks: list[ResourceChunk] | None = None,
     ) -> str:
-        query = " ".join(
-            [presentation.context.topic, outline.title, outline.objective, outline.key_message]
-        )
+        query = self.slide_query(presentation, outline)
         return self._select(
             resources or presentation.resources,
             query,
@@ -92,34 +139,16 @@ class EvidenceContextBuilder:
         """
         evidence_chunks = self._chunks_for_resources(resources or presentation.resources, chunks)
         query_terms = tuple(dict.fromkeys(self._terms(query)))
-        if not evidence_chunks:
-            return EvidenceAssessment(False, False, 0.0, ())
-        if not query_terms:
-            return EvidenceAssessment(True, False, 0.0, ())
-
         mode = presentation.evidence_context_mode
-        candidates = (
-            self._direct_chunks(evidence_chunks)
-            if mode == EvidenceContextMode.DIRECT_BOUNDED
-            else evidence_chunks
-        )
-        if not candidates:
-            return EvidenceAssessment(True, False, 0.0, ())
-        if mode == EvidenceContextMode.DIRECT_BOUNDED:
-            available_terms = set().union(*(set(chunk.terms) for chunk in candidates))
-            matched_terms = tuple(sorted(set(query_terms).intersection(available_terms)))
-            best_score = len(matched_terms) / len(query_terms)
-        else:
-            scores = self._bm25_scores(candidates, list(query_terms))
-            best_index, best_score = max(enumerate(scores), key=lambda item: item[1])
-            matched_terms = tuple(sorted(set(query_terms).intersection(candidates[best_index].terms)))
-        minimum_matches = 1 if len(query_terms) <= 2 else 2
-        return EvidenceAssessment(
-            has_validated_resources=True,
-            is_sufficient=best_score > 0 and len(matched_terms) >= minimum_matches,
-            best_score=best_score,
-            matched_terms=matched_terms,
-        )
+        if not evidence_chunks:
+            return EvidenceAssessment(False, False, 0.0, (), mode, len(query_terms), 0, ())
+        if not query_terms:
+            return EvidenceAssessment(True, False, 0.0, (), mode, 0, 0, ())
+
+        selection = self._select_query_chunks(evidence_chunks, query_terms, mode)
+        assessment = self._assess_selected_chunks(selection, has_validated_resources=True)
+        record("evidence_assessment", purpose="generation_gate", **assessment.diagnostic())
+        return assessment
 
     def for_resources(
         self,
@@ -180,26 +209,46 @@ class EvidenceContextBuilder:
         mode: EvidenceContextMode = EvidenceContextMode.BM25,
     ) -> str:
         chunks = self._chunks_for_resources(resources, persisted_chunks)
-        query_terms = self._terms(query)
+        query_terms = tuple(dict.fromkeys(self._terms(query)))
         if not chunks or not query_terms:
             return "No relevant validated PDF passages are available."
+        selection = self._select_query_chunks(chunks, query_terms, mode)
+        context = "\n\n".join(self._format_chunk(chunk) for chunk in selection.chunks)
+        record(
+            "evidence_selection",
+            purpose="query",
+            mode=mode.value,
+            query_terms=len(selection.query_terms),
+            selected_passages=len(selection.chunks),
+            selected_locations=[f"{chunk.resource_id}:p{chunk.page}" for chunk in selection.chunks],
+            selection_scores=[round(score, 4) for score in selection.retrieval_scores],
+            context_characters=len(context),
+        )
+        return context or "No relevant validated PDF passages are available."
 
+    def _select_query_chunks(
+        self,
+        chunks: list[EvidenceChunk],
+        query_terms: tuple[str, ...],
+        mode: EvidenceContextMode,
+    ) -> EvidenceSelection:
+        """Select bounded passages; this never decides whether evidence is sufficient."""
         if mode == EvidenceContextMode.DIRECT_BOUNDED:
-            return self._format_selected(
-                self._direct_chunks(chunks),
-                purpose="query",
+            selected = self._direct_chunks(chunks)
+            return EvidenceSelection(
                 mode=mode,
                 query_terms=query_terms,
+                chunks=tuple(selected),
+                retrieval_scores=tuple(0.0 for _ in selected),
             )
 
-        scores = self._bm25_scores(chunks, query_terms)
+        scores = self._bm25_scores(chunks, list(query_terms))
         ranked = sorted(
             zip(scores, chunks),
             key=lambda item: (-item[0], item[1].resource_id, item[1].page, item[1].position),
         )
-
-        selected: list[str] = []
-        selected_chunks: list[EvidenceChunk] = []
+        selected: list[EvidenceChunk] = []
+        selected_scores: list[float] = []
         selected_per_resource: Counter[str] = Counter()
         total_characters = 0
         for score, chunk in ranked:
@@ -208,24 +257,69 @@ class EvidenceContextBuilder:
             entry = self._format_chunk(chunk)
             if total_characters + len(entry) > self.max_characters:
                 continue
-            selected.append(entry)
-            selected_chunks.append(chunk)
+            selected.append(chunk)
+            selected_scores.append(score)
             selected_per_resource[chunk.resource_id] += 1
             total_characters += len(entry)
             if len(selected) >= self.max_chunks:
                 break
-
-        context = "\n\n".join(selected) or "No relevant validated PDF passages are available."
-        record(
-            "bm25_retrieval",
-            purpose="query",
-            mode=mode.value,
-            query_terms=len(set(query_terms)),
-            selected_passages=len(selected_chunks),
-            selected_locations=[f"{chunk.resource_id}:p{chunk.page}" for chunk in selected_chunks],
-            context_characters=len(context),
+        return EvidenceSelection(
+            mode=mode,
+            query_terms=query_terms,
+            chunks=tuple(selected),
+            retrieval_scores=tuple(selected_scores),
         )
-        return context
+
+    @staticmethod
+    def _assess_selected_chunks(
+        selection: EvidenceSelection,
+        *,
+        has_validated_resources: bool,
+    ) -> EvidenceAssessment:
+        """Apply the exact same evidence rule after either retrieval strategy.
+
+        A supporting anchor must exist in one selected passage. Pooling partial
+        matches across unrelated passages would make one mode less strict than
+        the other and would not identify an auditable source for the slide.
+        """
+        minimum_matches = 1 if len(selection.query_terms) <= 2 else 2
+        locations = tuple(f"{chunk.resource_id}:p{chunk.page}" for chunk in selection.chunks)
+        candidates: list[tuple[int, float, EvidenceChunk, tuple[str, ...]]] = []
+        query_terms = set(selection.query_terms)
+        for index, chunk in enumerate(selection.chunks):
+            matches = tuple(sorted(query_terms.intersection(chunk.terms)))
+            retrieval_score = selection.retrieval_scores[index] if index < len(selection.retrieval_scores) else 0.0
+            candidates.append((len(matches), retrieval_score, chunk, matches))
+        if not candidates:
+            return EvidenceAssessment(
+                has_validated_resources,
+                False,
+                0.0,
+                (),
+                selection.mode,
+                len(selection.query_terms),
+                minimum_matches,
+                locations,
+                selection_scores=selection.retrieval_scores,
+            )
+
+        _, _, anchor, matched_terms = max(
+            candidates,
+            key=lambda item: (item[0], item[1], -item[2].page, -item[2].position),
+        )
+        coverage_score = len(matched_terms) / len(selection.query_terms)
+        return EvidenceAssessment(
+            has_validated_resources,
+            len(matched_terms) >= minimum_matches,
+            coverage_score,
+            matched_terms,
+            selection.mode,
+            len(selection.query_terms),
+            minimum_matches,
+            locations,
+            anchor_location=f"{anchor.resource_id}:p{anchor.page}",
+            selection_scores=selection.retrieval_scores,
+        )
 
     def _direct_chunks(self, chunks: list[EvidenceChunk]) -> list[EvidenceChunk]:
         """Use a deterministic, source-balanced window without relevance ranking.

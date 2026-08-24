@@ -18,6 +18,7 @@ class SlidePromptBuilder:
         outline: SlideOutline,
         resources: list[Resource] | None = None,
         chunks: list[ResourceChunk] | None = None,
+        reviewer_comments: str | None = None,
     ) -> str:
         """
         Build the complete prompt for slide generation.
@@ -101,7 +102,7 @@ Objective:
 {outline.objective}
 
 Reviewer Revision Request:
-{outline.reviewer_comments or "None"}
+{reviewer_comments or outline.reviewer_comments or "None"}
 
 
 ========================

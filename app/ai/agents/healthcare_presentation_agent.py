@@ -12,10 +12,8 @@ from app.ai.workflows.tools import (
 from app.application.services.production_evidence_gate import ProductionEvidenceGate
 from app.application.services.conversation_memory import prepare_model_context, strip_transient_model_context
 from app.application.services.resource_library import resolve_presentation_resources
-from app.application.use_cases.workflow_steps import RecordProfessionalScopeUseCase
 from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuilder
 from app.domain.enums.workflow_status import WorkflowStatus
-from app.domain.exceptions.workflow_error import WorkflowError
 from app.domain.models.execution_context import ExecutionContext
 from app.application.services.patient_case_privacy import PatientCasePrivacyGuard
 
@@ -53,10 +51,6 @@ class HealthcarePresentationAgent:
         )
         if state.patient_case_mode:
             PatientCasePrivacyGuard().ensure_text_safe(latest_user_message)
-        # This is a deterministic human-workflow transition.  Asking the LLM
-        # to remember to call a tool after the user has already clarified their
-        # scope can leave a Project stuck in the same clarification loop.
-        state = self._record_scope_clarification_if_supplied(state, latest_user_message)
         scope_message = self._scope_clarification_message_if_needed(state)
         if scope_message:
             action_state = state.model_copy(deep=True)
@@ -131,36 +125,8 @@ class HealthcarePresentationAgent:
         return result_state.model_dump()
 
     @staticmethod
-    def _record_scope_clarification_if_supplied(state: GraphState, message: str) -> GraphState:
-        """Persist one adequate scope explanation before returning to the LLM.
-
-        Human scope clarification is not a scientific answer and does not need
-        model interpretation.  Persisting it here makes the transition
-        idempotent: the same Project cannot ask for the same clarification a
-        second time once an explanation has been accepted.
-        """
-        presentation = state.presentation
-        if (
-            presentation is None
-            or presentation.state.workflow_status != WorkflowStatus.AWAITING_SCOPE_CLARIFICATION
-        ):
-            return state
-
-        try:
-            clarified_state = RecordProfessionalScopeUseCase().execute(
-                state.model_copy(deep=True), message
-            )
-        except WorkflowError:
-            # Short acknowledgements such as "done" are not explanations. The
-            # existing agent prompt will ask for the concise missing context.
-            return state
-
-        clarified_state.execution = ExecutionContext()
-        return clarified_state
-
-    @staticmethod
     def _scope_clarification_message_if_needed(state: GraphState) -> str | None:
-        """Keep the one required scope question concise and model-independent."""
+        """Direct the user to the deterministic scope-declaration form."""
         presentation = state.presentation
         if (
             presentation is None
@@ -169,19 +135,16 @@ class HealthcarePresentationAgent:
             return None
         messages = {
             "fr": (
-                "Avant de poursuivre, indiquez en une phrase votre rôle professionnel et la raison pour "
-                "laquelle cette présentation destinée à ce public entre dans votre périmètre. Exemple : "
-                "« Je suis délégué médical, avec une formation vétérinaire, et je présente une information "
-                "scientifique destinée aux professionnels de santé humaine. »"
+                "Avant de poursuivre, ouvrez le formulaire « Professional scope » dans Presentation Studio. "
+                "Indiquez votre rôle, le but de la présentation, puis confirmez qu’elle relève de votre périmètre."
             ),
             "ar": (
-                "قبل المتابعة، اشرح في جملة واحدة دورك المهني وسبب ملاءمة هذا العرض لهذا الجمهور. "
-                "مثال: «أنا مندوب طبي بتكوين بيطري وأعرض معلومات علمية موجهة إلى مهنيي الصحة البشرية»."
+                "قبل المتابعة، افتح نموذج «Professional scope» في Presentation Studio. حدّد دورك وهدف العرض "
+                "ثم أكّد أن العرض يقع ضمن نطاقك المهني."
             ),
             "en": (
-                "Before continuing, explain in one sentence your professional role and why this presentation "
-                "for this audience is within your scope. Example: “I am a medical representative with veterinary "
-                "training presenting scientific information for human healthcare professionals.”"
+                "Before continuing, open the Professional scope form in Presentation Studio. State your role and "
+                "the presentation purpose, then confirm that the presentation is within your professional scope."
             ),
         }
         return messages.get(state.user_profile.preferred_language, messages["en"])

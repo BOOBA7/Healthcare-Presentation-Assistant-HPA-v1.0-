@@ -188,6 +188,52 @@ pas le code qui impose les règles.
 | Provenance peu lisible | utilisateur ne comprend pas les références | affichage du titre PDF, détails techniques accessibles à la demande |
 | Écritures concurrentes | écrasement d’état Project | verrou de job d’écriture unique par Project |
 
+## Première expérimentation utilisateur — nouveaux écarts observés
+
+Lors d’un premier test du parcours complet, j’ai observé que les règles et les
+tests ne suffisent pas à eux seuls à garantir une expérience fluide. Avec le
+même ensemble de PDF fourni par l’utilisateur, le mode BM25 a permis de
+générer un blueprint puis a bloqué la génération des slides pour manque de
+preuve. Le mode de contexte PDF direct borné a, lui, poursuivi le parcours.
+
+Je ne considère pas cela comme une raison d’assouplir la règle de preuve ou de
+faire inventer le modèle. Je dois d’abord comprendre si une slide donnée n’est
+réellement pas soutenue par les PDF, ou si BM25 ne retrouve pas un passage
+pourtant pertinent. La différence entre une requête large de blueprint et une
+requête précise de slide rend cette investigation nécessaire. Le prochain pas
+est de tracer les requêtes, chunks, scores, pages, seuils et raisons de refus
+pour les deux modes sur un même cas reproductible.
+
+En relisant l’implémentation, j’ai identifié un écart plus précis : BM25
+évaluait le meilleur chunk individuel, alors que le mode Direct agrégeait les
+termes retrouvés dans plusieurs chunks de sa fenêtre. Le test ne comparait donc
+pas seulement deux méthodes de récupération, mais aussi deux calculs de
+suffisance de preuve.
+
+J’ai corrigé ce point en séparant clairement deux décisions : chaque mode
+sélectionne ses passages, puis le système applique la même règle aux passages
+sélectionnés. Un seul passage doit contenir le niveau minimal de support requis
+pour la requête. Il n’est plus possible de faire passer une génération en
+additionnant des termes trouvés dans plusieurs pages. Le diagnostic conserve le
+mode, les pages sélectionnées, le seuil et, pour BM25, les scores. Cela ne rend
+pas BM25 sémantique ; cela rend la comparaison et le refus traçables.
+
+Le test a aussi montré deux sujets produit : l’utilisateur ne trouvait pas assez
+clairement comment passer de Resources à Presentation Studio après validation,
+et Resource Chat ne donnait pas une impression de conversation continue pendant
+le travail du modèle. J’ai conservé les commandes de production dans une
+interface métier déterministe, mais Resources affiche maintenant l’action
+autorisée par le serveur pour générer le blueprint et un accès clair à
+Presentation Studio. Pour Resource Chat, la question est affichée immédiatement
+dans son panneau avec un état de traitement, sans figer toute l’interface.
+
+Enfin, le test a formulé un besoin que je n’avais pas suffisamment distingué de
+la génération textuelle : placer un tableau précis d’un PDF sur une slide
+précise. Mon hypothèse est qu’il faut d’abord une sélection déterministe de la
+ressource, page et zone du tableau, avec conservation de la preuve, plutôt que
+demander au LLM de reconstruire des chiffres. J’aimerais qu’un senior me dise
+si cette frontière entre insertion sourcée et génération est la bonne approche.
+
 ## Ce que j’aurais probablement dû faire plus tôt
 
 Avec le recul, j’aurais commencé par écrire avant le code :

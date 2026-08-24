@@ -10,6 +10,7 @@ from app.domain.models.resource_chunk import ResourceChunk
 from app.application.services.observability import observe_llm_call
 from app.application.services.patient_case_privacy import PatientCasePrivacyGuard
 from app.domain.enums.evidence_context_mode import EvidenceContextMode
+from app.application.validators.response_citation_validator import ResponseCitationValidator
 
 
 class DiscussResourcesUseCase:
@@ -38,7 +39,8 @@ class DiscussResourcesUseCase:
                 "Answer only from the supplied user-uploaded PDF passages. Do not use external knowledge, "
                 "give clinical advice, invent facts, or invent citations. If the answer is absent, ambiguous, "
                 "or inconsistent in the sources, say that you cannot answer from these resources and ask what "
-                "additional source or clarification is needed. Cite every factual claim as [resource_id, p. page]. "
+                "additional source or clarification is needed. Cite every factual claim using exactly "
+                "[[cite: resource_id | p. page | exact verbatim evidence excerpt]]. "
                 f"Reply in {language}."
             )),
             HumanMessage(content=f"QUESTION: {question}\n\nUSER-UPLOADED PDF PASSAGES:\n{context}"),
@@ -47,4 +49,5 @@ class DiscussResourcesUseCase:
         answer = SummarizeResourcesUseCase._message_text(response).strip()
         if not answer:
             raise ValueError("The model returned an empty resource discussion response. Please retry.")
+        ResponseCitationValidator().validate(answer, resources)
         return answer

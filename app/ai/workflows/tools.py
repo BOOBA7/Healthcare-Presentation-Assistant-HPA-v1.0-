@@ -8,7 +8,6 @@ from app.ai.workflows.graph_state import GraphState
 from app.application.use_cases.workflow_steps import (
     BuildBlueprintWorkflowUseCase, CollectPresentationContextUseCase,
     CreatePresentationWorkflowUseCase, GenerateSlidesWorkflowUseCase,
-    RecordProfessionalScopeUseCase,
     ValidateFinalPresentationWorkflowUseCase, ValidateSlidesWorkflowUseCase,
     ValidateBlueprintWorkflowUseCase, ValidatePresentationContextUseCase,
     ValidateResourcesWorkflowUseCase,
@@ -72,14 +71,6 @@ def build_blueprint(state: Annotated[GraphState, InjectedToolArg]) -> GraphState
 
 
 @tool
-def record_professional_scope(
-    state: Annotated[GraphState, InjectedToolArg], explanation: str
-) -> GraphState:
-    """Store the user's explanation for a profile/audience scope clarification."""
-    return RecordProfessionalScopeUseCase().execute(state, explanation)
-
-
-@tool
 def validate_blueprint(state: Annotated[GraphState, InjectedToolArg], approved: bool) -> GraphState:
     """Record human approval of the generated blueprint."""
     return ValidateBlueprintWorkflowUseCase().execute(state, approved)
@@ -109,7 +100,6 @@ def validate_final_presentation(state: Annotated[GraphState, InjectedToolArg], a
 COGNITIVE_TOOLS = (
     collect_context,
     record_presentation_details,
-    record_professional_scope,
 )
 
 HUMAN_VALIDATION_TOOLS = (

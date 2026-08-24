@@ -51,7 +51,7 @@ class WorkflowViewBuilder:
                 WorkflowViewBuilder._blocker(
                     "PRESENTATION_SCOPE_CLARIFICATION_REQUIRED",
                     "scope_clarification",
-                    "Explain the professional scope before generating the blueprint.",
+                    "Complete the Professional scope form before generating the blueprint.",
                     ["clarify_professional_scope"],
                 )
             )
@@ -62,16 +62,32 @@ class WorkflowViewBuilder:
         elif status == WorkflowStatus.SLIDE_GENERATION:
             allowed.append("generate_slides")
         elif status == WorkflowStatus.AWAITING_SLIDE_RESOLUTION:
-            blockers.append(
-                WorkflowViewBuilder._blocker(
-                    "INSUFFICIENT_EVIDENCE",
-                    "slide_generation",
-                    workflow.slide_generation_error
-                    or "A slide cannot be generated from the selected validated PDFs.",
-                    ["edit_blueprint_item", "attach_resource", "write_slide_as_user"],
-                    item_number=workflow.blocked_slide_number,
+            allowed.append("review_slides")
+            for slide_blocker in workflow.slide_generation_blockers:
+                actions = ["edit_blueprint_item", "attach_resource", "write_slide_as_user"]
+                if slide_blocker.code == "INVALID_AI_PROVENANCE":
+                    actions.append("retry_slide_generation")
+                blockers.append(
+                    WorkflowViewBuilder._blocker(
+                        slide_blocker.code,
+                        "slide_generation",
+                        slide_blocker.message,
+                        actions,
+                        item_number=slide_blocker.slide_number,
+                        diagnostic=slide_blocker.diagnostic,
+                    )
                 )
-            )
+            if not blockers:
+                blockers.append(
+                    WorkflowViewBuilder._blocker(
+                        "SLIDE_RESOLUTION_REQUIRED",
+                        "slide_generation",
+                        workflow.slide_generation_error
+                        or "A slide must be resolved before the complete set can be approved.",
+                        ["edit_blueprint_item", "attach_resource", "write_slide_as_user"],
+                        item_number=workflow.blocked_slide_number,
+                    )
+                )
         elif status == WorkflowStatus.AWAITING_SLIDE_APPROVAL:
             allowed.extend(["review_slides", "approve_slides"])
         elif status == WorkflowStatus.AWAITING_FINAL_APPROVAL:
@@ -96,6 +112,8 @@ class WorkflowViewBuilder:
                 "agenda_validated": bool(presentation.agenda and presentation.agenda.is_validated),
                 "blueprint_validated": workflow.blueprint_validated,
                 "slides_generated": len(presentation.slides),
+                "slides_expected": len(presentation.blueprint.slides) if presentation.blueprint else 0,
+                "slides_blocked": len(workflow.slide_generation_blockers),
                 "slides_validated": workflow.slides_validated,
                 "presentation_validated": workflow.presentation_validated,
             },
@@ -110,6 +128,7 @@ class WorkflowViewBuilder:
         *,
         item_number: int | None = None,
         retryable: bool = False,
+        diagnostic: dict[str, object] | None = None,
     ) -> dict[str, object]:
         payload: dict[str, object] = {
             "code": code,
@@ -124,6 +143,8 @@ class WorkflowViewBuilder:
         if retryable:
             payload["category"] = "job_failure"
             payload["recoverable"] = True
+        if diagnostic:
+            payload["diagnostic"] = diagnostic
         return payload
 
     @staticmethod

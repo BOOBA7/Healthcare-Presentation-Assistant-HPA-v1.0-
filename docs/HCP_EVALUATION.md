@@ -82,14 +82,21 @@ Lorsque les PDF ne répondaient pas suffisamment à la question, HPA :
 - Temps de réponse : [ ] Trop long [ ] Acceptable [ ] Rapide
 - Validation humaine des ressources / blueprint / slides :
   [ ] Peu claire [ ] Claire [ ] Très claire
+- Aperçu local avant export (titre, Agenda, slides et ressources) :
+  [ ] Peu clair [ ] Clair [ ] Très clair
 
-## Comparaison retrieval — à remplir seulement si les deux modes sont disponibles
+## Comparaison retrieval — protocole avec règle de preuve commune
 
 > Important : le **mode B** ci-dessous est expérimental. Il est disponible dans
 > les paramètres du Project sous le nom « Direct bounded PDF context ». Les deux
 > modes doivent recevoir les mêmes PDF, la même question, le même modèle et la
 > même limite de contexte. Le choix de mode ne retire jamais la validation des
-> ressources, le contrôle de preuve, la provenance ni les validations humaines.
+> ressources, la provenance ni les validations humaines. Le premier pilote a
+> révélé une différence de calcul de suffisance : elle est corrigée. Les deux
+> modes exigent désormais qu’un seul passage PDF sélectionné atteigne le même
+> seuil de support. Remplissez ce tableau uniquement avec les mêmes PDF, la
+> même question et les mêmes conditions de présentation ; notez la ressource,
+> la page et la slide lorsqu’un refus survient.
 
 | Critère | Mode A — BM25 | Mode B — contexte PDF direct borné | Préférence |
 |---|---|---|---|

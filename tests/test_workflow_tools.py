@@ -14,7 +14,12 @@ from app.domain.enums.presentation_type import PresentationType
 from app.domain.models.slide import Slide
 from app.domain.models.slide_outline import SlideOutline
 from app.domain.models.blueprint import Blueprint
-from app.application.use_cases.workflow_steps import EditBlueprintItemUseCase, EditSlideUseCase, ReviewSlideUseCase
+from app.application.use_cases.workflow_steps import (
+    AuthorSlideFromBlueprintUseCase,
+    EditBlueprintItemUseCase,
+    EditSlideUseCase,
+    ReviewSlideUseCase,
+)
 from app.application.use_cases.workflow_steps import (
     BuildBlueprintWorkflowUseCase,
     RecordProfessionalScopeUseCase,
@@ -144,10 +149,13 @@ def test_veterinarian_profile_requires_scope_clarification_before_blueprint_gene
     assert state.presentation.state.workflow_status == WorkflowStatus.AWAITING_SCOPE_CLARIFICATION
     state = RecordProfessionalScopeUseCase().execute(
         state,
-        "I am a medical representative with veterinary training and present human-health information.",
+        declared_role="Medical representative with veterinary training",
+        delivery_purpose="I present human-health scientific information to healthcare professionals.",
+        confirmed_within_scope=True,
     )
 
     assert state.presentation.professional_scope is not None
+    assert state.presentation.professional_scope_declaration is not None
     assert state.presentation.state.workflow_status == WorkflowStatus.BLUEPRINT_GENERATION
 
 
@@ -171,14 +179,16 @@ def test_scope_clarification_resumes_slide_generation_when_blueprint_was_already
 
     state = RecordProfessionalScopeUseCase().execute(
         state,
-        "I am a medical representative with veterinary training for this human-health topic.",
+        declared_role="Medical representative with veterinary training",
+        delivery_purpose="I present this human-health topic to healthcare professionals.",
+        confirmed_within_scope=True,
     )
 
     assert state.presentation.state.workflow_status == WorkflowStatus.SLIDE_GENERATION
 
 
-def test_scope_explanation_is_persisted_once_before_the_agent_can_reply_again():
-    """A model omission must not force the user to repeat the same explanation."""
+def test_scope_clarification_is_not_accepted_from_chat_text():
+    """Only the explicit scope form can resume a blocked workflow."""
     state = collect_context.func(
         GraphState(user_profile=UserProfile(professional_role="veterinarian", preferred_language="en")),
         topic="Depression",
@@ -190,16 +200,11 @@ def test_scope_explanation_is_persisted_once_before_the_agent_can_reply_again():
     )
     state = create_presentation.func(validate_context.func(state))
     state.presentation.state.workflow_status = WorkflowStatus.AWAITING_SCOPE_CLARIFICATION
-    explanation = "I am a human medical representative with veterinary training presenting Zoloft evidence."
+    response = HealthcarePresentationAgent._scope_clarification_message_if_needed(state)
 
-    clarified = HealthcarePresentationAgent._record_scope_clarification_if_supplied(state, explanation)
-    repeated = HealthcarePresentationAgent._record_scope_clarification_if_supplied(clarified, explanation)
-
-    assert clarified.presentation.professional_scope == explanation
-    assert clarified.presentation.state.workflow_status == WorkflowStatus.BLUEPRINT_GENERATION
-    assert repeated.presentation.professional_scope == explanation
-    assert repeated.presentation.state.workflow_status == WorkflowStatus.BLUEPRINT_GENERATION
-    assert HealthcarePresentationAgent._scope_clarification_message_if_needed(clarified) is None
+    assert response is not None
+    assert state.presentation.professional_scope is None
+    assert state.presentation.state.workflow_status == WorkflowStatus.AWAITING_SCOPE_CLARIFICATION
 
 
 def test_scope_clarification_prompt_is_deterministic_and_concise():
@@ -213,8 +218,34 @@ def test_scope_clarification_prompt_is_deterministic_and_concise():
     prompt = HealthcarePresentationAgent._scope_clarification_message_if_needed(state)
 
     assert prompt is not None
-    assert "medical representative" in prompt
+    assert "Professional scope form" in prompt
     assert "clinical guidance for human patients" not in prompt
+
+
+def test_scope_declaration_requires_human_confirmation():
+    state = GraphState()
+    state.presentation = type(
+        "Presentation",
+        (),
+        {
+            "state": type(
+                "State",
+                (), {
+                    "workflow_status": WorkflowStatus.AWAITING_SCOPE_CLARIFICATION,
+                    "blueprint_validated": False,
+                },
+            )(),
+            "professional_scope": None,
+        },
+    )()
+
+    with pytest.raises(WorkflowError, match="Confirm that this presentation"):
+        RecordProfessionalScopeUseCase().execute(
+            state,
+            declared_role="Medical representative",
+            delivery_purpose="I present evidence to healthcare professionals.",
+            confirmed_within_scope=False,
+        )
 
 
 def test_deleting_a_resource_resets_generated_content_and_approvals():
@@ -648,7 +679,7 @@ def test_user_authored_blueprint_item_becomes_a_slide_without_a_model_call():
     assert not result.slides[0].evidence_verified
 
 
-def test_unsupported_ai_outline_pauses_one_slide_without_erasing_existing_output():
+def test_unsupported_ai_outline_blocks_only_that_slide_and_keeps_supported_user_output():
     state = collect_context.func(
         GraphState(),
         topic="Depression",
@@ -662,9 +693,16 @@ def test_unsupported_ai_outline_pauses_one_slide_without_erasing_existing_output
     presentation.blueprint = Blueprint(
         title="Blueprint",
         learning_objective="Objective",
-        target_number_of_slides=1,
+        target_number_of_slides=2,
         storytelling="Story",
         slides=[
+            SlideOutline(
+                slide_number=1,
+                title="User conclusion",
+                objective="State the user's conclusion",
+                key_message="This slide was written by the user.",
+                content_origin="user_authored",
+            ),
             SlideOutline(
                 slide_number=4,
                 title="Astronomy claims",
@@ -684,23 +722,21 @@ def test_unsupported_ai_outline_pauses_one_slide_without_erasing_existing_output
     ]
     presentation.state.resources_validated = True
     presentation.state.workflow_status = WorkflowStatus.SLIDE_GENERATION
-    existing = Slide(slide_number=1, title="Existing reviewed draft")
-    presentation.slides = [existing]
-
     result = GenerateSlidesUseCase.execute(object.__new__(GenerateSlidesUseCase), presentation)
 
     assert result.state.workflow_status == WorkflowStatus.AWAITING_SLIDE_RESOLUTION
     assert result.state.blocked_slide_number == 4
     assert result.state.slide_generation_error
-    assert result.slides == [existing]
+    assert [slide.slide_number for slide in result.slides] == [1]
+    assert result.slides[0].content_origin == "user_authored"
+    assert [blocker.slide_number for blocker in result.state.slide_generation_blockers] == [4]
 
     state.presentation = result
-    EditBlueprintItemUseCase().execute(
+    AuthorSlideFromBlueprintUseCase().execute(
         state,
-        0,
-        title="Astronomy claims",
-        objective="Discuss a distant galaxy",
-        key_message="Unrelated celestial statement",
-        content_origin="user_authored",
+        1,
     )
-    assert state.presentation.state.workflow_status == WorkflowStatus.AWAITING_AGENDA_APPROVAL
+    assert state.presentation.state.workflow_status == WorkflowStatus.AWAITING_SLIDE_APPROVAL
+    assert state.presentation.state.slide_generation_blockers == []
+    assert [slide.slide_number for slide in state.presentation.slides] == [1, 4]
+    assert state.presentation.slides[1].content_origin == "user_authored"

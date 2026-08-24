@@ -1,7 +1,8 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.domain.enums.workflow_step import WorkflowStep
 from app.domain.enums.workflow_status import WorkflowStatus
+from app.domain.models.slide_generation_blocker import SlideGenerationBlocker
 from app.domain.value_objects.audience_profile import AudienceProfile
 from app.domain.value_objects.presentation_context import PresentationContext
 
@@ -27,6 +28,7 @@ class PresentationState(BaseModel):
     # exact item instead of leaving the entire Project in an opaque state.
     blocked_slide_number: int | None = None
     slide_generation_error: str | None = None
+    slide_generation_blockers: list[SlideGenerationBlocker] = Field(default_factory=list)
 
     resources_validated: bool = False
 

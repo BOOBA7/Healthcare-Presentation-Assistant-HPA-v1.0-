@@ -50,10 +50,11 @@ System decides whether generation is allowed
 ### 1. One conversational agent and explicit production commands
 
 `HealthcarePresentationAgent` is the conversational LLM-facing component. It
-handles natural discussion, presentation-context collection, optional
-title-slide details and professional-scope clarification. It cannot create a
-presentation, validate resources, build a blueprint, generate slides, approve
-content or export PowerPoint.
+handles only PDF-grounded discussion and limited chat-safe continuity actions.
+Presentation setup and professional-scope clarification are explicit human
+forms in Presentation Studio. It cannot create a presentation, validate
+resources, build a blueprint, generate slides, approve content or export
+PowerPoint.
 
 LangGraph orchestrates a bounded `agent → conversational tool → agent` loop
 for the small set of chat-safe tools. HPA deliberately uses a custom guarded
@@ -145,10 +146,13 @@ overview and PDF-only discussion, and **Presentation Studio** for deterministic
 workflow commands, review and export. Resource overview and PDF discussion
 turns are never appended to the presentation-assistant transcript.
 
-Blueprint and slide generation are explicit `202` API jobs initiated by a
-human click. The server rechecks the current Project revision, workflow status,
-selected validated evidence and professional-scope compatibility before the LLM
-is invoked. The chat can explain these actions, but cannot trigger them.
+Blueprint and slide generation, as well as blueprint and slide regeneration,
+are explicit `202` API jobs initiated by a human click. The server rechecks the
+current Project revision, workflow status, selected validated evidence and
+professional-scope compatibility before the LLM is invoked. A slide reviewer
+comment is saved before its regeneration job begins and is supplied to that
+single revision request. The chat can explain these actions, but cannot trigger
+them.
 
 ```text
 Project PDF library → optional source-only exploration
@@ -158,11 +162,19 @@ Project PDF library → optional source-only exploration
 
 Each Project explicitly selects an evidence-context strategy before generation:
 local BM25 retrieval (the default) or **Direct bounded PDF context** for a
-controlled HCP comparison. Direct context uses a deterministic source-balanced
-window over the same normalized SQLite chunks; it does not rank passages and
-does not send a complete PDF. The strategy is recorded with generation metadata.
-Changing it after blueprint or slide generation requires a new Project, keeping
-the experiment auditable.
+future controlled HCP comparison. Direct context uses a deterministic
+source-balanced window over the same normalized SQLite chunks; it does not rank
+passages and does not send a complete PDF. The strategy is recorded with
+generation metadata. Changing it after blueprint or slide generation requires
+a new Project, keeping the experiment auditable.
+
+The modes share resource validation, provenance and human approval. The first
+pilot identified an unfair gate: BM25 evaluated a best chunk while Direct could
+pool terms across its selected window. This has been corrected. Both modes now
+apply the same deterministic rule after selection: one selected passage must
+meet the required lexical-support threshold. They can still yield different
+outcomes because their passage-selection strategies differ; this is an
+evaluation question, never a fallback or evidence bypass.
 
 `ProductionEvidenceGate` checks for sufficient deterministic support from the
 selected strategy before:
@@ -171,15 +183,18 @@ selected strategy before:
 - generating a blueprint;
 - generating or regenerating a slide.
 
-The gate uses a safe default rather than a vocabulary of medical keywords:
-only clearly non-factual social, profile and presentation-workflow coordination
-turns may reach the LLM without PDF passages. A short, indirect or multilingual
-factual question is therefore evidence-bound by default. If there is no selected
-and approved PDF, or retrieval is insufficient, HPA returns a fixed request for
-a suitable PDF or clarification instead of calling the LLM. Resource validation
-is contextual: it is requested when the user starts blueprint production, not
+The gate uses a minimal safe default rather than a vocabulary of medical
+keywords: only a complete social acknowledgement may reach the LLM without PDF
+passages. Presentation setup and scope declaration are explicit human forms,
+so neither can become a free-text bypass. A short, indirect or multilingual
+question is evidence-bound by default. If there is no selected and approved
+PDF, or retrieval is insufficient, HPA returns a fixed request for a suitable
+PDF or clarification instead of calling the LLM. Resource validation is
+contextual: it is requested when the user starts blueprint production, not
 when they merely upload or discuss a PDF. Neither mode changes resource
-selection, human validation, citation provenance or export approval.
+selection, human validation, citation provenance or export approval. The
+current mode-specific evidence-sufficiency calculation is documented above as
+an open parity issue; it must not become a route around the evidence rule.
 
 ### 4a. Patient Case Mode is de-identification-by-guardrail, not compliance
 
@@ -215,9 +230,10 @@ strings were reduced to empty ASCII text.
 The PowerPoint displays the user-validated resources and associated evidence.
 The separate resource-overview and PDF-discussion features use bounded passages
 from the Project library only; they do not alter the production selection.
-Their citations are requested from the LLM for exploration, but do not yet
-receive the slide-level system check of resource identifier, page and excerpt.
-They must not be presented as provenance-verified production evidence.
+`ResponseCitationValidator` requires a structured resource ID, page and
+verbatim evidence excerpt, then verifies all three before an exploratory
+response is persisted or displayed. This establishes citation provenance, not
+clinical correctness or full entailment of the model's interpretation.
 
 The interfaces present user-facing citations with the resource title and page,
 while preserving the raw model message and `resource_id` in SQLite. An
@@ -226,10 +242,10 @@ audit without exposing UUIDs as the primary clinical reading experience.
 
 Title-slide delivery details — presenter name and role, organisation, event,
 venue and date — are optional human-controlled metadata. They may be entered
-in either interface or explicitly recorded from the chat, but the LLM must
-never infer them. They do not participate in evidence gating or block workflow
-progress. Because the title slide is part of the exported deliverable, changing
-these details after final approval reopens final approval only.
+in either interface, but the LLM must never infer or record them from chat.
+They do not participate in evidence gating or block workflow progress. Because
+the title slide is part of the exported deliverable, changing these details
+after final approval reopens final approval only.
 
 ### 5. Prompt, harness, and loop have distinct roles
 
@@ -291,13 +307,17 @@ messages and compacts older turns into a bounded, non-authoritative memory
 summary. The trusted state summary and retrieved PDF excerpts remain
 authoritative for workflow decisions and scientific claims.
 
-Long-running operations submitted through asynchronous API endpoints are
-recorded as durable local `project_jobs` entries. Those endpoints return `202`,
-then clients poll a job for stage, progress and result. Streamlit and the CLI
-remain local interfaces and may execute an explicit operation synchronously.
-The process records content-free observability counters such as LLM duration,
+Long-running operations submitted through asynchronous API endpoints and
+Streamlit are recorded as durable local `project_jobs` entries. API endpoints
+return `202`, then `/app` polls a job for stage, progress and result. Streamlit
+uses the same per-Project job lock and a polling fragment for chat, Resource
+Overview, PDF discussion, generation and regeneration. The CLI remains a local
+synchronous interface. The process records content-free observability counters such as LLM duration,
 prompt size, retrieval selections, generation failures and evidence refusals.
-This is deliberately a local executor, not a distributed queue.
+Every successful initial generation or regeneration appends a UTC generation
+record with the configured provider, exact configured model and
+prompt/harness/workflow/retrieval versions. This is deliberately a local
+executor, not a distributed queue.
 
 ### 7a. Evaluation is system-level and provider-independent
 
@@ -372,15 +392,16 @@ migrate without breaking either local interface.
   from old turns.
 - One state-writing job is serialized per Project. It remains a local executor
   without distributed workers or automatic job retry.
-- Generation records include version metadata, but provider-accurate model
-  capture must be completed before treating them as fully reproducible records.
-- The deterministic evidence gate uses explicit text patterns to distinguish
-  non-factual coordination from evidence-bound content. It is intentionally
-  conservative, but this classifier needs regression coverage for phrasing
-  that combines presentation commands with scientific requests.
-- Resource Overview and Resource Chat are source-bounded exploratory features;
-  unlike AI-generated slides, their displayed citations are not yet validated
-  programmatically against a resource page and excerpt.
+- Generation records capture the configured provider and exact configured
+  model, but they do not include provider-side request IDs, seed controls or a
+  complete immutable prompt archive.
+- The deterministic evidence gate uses a minimal no-evidence allow-list: only
+  a complete social acknowledgement reaches the model. Every future relaxation
+  must add equivalent bypass attempts before changing this rule.
+- Resource Overview and Resource Chat are source-bounded exploratory features.
+  Their structured citations are verified against an uploaded resource, PDF
+  page and verbatim excerpt before display, but this proves provenance rather
+  than complete clinical correctness of the response.
 
 ## Explicit non-decisions
 

@@ -13,6 +13,7 @@ from app.domain.models.slide import Slide
 from app.domain.models.user_profile import UserProfile
 from app.domain.models.generation_record import GenerationRecord
 from app.domain.models.resource_analysis import ResourceAnalysis
+from app.domain.models.professional_scope_declaration import ProfessionalScopeDeclaration
 from app.domain.value_objects.presentation_context import PresentationContext
 from app.domain.enums.evidence_context_mode import EvidenceContextMode
 
@@ -99,6 +100,11 @@ class Presentation(BaseModel):
     professional_scope: str | None = Field(
         default=None,
         description="User explanation when professional profile and presentation scope need clarification.",
+    )
+
+    professional_scope_declaration: ProfessionalScopeDeclaration | None = Field(
+        default=None,
+        description="Structured human declaration used to resolve a professional-scope mismatch.",
     )
 
     generation_records: List[GenerationRecord] = Field(

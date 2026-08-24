@@ -25,3 +25,14 @@ def test_citation_display_uses_the_pdf_title_without_changing_technical_details(
     assert details[0].resource_id == "b1fb1dda-0b26-4716-9626-1a5acf30684b"
     assert details[0].title == "APA Depression Guideline"
     assert details[0].pages == "4"
+
+
+def test_verified_response_citation_hides_the_internal_excerpt_but_keeps_details():
+    raw = "The panel evaluated treatments [[cite: b1fb1dda-0b26-4716-9626-1a5acf30684b | p. 4 | Exact PDF excerpt.]]."
+
+    displayed = format_citations_for_display(raw, [_resource()])
+    details = citation_display_details(raw, [_resource()])
+
+    assert displayed == "The panel evaluated treatments [APA Depression Guideline, p. 4]."
+    assert details[0].resource_id == "b1fb1dda-0b26-4716-9626-1a5acf30684b"
+    assert details[0].pages == "4"

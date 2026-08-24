@@ -26,6 +26,7 @@ class SlideChain:
         outline: SlideOutline,
         resources: list[Resource] | None = None,
         chunks: list[ResourceChunk] | None = None,
+        reviewer_comments: str | None = None,
     ) -> SlideSchema:
         """
         Generate a single slide from the blueprint.
@@ -36,6 +37,7 @@ class SlideChain:
             outline=outline,
             resources=resources,
             chunks=chunks,
+            reviewer_comments=reviewer_comments,
         )
 
         structured_llm = self.llm.with_structured_output(

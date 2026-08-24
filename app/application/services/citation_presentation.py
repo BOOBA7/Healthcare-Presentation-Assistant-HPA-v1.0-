@@ -11,6 +11,10 @@ from app.domain.models.resource import Resource
 _CITATION_PATTERN = re.compile(
     r"\[([0-9a-zA-Z][0-9a-zA-Z-]{3,})\s*,\s*p\.\s*([0-9]+(?:\s*,\s*[0-9]+)*)\]"
 )
+_VERIFIED_RESPONSE_CITATION_PATTERN = re.compile(
+    r"\[\[cite:\s*([^|\]\s]+)\s*\|\s*p\.\s*([0-9]+)\s*\|\s*[^\]]+?\s*\]\]",
+    re.IGNORECASE,
+)
 _RESOURCE_IDENTIFIER_PATTERN = re.compile(
     r"(?<![0-9a-fA-F])"
     r"([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}|[0-9a-fA-F]{8})"
@@ -42,7 +46,15 @@ def format_citations_for_display(text: str, resources: list[Resource]) -> str:
             return match.group(0)
         return f"[{_display_title(resource)}, p. {pages}]"
 
-    formatted = _CITATION_PATTERN.sub(replace_citation, text)
+    formatted = _VERIFIED_RESPONSE_CITATION_PATTERN.sub(
+        lambda match: (
+            f"[{_display_title(resource)}, p. {match.group(2)}]"
+            if (resource := _find_resource(match.group(1), resource_map)) is not None
+            else match.group(0)
+        ),
+        text,
+    )
+    formatted = _CITATION_PATTERN.sub(replace_citation, formatted)
 
     def replace_identifier(match: re.Match[str]) -> str:
         resource = _find_resource(match.group(1), resource_map)
@@ -67,6 +79,8 @@ def citation_display_details(text: str, resources: list[Resource]) -> list[Citat
             details.append(CitationDisplayDetail(resource.id, _display_title(resource), pages))
 
     for match in _CITATION_PATTERN.finditer(text):
+        add(match.group(1), match.group(2))
+    for match in _VERIFIED_RESPONSE_CITATION_PATTERN.finditer(text):
         add(match.group(1), match.group(2))
     for match in _RESOURCE_IDENTIFIER_PATTERN.finditer(text):
         add(match.group(1))

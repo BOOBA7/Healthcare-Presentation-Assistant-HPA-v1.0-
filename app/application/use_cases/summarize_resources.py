@@ -10,6 +10,7 @@ from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuild
 from app.application.services.observability import observe_llm_call
 from app.application.services.patient_case_privacy import PatientCasePrivacyGuard
 from app.domain.enums.evidence_context_mode import EvidenceContextMode
+from app.application.validators.response_citation_validator import ResponseCitationValidator
 
 
 class SummarizeResourcesUseCase:
@@ -37,7 +38,8 @@ class SummarizeResourcesUseCase:
                         "Do not use external medical knowledge, fill gaps, give clinical advice, or invent citations. "
                         "If the sources are insufficient or inconsistent, say so plainly. "
                         "Write a concise discussion starter with: overall idea, key themes, points of agreement or tension, "
-                        "and limitations. Cite claims as [resource_id, p. page]. "
+                        "and limitations. Cite every factual claim using exactly "
+                        "[[cite: resource_id | p. page | exact verbatim evidence excerpt]]. "
                         f"Respond in the requested presentation language: {language}."
                     )
                 ),
@@ -47,6 +49,7 @@ class SummarizeResourcesUseCase:
         summary = self._message_text(response).strip()
         if not summary:
             raise ValueError("The model returned an empty resource overview. Please retry.")
+        ResponseCitationValidator().validate(summary, resources)
         analysis = ResourceAnalysis(
             summary=summary,
             resource_ids=[resource.id for resource in resources],

@@ -52,8 +52,18 @@ Mise à jour sur la dépression — réunion avec les médecins généralistes
 | BM25 retrieval | Mode par défaut. HPA sélectionne les passages PDF les plus pertinents pour la question ou la génération. |
 | Direct bounded PDF context | Mode expérimental. HPA utilise une portion équilibrée et limitée des mêmes PDF, sans classement BM25. |
 
-Pour comparer les deux modes correctement, utilisez les mêmes PDF, la même
-question et les mêmes conditions de présentation.
+Les deux modes appliquent maintenant la même règle de preuve après la
+sélection : un passage PDF sélectionné doit, à lui seul, atteindre le seuil de
+support déterministe. Le mode modifie les passages bornés sélectionnés, jamais
+la règle de preuve. Pour une comparaison HCP utile, utilisez les mêmes PDF, la
+même question et les mêmes conditions de présentation, puis signalez tout refus
+avec le diagnostic ressource/page affiché.
+
+> **Note de pilote (23 août 2026) :** le premier pilote a révélé une comparaison
+> non équitable : BM25 évaluait un passage alors que le contexte Direct pouvait
+> agréger des termes de plusieurs passages. Cela a été corrigé avant toute
+> nouvelle comparaison HCP. Le mode Direct reste expérimental et ne permet
+> jamais de contourner une absence de preuve.
 
 ## 4. Optionnel : Patient Case Mode
 
@@ -104,8 +114,10 @@ Si les ressources sont insuffisantes, HPA doit demander un PDF plus pertinent
 ou une clarification plutôt que d’inventer une réponse.
 
 > **Note :** Resource Overview et Resource Chat sont des fonctionnalités
-> d’exploration. Les citations des slides générées par IA subissent une
-> validation système plus stricte avant validation et export PowerPoint.
+> d’exploration. Leurs citations sont vérifiées par rapport à la ressource PDF,
+> à la page et à l’extrait cité avant affichage. Les citations des slides
+> générées par IA subissent les mêmes contrôles de provenance avant validation
+> et export PowerPoint.
 
 ### Gérer les ressources
 
@@ -115,7 +127,8 @@ peuvent servir de preuve pour le blueprint et les slides.
 
 ## 6. Démarrer le workflow de présentation
 
-Ouvrez **Presentation assistant** et décrivez votre objectif.
+Ouvrez **Presentation Studio** et complétez le formulaire de préparation de la
+présentation.
 
 ```text
 Je souhaite une présentation éducative de 15 minutes en français pour des
@@ -123,16 +136,19 @@ médecins généralistes sur la prise en charge de la dépression, basée sur la
 guideline importée.
 ```
 
-HPA peut demander le sujet, le public cible, le type de présentation, la durée,
-la langue, l’objectif pédagogique ou une clarification de périmètre
-professionnel.
+Le formulaire demande le sujet, le public cible, le type de présentation, la
+durée, la langue et l’objectif pédagogique. Si le workflow demande une
+clarification de périmètre professionnel, il affiche un formulaire séparé
+**Professional scope**.
 
-Si une clarification est demandée, répondez par une phrase claire sur votre rôle
-et votre objectif.
+Complétez ce formulaire avec votre rôle actuel, la raison pour laquelle la
+présentation relève de votre périmètre professionnel et la case de
+confirmation. C’est une déclaration humaine du workflow : le chat ne peut pas
+la faire à votre place.
 
 ```text
-Je suis délégué médical de formation vétérinaire et je prépare une information
-scientifique destinée aux professionnels de santé humaine.
+Rôle : Délégué médical de formation vétérinaire
+But : Je prépare une information scientifique destinée aux professionnels de santé humaine.
 ```
 
 ## 7. Valider les ressources de présentation
@@ -201,11 +217,18 @@ l’utilisateur est créée à partir de son contenu sans appel de génération 
 
 Lorsque toutes les slides sont revues :
 
-1. Approuvez la présentation finale.
-2. Exportez le PowerPoint.
+1. Ouvrez **Presentation preview** et parcourez la slide de titre, l’Agenda,
+   les slides revues et la slide finale de ressources. Cet aperçu local ne fait
+   aucun appel au modèle.
+2. Approuvez la présentation finale.
+3. Exportez le PowerPoint.
 
 L’export contient la slide de titre, l’Agenda en slide 2, les slides revues et
 une slide finale **Resources and validation**.
+
+Si vous avez sélectionné un modèle `.pptx` importé, il est appliqué lors de
+l’export. L’aperçu local montre le contenu exporté et le thème HPA sélectionné,
+mais pas le style PowerPoint natif du masque de ce modèle.
 
 ## 12. Scénarios de test suggérés
 

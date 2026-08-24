@@ -8,6 +8,7 @@ from app.application.use_cases.validate_resources import ValidateResourcesUseCas
 from app.application.validators.audience_validator import AudienceValidator
 from app.domain.models.conversation_context import ConversationContext
 from app.domain.value_objects.presentation_context import PresentationContext
+from app.domain.enums.workflow_step import WorkflowStep
 from app.domain.enums.workflow_status import WorkflowStatus
 from app.domain.exceptions.workflow_error import WorkflowError
 from app.application.services.workflow_policy import WorkflowPolicy
@@ -16,6 +17,10 @@ from app.application.validators.presentation_compatibility_validator import Pres
 from app.application.services.resource_library import resolve_presentation_resources
 from app.domain.enums.conversation_mode import ConversationMode
 from app.application.services.patient_case_privacy import PatientCasePrivacyGuard
+from app.application.services.generation_metadata import append_generation_record
+from app.domain.models.professional_scope_declaration import ProfessionalScopeDeclaration
+from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuilder
+from app.domain.models.slide import Slide
 
 
 class CollectPresentationContextUseCase:
@@ -80,14 +85,25 @@ class BuildBlueprintWorkflowUseCase:
         if clarification:
             state.presentation.state.workflow_status = WorkflowStatus.AWAITING_SCOPE_CLARIFICATION
             raise WorkflowError("PRESENTATION_SCOPE_CLARIFICATION_REQUIRED", clarification)
-        presentation = BuildBlueprintUseCase().execute(state.presentation, resources, state.resource_chunks)
+        presentation = BuildBlueprintUseCase().execute(
+            state.presentation,
+            resources,
+            state.resource_chunks,
+        )
         return state.model_copy(update={"presentation": presentation})
 
 
 class RecordProfessionalScopeUseCase:
-    """Persist the user's explanation for a detected profile/audience mismatch."""
+    """Persist an explicit human declaration for a detected scope mismatch."""
 
-    def execute(self, state: GraphState, explanation: str) -> GraphState:
+    def execute(
+        self,
+        state: GraphState,
+        *,
+        declared_role: str,
+        delivery_purpose: str,
+        confirmed_within_scope: bool,
+    ) -> GraphState:
         if state.presentation is None:
             raise WorkflowError("PRESENTATION_NOT_CREATED", "Create the presentation before clarifying its scope.")
         WorkflowPolicy.require_status(
@@ -95,13 +111,32 @@ class RecordProfessionalScopeUseCase:
             (WorkflowStatus.AWAITING_SCOPE_CLARIFICATION,),
             "clarify the professional scope",
         )
-        normalized = explanation.strip()
-        if len(normalized) < 12:
+        normalized_role = declared_role.strip()
+        normalized_purpose = delivery_purpose.strip()
+        if len(normalized_role) < 3:
             raise WorkflowError(
-                "SCOPE_EXPLANATION_TOO_SHORT",
-                "Explain your role and why this audience and topic are within your presentation scope.",
+                "SCOPE_ROLE_REQUIRED",
+                "State your professional role before continuing.",
             )
-        state.presentation.professional_scope = normalized
+        if len(normalized_purpose) < 12:
+            raise WorkflowError(
+                "SCOPE_PURPOSE_REQUIRED",
+                "Explain why this audience and topic are within your presentation scope.",
+            )
+        if not confirmed_within_scope:
+            raise WorkflowError(
+                "SCOPE_CONFIRMATION_REQUIRED",
+                "Confirm that this presentation is within your professional scope before continuing.",
+            )
+        declaration = ProfessionalScopeDeclaration(
+            declared_role=normalized_role,
+            delivery_purpose=normalized_purpose,
+            confirmed_within_scope=True,
+        )
+        state.presentation.professional_scope_declaration = declaration
+        state.presentation.professional_scope = (
+            f"Declared role: {declaration.declared_role}. Purpose: {declaration.delivery_purpose}"
+        )
         state.presentation.state.workflow_status = (
             WorkflowStatus.SLIDE_GENERATION
             if state.presentation.state.blueprint_validated
@@ -130,6 +165,7 @@ class ValidateBlueprintWorkflowUseCase:
         state.presentation.state.workflow_status = WorkflowStatus.SLIDE_GENERATION
         state.presentation.state.blocked_slide_number = None
         state.presentation.state.slide_generation_error = None
+        state.presentation.state.slide_generation_blockers = []
         return state
 
 
@@ -139,7 +175,7 @@ class GenerateSlidesWorkflowUseCase:
             raise WorkflowError("BLUEPRINT_NOT_VALIDATED", "Validate the blueprint before generating slides.")
         WorkflowPolicy.require_status(
             state.presentation.state.workflow_status,
-            (WorkflowStatus.SLIDE_GENERATION,),
+            (WorkflowStatus.SLIDE_GENERATION, WorkflowStatus.AWAITING_SLIDE_RESOLUTION),
             "generate slides",
         )
         resources = resolve_presentation_resources(state)
@@ -162,6 +198,17 @@ class ValidateSlidesWorkflowUseCase:
         )
         if not approved:
             raise WorkflowError("SLIDES_NOT_APPROVED", "Slides were not approved by the human reviewer.")
+        if getattr(state.presentation.state, "slide_generation_blockers", []):
+            raise WorkflowError(
+                "SLIDE_RESOLUTION_REQUIRED",
+                "Resolve every blocked slide before approving the complete slide set.",
+            )
+        blueprint = getattr(state.presentation, "blueprint", None)
+        if blueprint is not None and len(state.presentation.slides) != len(blueprint.slides):
+            raise WorkflowError(
+                "SLIDE_SET_INCOMPLETE",
+                "Generate or author every blueprint slide before approving the complete slide set.",
+            )
         if not all(slide.is_validated for slide in state.presentation.slides):
             raise WorkflowError("SLIDE_ITEMS_PENDING", "Approve every slide before approving all slides.")
         state.presentation.state.slides_validated = True
@@ -192,7 +239,7 @@ class ReviewSlideUseCase:
             raise ValueError("Generate slides before reviewing them.")
         WorkflowPolicy.require_status(
             state.presentation.state.workflow_status,
-            (WorkflowStatus.AWAITING_SLIDE_APPROVAL,),
+            (WorkflowStatus.AWAITING_SLIDE_APPROVAL, WorkflowStatus.AWAITING_SLIDE_RESOLUTION),
             "review a slide",
         )
         if not 0 <= index < len(state.presentation.slides):
@@ -273,7 +320,73 @@ class EditBlueprintItemUseCase:
         presentation.state.total_slides = 0
         presentation.state.blocked_slide_number = None
         presentation.state.slide_generation_error = None
+        presentation.state.slide_generation_blockers = []
         presentation.state.workflow_status = WorkflowStatus.AWAITING_AGENDA_APPROVAL
+        return state
+
+
+class AuthorSlideFromBlueprintUseCase:
+    """Resolve one blocked item by creating clearly user-authored content."""
+
+    def execute(self, state: GraphState, blueprint_index: int) -> GraphState:
+        if state.presentation is None or state.presentation.blueprint is None:
+            raise WorkflowError("BLUEPRINT_NOT_GENERATED", "Generate a blueprint before writing a slide.")
+        WorkflowPolicy.require_status(
+            state.presentation.state.workflow_status,
+            (WorkflowStatus.AWAITING_SLIDE_RESOLUTION,),
+            "write a blocked slide as the user",
+        )
+        outlines = state.presentation.blueprint.slides
+        if not 0 <= blueprint_index < len(outlines):
+            raise WorkflowError("BLUEPRINT_ITEM_INDEX_INVALID", "The requested blueprint item does not exist.")
+        outline = outlines[blueprint_index]
+        blocker_numbers = {
+            blocker.slide_number for blocker in state.presentation.state.slide_generation_blockers
+        }
+        if outline.slide_number not in blocker_numbers:
+            raise WorkflowError(
+                "SLIDE_NOT_BLOCKED",
+                "Only a slide currently blocked by the evidence workflow can be resolved this way.",
+            )
+
+        slide = Slide(
+            slide_number=outline.slide_number,
+            title=outline.title,
+            objective=outline.objective,
+            key_messages=[outline.key_message],
+            content=outline.key_message,
+            content_origin="user_authored",
+        )
+        state.presentation.slides = sorted(
+            [
+                current
+                for current in state.presentation.slides
+                if current.slide_number != outline.slide_number
+            ]
+            + [slide],
+            key=lambda current: current.slide_number,
+        )
+        remaining = [
+            blocker
+            for blocker in state.presentation.state.slide_generation_blockers
+            if blocker.slide_number != outline.slide_number
+        ]
+        state.presentation.state.slide_generation_blockers = remaining
+        state.presentation.state.current_slide = len(state.presentation.slides)
+        state.presentation.state.total_slides = len(outlines)
+        state.presentation.state.slides_validated = False
+        state.presentation.state.presentation_validated = False
+
+        if remaining:
+            state.presentation.state.workflow_status = WorkflowStatus.AWAITING_SLIDE_RESOLUTION
+            state.presentation.state.current_step = WorkflowStep.SLIDE_GENERATION
+            state.presentation.state.blocked_slide_number = remaining[0].slide_number
+            state.presentation.state.slide_generation_error = remaining[0].message
+        else:
+            state.presentation.state.workflow_status = WorkflowStatus.AWAITING_SLIDE_APPROVAL
+            state.presentation.state.current_step = WorkflowStep.SLIDE_VALIDATION
+            state.presentation.state.blocked_slide_number = None
+            state.presentation.state.slide_generation_error = None
         return state
 
 
@@ -302,7 +415,7 @@ class EditSlideUseCase:
             raise ValueError("Generate slides before editing one.")
         WorkflowPolicy.require_status(
             state.presentation.state.workflow_status,
-            (WorkflowStatus.AWAITING_SLIDE_APPROVAL,),
+            (WorkflowStatus.AWAITING_SLIDE_APPROVAL, WorkflowStatus.AWAITING_SLIDE_RESOLUTION),
             "edit a slide",
         )
         if not 0 <= index < len(state.presentation.slides):
@@ -367,7 +480,7 @@ class RejectSlideUseCase:
             raise ValueError("Generate slides before reviewing them.")
         WorkflowPolicy.require_status(
             state.presentation.state.workflow_status,
-            (WorkflowStatus.AWAITING_SLIDE_APPROVAL,),
+            (WorkflowStatus.AWAITING_SLIDE_APPROVAL, WorkflowStatus.AWAITING_SLIDE_RESOLUTION),
             "reject a slide",
         )
         if not 0 <= index < len(state.presentation.slides):
@@ -395,7 +508,12 @@ class RegenerateBlueprintUseCase:
         if clarification:
             state.presentation.state.workflow_status = WorkflowStatus.AWAITING_SCOPE_CLARIFICATION
             raise WorkflowError("PRESENTATION_SCOPE_CLARIFICATION_REQUIRED", clarification)
-        presentation = BuildBlueprintUseCase().execute(state.presentation, resources, state.resource_chunks)
+        presentation = BuildBlueprintUseCase().execute(
+            state.presentation,
+            resources,
+            state.resource_chunks,
+            generation_stage="blueprint_regeneration",
+        )
         presentation.state.blueprint_validated = False
         presentation.state.slides_validated = False
         presentation.state.presentation_validated = False
@@ -408,7 +526,7 @@ class RegenerateSlideUseCase:
             raise ValueError("Generate a blueprint before regenerating a slide.")
         WorkflowPolicy.require_status(
             state.presentation.state.workflow_status,
-            (WorkflowStatus.AWAITING_SLIDE_APPROVAL,),
+            (WorkflowStatus.AWAITING_SLIDE_APPROVAL, WorkflowStatus.AWAITING_SLIDE_RESOLUTION),
             "regenerate a slide",
         )
         if not 0 <= index < len(state.presentation.slides):
@@ -417,7 +535,17 @@ class RegenerateSlideUseCase:
         from app.ai.mappers.slide_mapper import SlideMapper
         from app.application.validators.evidence_provenance_validator import EvidenceProvenanceValidator
 
-        outline = state.presentation.blueprint.slides[index]
+        prior_slide = state.presentation.slides[index]
+        outline = next(
+            (
+                item
+                for item in state.presentation.blueprint.slides
+                if item.slide_number == prior_slide.slide_number
+            ),
+            None,
+        )
+        if outline is None:
+            raise WorkflowError("SLIDE_OUTLINE_MISSING", "The blueprint item for this slide no longer exists.")
         if outline.content_origin == "user_authored":
             raise WorkflowError(
                 "USER_AUTHORED_SLIDE",
@@ -426,7 +554,7 @@ class RegenerateSlideUseCase:
         resources = resolve_presentation_resources(state)
         evidence_error = ProductionEvidenceGate.generation_error(
             state.presentation,
-            f"{state.presentation.context.topic} {outline.title} {outline.objective} {outline.key_message}",
+            EvidenceContextBuilder.slide_query(state.presentation, outline),
             resources,
             state.resource_chunks,
         )
@@ -434,14 +562,25 @@ class RegenerateSlideUseCase:
             raise WorkflowError("INSUFFICIENT_EVIDENCE", evidence_error)
 
         replacement = SlideMapper().to_domain(
-            SlideChain().invoke(state.presentation, outline, resources, state.resource_chunks)
+            SlideChain().invoke(
+                state.presentation,
+                outline,
+                resources,
+                state.resource_chunks,
+                reviewer_comments=prior_slide.reviewer_comments,
+            )
         )
         EvidenceProvenanceValidator().validate_slide(replacement, resources)
-        replacement.reviewer_comments = state.presentation.slides[index].reviewer_comments
+        replacement.reviewer_comments = prior_slide.reviewer_comments
         state.presentation.slides[index] = replacement
         state.presentation.state.slides_validated = False
         state.presentation.state.presentation_validated = False
-        state.presentation.state.workflow_status = WorkflowStatus.AWAITING_SLIDE_APPROVAL
+        state.presentation.state.workflow_status = (
+            WorkflowStatus.AWAITING_SLIDE_RESOLUTION
+            if state.presentation.state.slide_generation_blockers
+            else WorkflowStatus.AWAITING_SLIDE_APPROVAL
+        )
+        append_generation_record(state.presentation, "slide_regeneration")
         return state
 
 

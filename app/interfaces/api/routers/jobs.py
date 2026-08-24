@@ -8,6 +8,8 @@ from app.application.services.workflow_policy import WorkflowPolicy
 from app.application.use_cases.workflow_steps import (
     BuildBlueprintWorkflowUseCase,
     GenerateSlidesWorkflowUseCase,
+    RegenerateBlueprintUseCase,
+    RegenerateSlideUseCase,
 )
 from app.application.validators.presentation_compatibility_validator import (
     PresentationCompatibilityValidator,
@@ -48,12 +50,14 @@ def _require_generation_ready(state, *, action: str) -> None:
     if presentation is None:
         raise WorkflowError("PRESENTATION_NOT_CREATED", "Create a presentation before generating content.")
 
-    expected_status = (
-        WorkflowStatus.BLUEPRINT_GENERATION if action == "blueprint" else WorkflowStatus.SLIDE_GENERATION
+    expected_statuses = (
+        (WorkflowStatus.BLUEPRINT_GENERATION,)
+        if action == "blueprint"
+        else (WorkflowStatus.SLIDE_GENERATION, WorkflowStatus.AWAITING_SLIDE_RESOLUTION)
     )
     WorkflowPolicy.require_status(
         presentation.state.workflow_status,
-        (expected_status,),
+        expected_statuses,
         f"generate the {action}",
     )
     if action == "blueprint" and not presentation.state.resources_validated:
@@ -75,14 +79,22 @@ def _require_generation_ready(state, *, action: str) -> None:
         raise WorkflowError("PRESENTATION_SCOPE_CLARIFICATION_REQUIRED", clarification)
 
 
-def _persist_generation_failure(repository, user_id: str, project_id: str, thread_id: str, state, exc: Exception) -> None:
+def _persist_generation_failure(
+    repository,
+    user_id: str,
+    project_id: str,
+    thread_id: str,
+    state,
+    operation: str,
+    exc: Exception,
+) -> None:
     """Keep failures actionable and durable instead of losing them in a job log."""
     if isinstance(exc, DomainError):
         code, message, retryable = exc.code, exc.user_message, exc.retryable
     else:
         code, message, retryable = "WORKFLOW_GENERATION_FAILED", "Generation could not be completed. Please retry.", True
     state.execution = ExecutionContext(
-        last_tool=f"generate_{'blueprint' if state.presentation and state.presentation.blueprint is None else 'slides'}",
+        last_tool=operation,
         tool_output={
             "status": "failed",
             "error_code": code,
@@ -150,11 +162,185 @@ def _queue_generation_job(user_id: str, project_id: str, authenticated_user: str
             )
             return {"project_id": project_id, "workflow": saved["workflow"]}
         except Exception as exc:
-            _persist_generation_failure(repository, user_id, project_id, current_thread_id, current_state, exc)
+            _persist_generation_failure(
+                repository,
+                user_id,
+                project_id,
+                current_thread_id,
+                current_state,
+                f"generate_{action}",
+                exc,
+            )
             raise
 
     submit_job(repository, user_id, str(job["job_id"]), f"presentation_{action}", work)
     record_observability("async_job_queued", domain=f"presentation_{action}")
+    return job
+
+
+def _require_regeneration_ready(state, *, action: str, slide_index: int | None = None) -> None:
+    """Validate a regeneration request before any LLM work is queued."""
+    presentation = state.presentation
+    if presentation is None or presentation.blueprint is None:
+        raise WorkflowError("BLUEPRINT_NOT_GENERATED", "Generate a blueprint before requesting revisions.")
+
+    resources = resolve_presentation_resources(state)
+    clarification = PresentationCompatibilityValidator().clarification_message(presentation, resources)
+    if clarification:
+        presentation.state.workflow_status = WorkflowStatus.AWAITING_SCOPE_CLARIFICATION
+        raise WorkflowError("PRESENTATION_SCOPE_CLARIFICATION_REQUIRED", clarification)
+
+    if action == "blueprint":
+        WorkflowPolicy.require_status(
+            presentation.state.workflow_status,
+            (WorkflowStatus.AWAITING_AGENDA_APPROVAL, WorkflowStatus.AWAITING_BLUEPRINT_APPROVAL),
+            "regenerate the blueprint",
+        )
+        return
+
+    if slide_index is None or not 0 <= slide_index < len(presentation.slides):
+        raise WorkflowError("SLIDE_INDEX_INVALID", "The requested slide does not exist.")
+    WorkflowPolicy.require_status(
+        presentation.state.workflow_status,
+        (WorkflowStatus.AWAITING_SLIDE_APPROVAL, WorkflowStatus.AWAITING_SLIDE_RESOLUTION),
+        "regenerate a slide",
+    )
+    slide = presentation.slides[slide_index]
+    outline = next(
+        (item for item in presentation.blueprint.slides if item.slide_number == slide.slide_number),
+        None,
+    )
+    if outline is None:
+        raise WorkflowError("SLIDE_OUTLINE_MISSING", "The blueprint item for this slide no longer exists.")
+    if outline.content_origin == "user_authored":
+        raise WorkflowError(
+            "USER_AUTHORED_SLIDE",
+            "This slide was written by the user. Edit it directly instead of asking the model to regenerate it.",
+        )
+
+
+def _queue_regeneration_job(
+    user_id: str,
+    project_id: str,
+    authenticated_user: str,
+    *,
+    action: str,
+    slide_index: int | None = None,
+    comments: str = "",
+    blueprint_comments: dict[int, str] | None = None,
+) -> dict[str, object]:
+    """Queue an explicit blueprint or slide revision with the same guarantees as generation."""
+    api._assert_owner(user_id, authenticated_user)
+    repository = api.get_repository()
+    thread_id, state = _load_workflow_state(repository, user_id, project_id)
+    try:
+        _require_regeneration_ready(state, action=action, slide_index=slide_index)
+    except WorkflowError as exc:
+        if state.presentation and state.presentation.state.workflow_status == WorkflowStatus.AWAITING_SCOPE_CLARIFICATION:
+            api._save_project(
+                user_id,
+                project_id,
+                thread_id,
+                state,
+                event_type="PRESENTATION_SCOPE_CLARIFICATION_REQUESTED",
+                actor="system",
+                extra_audit={"error_code": exc.code},
+            )
+        raise api._workflow_conflict(exc) from exc
+
+    normalized_comments = comments.strip()
+    normalized_blueprint_comments = {
+        int(index): str(comment).strip()
+        for index, comment in (blueprint_comments or {}).items()
+        if str(comment).strip()
+    }
+    if action == "blueprint" and normalized_blueprint_comments:
+        assert state.presentation is not None and state.presentation.blueprint is not None
+        outlines = state.presentation.blueprint.slides
+        for index, comment in normalized_blueprint_comments.items():
+            if not 0 <= index < len(outlines):
+                raise api._workflow_conflict(
+                    WorkflowError("BLUEPRINT_ITEM_INDEX_INVALID", "The requested blueprint item does not exist.")
+                )
+            if len(comment) > 10_000:
+                raise api._workflow_conflict(
+                    WorkflowError("BLUEPRINT_COMMENT_TOO_LONG", "A blueprint reviewer comment is too long.")
+                )
+            outlines[index].reviewer_comments = comment
+            outlines[index].is_validated = False
+        state.presentation.blueprint.is_validated = False
+        state.presentation.state.blueprint_validated = False
+        state.presentation.state.slides_validated = False
+        state.presentation.state.presentation_validated = False
+        api._save_project(
+            user_id,
+            project_id,
+            thread_id,
+            state,
+            event_type="BLUEPRINT_REGENERATION_REQUESTED",
+            actor="user",
+            extra_audit={"commented_item_indexes": sorted(normalized_blueprint_comments)},
+        )
+    if action == "slide" and normalized_comments:
+        assert state.presentation is not None and slide_index is not None
+        state.presentation.slides[slide_index].reviewer_comments = normalized_comments
+        state.presentation.slides[slide_index].is_validated = False
+        api._save_project(
+            user_id,
+            project_id,
+            thread_id,
+            state,
+            event_type="SLIDE_REGENERATION_REQUESTED",
+            actor="user",
+            extra_audit={"slide_index": slide_index, "has_comments": True},
+        )
+
+    job = _create_project_job(repository, user_id, project_id, f"presentation_regenerate_{action}")
+
+    def work(progress):
+        progress(25, f"validating_{action}_regeneration")
+        current_thread_id, current_state = _load_workflow_state(repository, user_id, project_id)
+        try:
+            _require_regeneration_ready(current_state, action=action, slide_index=slide_index)
+            progress(55, f"regenerating_{action}")
+            if action == "blueprint":
+                current_state = RegenerateBlueprintUseCase().execute(current_state)
+                event_type = "BLUEPRINT_REGENERATED_FROM_EXPLICIT_COMMAND"
+                operation = "regenerate_blueprint"
+            else:
+                assert slide_index is not None
+                current_state = RegenerateSlideUseCase().execute(current_state, slide_index)
+                event_type = "SLIDE_REGENERATED_FROM_EXPLICIT_COMMAND"
+                operation = "regenerate_slide"
+            current_state.execution = ExecutionContext(last_tool=operation)
+            progress(85, "persisting_project")
+            saved = api._save_project(
+                user_id,
+                project_id,
+                current_thread_id,
+                current_state,
+                event_type=event_type,
+                actor="llm",
+                extra_audit={
+                    "generation_command": operation,
+                    **({"slide_index": slide_index} if slide_index is not None else {}),
+                },
+            )
+            return {"project_id": project_id, "workflow": saved["workflow"]}
+        except Exception as exc:
+            _persist_generation_failure(
+                repository,
+                user_id,
+                project_id,
+                current_thread_id,
+                current_state,
+                f"regenerate_{action}",
+                exc,
+            )
+            raise
+
+    submit_job(repository, user_id, str(job["job_id"]), f"presentation_regenerate_{action}", work)
+    record_observability("async_job_queued", domain=f"presentation_regenerate_{action}")
     return job
 
 
@@ -200,6 +386,42 @@ def start_slide_generation_job(
 ) -> dict[str, object]:
     """Generate slides only after an explicit UI command and server checks."""
     return _queue_generation_job(user_id, project_id, authenticated_user, action="slides")
+
+
+@router.post("/projects/{user_id}/{project_id}/blueprint/regenerate/jobs", tags=["presentation"], status_code=202)
+def start_blueprint_regeneration_job(
+    user_id: str,
+    project_id: str,
+    request: api.BlueprintRegenerationRequest | None = None,
+    authenticated_user: str = Depends(api._authenticated_user),
+) -> dict[str, object]:
+    """Regenerate a reviewed blueprint in a durable, observable job."""
+    return _queue_regeneration_job(
+        user_id,
+        project_id,
+        authenticated_user,
+        action="blueprint",
+        blueprint_comments=request.comments_by_index if request else None,
+    )
+
+
+@router.post("/projects/{user_id}/{project_id}/slides/{slide_index}/regenerate/jobs", tags=["presentation"], status_code=202)
+def start_slide_regeneration_job(
+    user_id: str,
+    project_id: str,
+    request: api.ReviewRequest,
+    slide_index: int,
+    authenticated_user: str = Depends(api._authenticated_user),
+) -> dict[str, object]:
+    """Regenerate one AI slide with its reviewer comments in a durable job."""
+    return _queue_regeneration_job(
+        user_id,
+        project_id,
+        authenticated_user,
+        action="slide",
+        slide_index=slide_index,
+        comments=request.comments,
+    )
 
 
 @router.post("/resources/{user_id}/{project_id}/overview/jobs", tags=["resources"], status_code=202)

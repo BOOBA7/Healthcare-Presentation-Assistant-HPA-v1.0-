@@ -25,6 +25,7 @@ tiktoken==0.13.0
 
 pytest==9.1.1
 ruff==0.12.11
+playwright==1.55.0
 
 httpx==0.28.1
 python-multipart==0.0.32

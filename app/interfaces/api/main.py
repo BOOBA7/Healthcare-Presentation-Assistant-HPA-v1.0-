@@ -20,6 +20,7 @@ from app.application.use_cases.update_project_evidence_settings import UpdatePro
 from app.application.use_cases.workflow_steps import (
     CollectPresentationContextUseCase,
     CreatePresentationWorkflowUseCase,
+    RecordProfessionalScopeUseCase,
     ValidatePresentationContextUseCase,
 )
 from app.application.use_cases.manage_project_resources import (
@@ -45,10 +46,9 @@ from app.domain.exceptions.domain_error import DomainError
 from app.domain.models.execution_context import ExecutionContext
 from app.application.services.patient_case_privacy import PatientCasePrivacyGuard
 from app.application.use_cases.workflow_steps import (
-    RegenerateBlueprintUseCase,
-    RegenerateSlideUseCase,
     EditBlueprintItemUseCase,
     EditSlideUseCase,
+    AuthorSlideFromBlueprintUseCase,
     RejectBlueprintItemUseCase,
     RejectSlideUseCase,
     ReviewBlueprintItemUseCase,
@@ -104,6 +104,12 @@ class ReviewRequest(BaseModel):
     comments: str = Field(default="", max_length=10_000)
 
 
+class BlueprintRegenerationRequest(BaseModel):
+    """Reviewer feedback to persist before an asynchronous blueprint revision."""
+
+    comments_by_index: dict[int, str] = Field(default_factory=dict)
+
+
 class BlueprintItemEditRequest(BaseModel):
     title: str = Field(min_length=1, max_length=500)
     objective: str = Field(min_length=1, max_length=4_000)
@@ -137,6 +143,14 @@ class PresentationDetailsRequest(BaseModel):
     event_name: str = Field(default="", max_length=300)
     venue: str = Field(default="", max_length=300)
     presentation_date: str = Field(default="", max_length=100)
+
+
+class ProfessionalScopeDeclarationRequest(BaseModel):
+    """Explicit human declaration required for a profile/audience mismatch."""
+
+    declared_role: str = Field(min_length=3, max_length=200)
+    delivery_purpose: str = Field(min_length=12, max_length=1_000)
+    confirmed_within_scope: bool
 
 
 class ProjectEvidenceSettingsRequest(BaseModel):
@@ -452,6 +466,35 @@ def setup_presentation(
             "audience": request.audience.value,
             "presentation_type": request.presentation_type.value,
             "language": request.language.value,
+        },
+    )
+
+
+@app.post("/projects/{user_id}/{project_id}/presentation/scope-clarification")
+def record_professional_scope_declaration(
+    user_id: str,
+    project_id: str,
+    request: ProfessionalScopeDeclarationRequest,
+    authenticated_user: str = Depends(_authenticated_user),
+):
+    """Resolve a scope mismatch through explicit, durable human input only."""
+    _assert_owner(user_id, authenticated_user)
+    thread_id, state = _get_project(user_id, project_id)
+    try:
+        state = RecordProfessionalScopeUseCase().execute(state, **request.model_dump())
+    except ValueError as exc:
+        raise _workflow_conflict(exc) from exc
+    state.execution = ExecutionContext(last_tool="record_professional_scope_declaration")
+    return _save_project(
+        user_id,
+        project_id,
+        thread_id,
+        state,
+        event_type="PROFESSIONAL_SCOPE_DECLARED",
+        actor="user",
+        extra_audit={
+            "declared_role": request.declared_role.strip(),
+            "confirmed_within_scope": request.confirmed_within_scope,
         },
     )
 
@@ -825,6 +868,31 @@ def edit_blueprint_item(
     )
 
 
+@app.post("/projects/{user_id}/{project_id}/slides/from-blueprint/{index}/user-authored")
+def author_blocked_slide(
+    user_id: str,
+    project_id: str,
+    index: int,
+    authenticated_user: str = Depends(_authenticated_user),
+):
+    """Resolve one evidence-blocked outline with explicitly user-authored content."""
+    _assert_owner(user_id, authenticated_user)
+    thread_id, state = _get_project(user_id, project_id)
+    try:
+        state = AuthorSlideFromBlueprintUseCase().execute(state, index)
+    except ValueError as exc:
+        raise _workflow_conflict(exc) from exc
+    return _save_project(
+        user_id,
+        project_id,
+        thread_id,
+        state,
+        event_type="BLOCKED_SLIDE_AUTHORED_BY_USER",
+        actor="user",
+        extra_audit={"blueprint_item_index": index},
+    )
+
+
 @app.post("/projects/{user_id}/{project_id}/blueprint/approve")
 def approve_blueprint(user_id: str, project_id: str, authenticated_user: str = Depends(_authenticated_user)):
     _assert_owner(user_id, authenticated_user)
@@ -955,17 +1023,6 @@ def update_presentation_details(
     )
 
 
-@app.post("/projects/{user_id}/{project_id}/blueprint/regenerate")
-def regenerate_blueprint(user_id: str, project_id: str, authenticated_user: str = Depends(_authenticated_user)):
-    _assert_owner(user_id, authenticated_user)
-    thread_id, state = _get_project(user_id, project_id)
-    try:
-        state = RegenerateBlueprintUseCase().execute(state)
-    except ValueError as exc:
-        raise _workflow_conflict(exc) from exc
-    return _save_project(user_id, project_id, thread_id, state, event_type="BLUEPRINT_REGENERATED", actor="llm")
-
-
 @app.post("/projects/{user_id}/{project_id}/slides/{index}/approve")
 def approve_slide(user_id: str, project_id: str, index: int, request: ReviewRequest, authenticated_user: str = Depends(_authenticated_user)):
     _assert_owner(user_id, authenticated_user)
@@ -1012,17 +1069,6 @@ def edit_slide(
         actor="user",
         extra_audit={"slide_index": index, "content_origin": request.content_origin},
     )
-
-
-@app.post("/projects/{user_id}/{project_id}/slides/{index}/regenerate")
-def regenerate_slide(user_id: str, project_id: str, index: int, authenticated_user: str = Depends(_authenticated_user)):
-    _assert_owner(user_id, authenticated_user)
-    thread_id, state = _get_project(user_id, project_id)
-    try:
-        state = RegenerateSlideUseCase().execute(state, index)
-    except ValueError as exc:
-        raise _workflow_conflict(exc) from exc
-    return _save_project(user_id, project_id, thread_id, state, event_type="SLIDE_REGENERATED", actor="llm", extra_audit={"slide_index": index})
 
 
 @app.post("/projects/{user_id}/{project_id}/slides/approve")

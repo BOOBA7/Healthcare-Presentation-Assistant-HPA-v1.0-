@@ -1,4 +1,5 @@
 """Streamlit user interface for the Healthcare Presentation Assistant."""
+from html import escape
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
@@ -28,8 +29,10 @@ from app.application.use_cases.workflow_steps import (
     RejectSlideUseCase,
     EditBlueprintItemUseCase,
     EditSlideUseCase,
+    AuthorSlideFromBlueprintUseCase,
     RegenerateBlueprintUseCase,
     RegenerateSlideUseCase,
+    RecordProfessionalScopeUseCase,
     ReviewBlueprintItemUseCase,
     ReviewSlideUseCase,
     GenerateSlidesWorkflowUseCase,
@@ -60,6 +63,9 @@ from app.application.services.citation_presentation import (
     citation_display_details,
     format_citations_for_display,
 )
+from app.domain.exceptions.domain_error import DomainError
+from app.domain.exceptions.project_job_running_error import ProjectJobRunningError
+from app.interfaces.api.job_runner import submit as submit_job
 
 
 st.set_page_config(page_title="Healthcare Presentation Assistant", page_icon="🩺", layout="wide")
@@ -102,6 +108,167 @@ def role_emblem(role: str) -> str:
         "pharmacist": """<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M6 20h20M9 20c1 6 13 6 14 0M12 25h8M17 5c7-2 9 6 4 8-5 2-7-4-3-6 3-2 6 3 2 6-3 3-8 0-8-4"/><path d="M13 14h8l-2 6h-4z"/></svg>""",
     }
     return emblems.get(role, asclepius)
+
+
+def _preview_label(presentation, english: str, french: str, arabic: str) -> str:
+    """Choose the same display language used by the exported PowerPoint."""
+    language = presentation.context.language.value
+    return french if language == "French" else arabic if language == "Arabic" else english
+
+
+def _presentation_preview_pages(presentation, resources) -> list[dict[str, object]]:
+    """Build local preview pages from the exact content passed to the exporter."""
+    if not presentation.slides:
+        return []
+    context = presentation.context
+    presenter = " · ".join(value for value in (context.presenter_name, context.presenter_title) if value)
+    location = " · ".join(value for value in (context.venue, context.presentation_date) if value)
+    details = [value for value in (presenter, context.organization, context.event_name, location) if value]
+    pages: list[dict[str, object]] = [
+        {
+            "kind": "cover",
+            "title": presentation.title,
+            "objective": context.objective,
+            "details": details,
+            "meta": f"{context.duration_minutes} min · {context.audience.value}",
+        }
+    ]
+    if presentation.agenda and presentation.agenda.items:
+        pages.append(
+            {
+                "kind": "agenda",
+                "title": _preview_label(presentation, "Agenda", "Agenda", "جدول الأعمال"),
+                "items": list(presentation.agenda.items),
+            }
+        )
+    for slide in presentation.slides:
+        pages.append(
+            {
+                "kind": "content",
+                "title": slide.title,
+                "items": list(slide.key_messages or [slide.content]),
+                "origin": slide.content_origin,
+                "references": list(slide.reference_details)
+                if slide.content_origin == "ai_generated" and slide.evidence_verified
+                else [],
+            }
+        )
+    batches = [resources[index:index + 4] for index in range(0, len(resources), 4)]
+    origins = {
+        "ai_generated": sum(slide.content_origin == "ai_generated" for slide in presentation.slides),
+        "user_edited": sum(slide.content_origin == "user_edited" for slide in presentation.slides),
+        "user_authored": sum(slide.content_origin == "user_authored" for slide in presentation.slides),
+    }
+    for number, batch in enumerate(batches, start=1):
+        pages.append(
+            {
+                "kind": "resources",
+                "title": _preview_label(
+                    presentation,
+                    "Resources and validation",
+                    "Ressources et validation",
+                    "المصادر والاعتماد",
+                ),
+                "resources": batch,
+                "batch": number,
+                "batches": len(batches),
+                "origins": origins,
+            }
+        )
+    return pages
+
+
+def _preview_origin_label(origin: str) -> str:
+    return {
+        "ai_generated": "AI-generated",
+        "user_edited": "User-edited",
+        "user_authored": "User-authored",
+    }.get(origin, "AI-generated")
+
+
+def render_presentation_preview(presentation, resources, project_id: str) -> None:
+    """Render a navigable, no-model preview before final PowerPoint download."""
+    pages = _presentation_preview_pages(presentation, resources)
+    if not pages:
+        return
+    palettes = {
+        PresentationTheme.CLINICAL: ("#105968", "#31a199", "#f5fafa"),
+        PresentationTheme.ACADEMIC: ("#1e3762", "#c2913e", "#f8f8fc"),
+        PresentationTheme.EXECUTIVE: ("#242c3d", "#d1714b", "#faf9f7"),
+        PresentationTheme.MIDNIGHT: ("#0f172a", "#38bdf8", "#f1f5f9"),
+    }
+    primary, accent, paper = palettes[presentation.theme]
+    key = f"presentation_preview_index_{project_id}"
+    index = min(max(int(st.session_state.get(key, 0)), 0), len(pages) - 1)
+    st.session_state[key] = index
+    page = pages[index]
+
+    st.divider()
+    st.subheader("Presentation preview")
+    st.caption(
+        "Local pre-export preview of the exact slide content, agenda and resources. "
+        "It never calls the model."
+    )
+    if presentation.custom_template_id:
+        st.info(
+            "Your uploaded PowerPoint template is applied during export. This local preview shows "
+            "the selected HPA theme and the exported content."
+        )
+    previous, counter, next_page = st.columns([1, 2, 1])
+    if previous.button("← Previous", disabled=index == 0, key=f"preview_previous_{project_id}"):
+        st.session_state[key] = index - 1
+        st.rerun()
+    counter.markdown(f"**Slide {index + 1} / {len(pages)}**")
+    if next_page.button("Next →", disabled=index == len(pages) - 1, key=f"preview_next_{project_id}"):
+        st.session_state[key] = index + 1
+        st.rerun()
+
+    with st.container(border=True):
+        is_cover = page["kind"] == "cover"
+        background = primary if is_cover else paper
+        foreground = "#ffffff" if is_cover else primary
+        st.markdown(
+            f"<div style=\"border-left: 7px solid {accent}; background: {background}; color: {foreground}; "
+            "padding: 0.75rem 1rem; border-radius: 0.4rem; font-weight: 700;\">"
+            f"{escape(str(page['title']))}</div>",
+            unsafe_allow_html=True,
+        )
+        if page["kind"] == "cover":
+            st.write(str(page["objective"]))
+            for detail in page["details"]:
+                st.caption(str(detail))
+            st.caption(str(page["meta"]))
+        elif page["kind"] == "agenda":
+            for position, item in enumerate(page["items"], start=1):
+                st.write(f"{position}. {item}")
+        elif page["kind"] == "content":
+            for item in page["items"]:
+                if item:
+                    st.write(f"• {item}")
+            references = page["references"]
+            if references:
+                st.caption("Verified evidence")
+                for reference in references:
+                    st.caption(
+                        f"{reference.get('title', 'Source')} · p. {reference.get('page')} · "
+                        f"{reference.get('resource_id')}"
+                    )
+            else:
+                st.caption(f"{_preview_origin_label(str(page['origin']))} · Human-reviewed")
+        else:
+            if page["batch"] == 1:
+                st.write("All listed resources were validated by the user.")
+                origins = page["origins"]
+                st.caption(
+                    "Content provenance: "
+                    f"{origins['ai_generated']} AI-generated, {origins['user_edited']} user-edited, "
+                    f"{origins['user_authored']} user-authored."
+                )
+            for resource in page["resources"]:
+                st.write(resource.title or resource.filename)
+                if resource.source:
+                    st.caption(resource.source)
+                st.caption(f"Audit ID: {resource.id}")
 
 
 @st.cache_resource
@@ -174,16 +341,152 @@ def load_project_state(user_id: str, project_id: str) -> GraphState:
     return st.session_state.state
 
 
-def save_state() -> None:
+def save_state(
+    event_type: str = "PROJECT_STATE_SAVED",
+    actor: str = "user",
+    payload: dict[str, object] | None = None,
+) -> None:
+    """Persist the active Project and its audit event in one SQLite transaction."""
     get_repository().save_with_event(
         st.session_state.active_user_id,
         st.session_state.active_project_id,
         st.session_state.thread_id,
         st.session_state.state,
-        "PROJECT_STATE_SAVED",
-        "user",
-        {},
+        event_type,
+        actor,
+        payload or {},
     )
+
+
+def _load_current_project_for_job(repository: UserSessionRepository, user_id: str, project_id: str) -> tuple[str, GraphState]:
+    """Reload the durable state inside a worker instead of trusting a stale UI copy."""
+    stored = repository.load(user_id, project_id)
+    if stored is None:
+        raise ValueError("Project not found.")
+    thread_id, current_state = stored
+    current_state.resource_chunks = repository.load_resource_chunks(user_id, project_id)
+    current_state.user_profile = repository.get_user_profile(user_id)
+    if current_state.presentation is not None:
+        current_state.presentation.owner_profile = current_state.user_profile
+    return thread_id, current_state
+
+
+def _job_error_details(exc: Exception) -> tuple[str, str, bool]:
+    """Keep durable job errors actionable without storing provider internals in the Project state."""
+    if isinstance(exc, DomainError):
+        return exc.code, exc.user_message, exc.retryable
+    if isinstance(exc, ValueError):
+        return "WORKFLOW_VALIDATION_FAILED", str(exc), False
+    return "LLM_PROVIDER_FAILURE", "The model could not complete this request. Please retry.", True
+
+
+def _persist_streamlit_job_failure(
+    repository: UserSessionRepository,
+    user_id: str,
+    project_id: str,
+    thread_id: str,
+    current_state: GraphState,
+    operation: str,
+    exc: Exception,
+    failure_event: str = "WORKFLOW_GENERATION_FAILED",
+) -> ValueError:
+    """Record a safe, durable failure for every asynchronous Streamlit model operation."""
+    code, message, retryable = _job_error_details(exc)
+    current_state.execution = ExecutionContext(
+        last_tool=operation,
+        tool_output={"status": "failed", "error_code": code, "retryable": retryable},
+        error=message,
+    )
+    repository.save_with_event(
+        user_id,
+        project_id,
+        thread_id,
+        current_state,
+        failure_event,
+        "system",
+        {"operation": operation, "error_code": code, "retryable": retryable},
+    )
+    return ValueError(message)
+
+
+def _project_job_is_running() -> bool:
+    """Prevent a Streamlit callback from mutating a Project while a job owns it."""
+    active = get_repository().active_job(
+        st.session_state.active_user_id,
+        st.session_state.active_project_id,
+    )
+    if active is None:
+        return False
+    st.error("A workflow job is already running for this Project. Wait for it to finish before continuing.")
+    return True
+
+
+def _queue_streamlit_job(
+    domain: str,
+    operation: str,
+    work,
+) -> bool:
+    """Schedule one state-writing Project job using the same SQLite lock as the web app."""
+    user_id = st.session_state.active_user_id
+    project_id = st.session_state.active_project_id
+    repository = get_repository()
+    try:
+        job = repository.create_job(user_id, project_id, domain)
+    except ProjectJobRunningError:
+        st.error("A workflow job is already running for this Project. Wait for it to finish before continuing.")
+        return False
+
+    job_id = str(job["job_id"])
+    st.session_state.streamlit_job_id = job_id
+    st.session_state.streamlit_job_operation = operation
+    submit_job(repository, user_id, job_id, domain, work)
+    return True
+
+
+def _refresh_active_project_state() -> None:
+    """Replace the in-memory UI snapshot with the latest durable SQLite state."""
+    repository = get_repository()
+    user_id = st.session_state.active_user_id
+    project_id = st.session_state.active_project_id
+    stored = repository.load(user_id, project_id)
+    if stored is None:
+        return
+    thread_id, state = stored
+    state.resource_chunks = repository.load_resource_chunks(user_id, project_id)
+    st.session_state.thread_id = thread_id
+    st.session_state.state = state
+
+
+@st.fragment(run_every=1.0)
+def render_streamlit_job_monitor() -> None:
+    """Poll a durable local job without blocking the Streamlit interface thread."""
+    user_id = st.session_state.get("active_user_id")
+    project_id = st.session_state.get("active_project_id")
+    if not user_id or not project_id:
+        return
+    repository = get_repository()
+    job_id = st.session_state.get("streamlit_job_id")
+    job = repository.get_job(user_id, job_id) if job_id else repository.active_job(user_id, project_id)
+    if job is None or job.get("project_id") != project_id:
+        return
+    status = str(job.get("status", "queued"))
+    if status in {"queued", "running"}:
+        st.info(f"Working: {str(job.get('stage', 'running')).replace('_', ' ')}")
+        st.progress(int(job.get("progress", 0)))
+        return
+
+    if job_id == str(job.get("job_id")):
+        _refresh_active_project_state()
+        st.session_state.pop("streamlit_job_id", None)
+        operation = st.session_state.pop("streamlit_job_operation", "operation")
+        if status == "completed":
+            st.session_state.streamlit_job_notice = ("success", f"{operation.replace('_', ' ').title()} completed.")
+        else:
+            st.session_state.streamlit_job_notice = (
+                "error",
+                str(job.get("error") or "The operation could not be completed. Please retry."),
+            )
+        st.rerun()
 
 
 def open_or_create_project(user_id: str) -> None:
@@ -256,11 +559,47 @@ def review_item(use_case, index: int, comments: str) -> None:
         st.error(str(exc))
 
 
-def run_action(use_case, *arguments: object) -> None:
+def run_blueprint_regeneration() -> None:
+    """Persist reviewer feedback, then regenerate in a durable background job."""
     try:
-        st.session_state.state = use_case.execute(st.session_state.state, *arguments)
-        save_state()
-        st.success("Demande exécutée.")
+        presentation = st.session_state.state.presentation
+        if presentation is not None and presentation.blueprint is not None:
+            for index, outline in enumerate(presentation.blueprint.slides):
+                comments = str(st.session_state.get(f"blueprint_comment_{index}", "")).strip()
+                if comments:
+                    outline.reviewer_comments = comments
+                    outline.is_validated = False
+        save_state(
+            "BLUEPRINT_REGENERATION_REQUESTED",
+            "user",
+            {
+                "commented_item_indexes": [
+                    index
+                    for index, outline in enumerate(presentation.blueprint.slides)
+                    if outline.reviewer_comments
+                ] if presentation and presentation.blueprint else []
+            },
+        )
+        _queue_presentation_regeneration("blueprint")
+    except ValueError as exc:
+        st.error(str(exc))
+
+
+def run_slide_regeneration(index: int, comments: str) -> None:
+    """Persist the current slide comment, then regenerate it in a background job."""
+    try:
+        presentation = st.session_state.state.presentation
+        if presentation is not None and 0 <= index < len(presentation.slides):
+            normalized = comments.strip()
+            if normalized:
+                presentation.slides[index].reviewer_comments = normalized
+                presentation.slides[index].is_validated = False
+        save_state(
+            "SLIDE_REGENERATION_REQUESTED",
+            "user",
+            {"slide_index": index, "has_comments": bool(comments.strip())},
+        )
+        _queue_presentation_regeneration("slide", slide_index=index)
     except ValueError as exc:
         st.error(str(exc))
 
@@ -272,6 +611,12 @@ def create_presentation_from_setup(
     language: Language,
     duration_minutes: int,
     objective: str,
+    presenter_name: str = "",
+    presenter_title: str = "",
+    organization: str = "",
+    event_name: str = "",
+    venue: str = "",
+    presentation_date: str = "",
 ) -> None:
     """Create a draft through explicit human input, never through chat intent."""
     try:
@@ -284,6 +629,12 @@ def create_presentation_from_setup(
             language=language,
             duration_minutes=duration_minutes,
             objective=objective,
+            presenter_name=presenter_name,
+            presenter_title=presenter_title,
+            organization=organization,
+            event_name=event_name,
+            venue=venue,
+            presentation_date=presentation_date,
         )
         state = ValidatePresentationContextUseCase().execute(state)
         st.session_state.state = CreatePresentationWorkflowUseCase().execute(state)
@@ -294,18 +645,112 @@ def create_presentation_from_setup(
 
 
 def run_explicit_generation(action: str) -> None:
-    """Run a human-clicked generation command; chat never advances this state."""
-    try:
-        with st.spinner(f"Generating {action} from validated resources..."):
+    """Queue a human-clicked generation command; chat never advances workflow state."""
+    _queue_presentation_generation(action)
+
+
+def _queue_presentation_generation(action: str) -> None:
+    """Use the durable Project job lock for blueprint and slide generation."""
+    if action not in {"blueprint", "slides"}:
+        st.error("Unknown presentation generation action.")
+        return
+    user_id = st.session_state.active_user_id
+    project_id = st.session_state.active_project_id
+    repository = get_repository()
+
+    def work(progress) -> dict[str, object]:
+        thread_id, current_state = _load_current_project_for_job(repository, user_id, project_id)
+        operation = f"generate_{action}"
+        try:
+            progress(25, f"validating_{action}_request")
+            progress(55, f"generating_{action}")
             if action == "blueprint":
-                st.session_state.state = BuildBlueprintWorkflowUseCase().execute(st.session_state.state)
+                current_state = BuildBlueprintWorkflowUseCase().execute(current_state)
+                event_type = "BLUEPRINT_GENERATED_FROM_EXPLICIT_COMMAND"
             else:
-                st.session_state.state = GenerateSlidesWorkflowUseCase().execute(st.session_state.state)
-        st.session_state.state.execution = ExecutionContext(last_tool=f"generate_{action}")
-        save_state()
-        st.success(f"{action.title()} generation completed.")
-    except ValueError as exc:
-        st.error(str(exc))
+                current_state = GenerateSlidesWorkflowUseCase().execute(current_state)
+                event_type = "SLIDES_GENERATED_FROM_EXPLICIT_COMMAND"
+            current_state.execution = ExecutionContext(last_tool=operation)
+            progress(85, "persisting_project")
+            repository.save_with_event(
+                user_id,
+                project_id,
+                thread_id,
+                current_state,
+                event_type,
+                "llm",
+                {"generation_command": action, "interface": "streamlit"},
+            )
+            return {"project_id": project_id}
+        except Exception as exc:
+            raise _persist_streamlit_job_failure(
+                repository,
+                user_id,
+                project_id,
+                thread_id,
+                current_state,
+                operation,
+                exc,
+            ) from exc
+
+    _queue_streamlit_job(f"presentation_{action}", f"generate_{action}", work)
+
+
+def _queue_presentation_regeneration(action: str, slide_index: int | None = None) -> None:
+    """Regenerate exactly one reviewed artefact behind the Project job lock."""
+    if action not in {"blueprint", "slide"}:
+        st.error("Unknown presentation regeneration action.")
+        return
+    user_id = st.session_state.active_user_id
+    project_id = st.session_state.active_project_id
+    repository = get_repository()
+
+    def work(progress) -> dict[str, object]:
+        thread_id, current_state = _load_current_project_for_job(repository, user_id, project_id)
+        operation = f"regenerate_{action}"
+        try:
+            progress(25, f"validating_{action}_regeneration")
+            progress(55, f"regenerating_{action}")
+            if action == "blueprint":
+                current_state = RegenerateBlueprintUseCase().execute(current_state)
+                event_type = "BLUEPRINT_REGENERATED_FROM_EXPLICIT_COMMAND"
+            else:
+                if slide_index is None:
+                    raise ValueError("A slide number is required for slide regeneration.")
+                current_state = RegenerateSlideUseCase().execute(current_state, slide_index)
+                event_type = "SLIDE_REGENERATED_FROM_EXPLICIT_COMMAND"
+            current_state.execution = ExecutionContext(last_tool=operation)
+            progress(85, "persisting_project")
+            repository.save_with_event(
+                user_id,
+                project_id,
+                thread_id,
+                current_state,
+                event_type,
+                "llm",
+                {
+                    "generation_command": operation,
+                    "interface": "streamlit",
+                    **({"slide_index": slide_index} if slide_index is not None else {}),
+                },
+            )
+            return {"project_id": project_id}
+        except Exception as exc:
+            raise _persist_streamlit_job_failure(
+                repository,
+                user_id,
+                project_id,
+                thread_id,
+                current_state,
+                operation,
+                exc,
+            ) from exc
+
+    _queue_streamlit_job(
+        f"presentation_regenerate_{action}",
+        f"regenerate_{action}",
+        work,
+    )
 
 
 def save_blueprint_edit(index: int, title: str, objective: str, key_message: str, origin: str) -> None:
@@ -320,6 +765,25 @@ def save_blueprint_edit(index: int, title: str, objective: str, key_message: str
         )
         save_state()
         st.success("Blueprint item saved as user content. Re-approve the agenda and blueprint before generating slides.")
+    except ValueError as exc:
+        st.error(str(exc))
+
+
+def author_blocked_slide(blueprint_index: int) -> None:
+    """Create a clearly user-authored draft for one evidence-blocked outline."""
+    if _project_job_is_running():
+        return
+    try:
+        st.session_state.state = AuthorSlideFromBlueprintUseCase().execute(
+            st.session_state.state,
+            blueprint_index,
+        )
+        save_state(
+            "BLOCKED_SLIDE_AUTHORED_BY_USER",
+            "user",
+            {"blueprint_item_index": blueprint_index, "interface": "streamlit"},
+        )
+        st.success("A user-authored slide draft was created. Edit and approve it when ready.")
     except ValueError as exc:
         st.error(str(exc))
 
@@ -351,43 +815,186 @@ def save_slide_edit(
 
 
 def analyze_uploaded_resources() -> None:
-    state = st.session_state.state
-    try:
-        analysis = SummarizeResourcesUseCase().execute(
-            state.resource_library,
-            language=state.user_profile.preferred_language,
-            chunks=state.resource_chunks,
-            evidence_context_mode=state.evidence_context_mode,
-            patient_case_mode=state.patient_case_mode,
-        )
-        state.resource_analysis = analysis
-        save_state()
-        st.success("Resource overview generated in the Resources workspace.")
-    except ValueError as exc:
-        st.error(str(exc))
-    except Exception:
-        st.error("The model could not analyze the uploaded resources. Please retry.")
+    """Generate a source-only overview asynchronously without freezing Streamlit."""
+    user_id = st.session_state.active_user_id
+    project_id = st.session_state.active_project_id
+    repository = get_repository()
+
+    def work(progress) -> dict[str, object]:
+        thread_id, current_state = _load_current_project_for_job(repository, user_id, project_id)
+        operation = "resource_overview"
+        try:
+            progress(30, "retrieving_pdf_passages")
+            analysis = SummarizeResourcesUseCase().execute(
+                current_state.resource_library,
+                language=current_state.user_profile.preferred_language,
+                chunks=current_state.resource_chunks,
+                evidence_context_mode=current_state.evidence_context_mode,
+                patient_case_mode=current_state.patient_case_mode,
+            )
+            progress(65, "generating_overview")
+            current_state.resource_analysis = analysis
+            current_state.execution = ExecutionContext(last_tool=operation)
+            progress(85, "persisting_project")
+            repository.save_with_event(
+                user_id,
+                project_id,
+                thread_id,
+                current_state,
+                "RESOURCE_ANALYSIS_GENERATED",
+                "llm",
+                {"resource_ids": analysis.resource_ids, "interface": "streamlit"},
+            )
+            return {"project_id": project_id}
+        except Exception as exc:
+            raise _persist_streamlit_job_failure(
+                repository,
+                user_id,
+                project_id,
+                thread_id,
+                current_state,
+                operation,
+                exc,
+                "RESOURCE_ANALYSIS_FAILED",
+            ) from exc
+
+    _queue_streamlit_job("resources", "resource_overview", work)
 
 
 def discuss_uploaded_resources(question: str) -> None:
+    """Persist a resource question first, then get its source-only answer in a job."""
+    if _project_job_is_running():
+        return
     state = st.session_state.state
     try:
-        answer = DiscussResourcesUseCase().execute(
-            state.resource_library,
-            question,
-            language=state.user_profile.preferred_language,
-            chunks=state.resource_chunks,
-            evidence_context_mode=state.evidence_context_mode,
-            patient_case_mode=state.patient_case_mode,
-        )
         add_resource_turn(state, "user", question)
-        add_resource_turn(state, "assistant", answer)
-        save_state()
-        st.session_state.resource_discussion_answer = answer
+        save_state(
+            "RESOURCE_DISCUSSION_MESSAGE_RECEIVED",
+            "user",
+            {"question_length": len(question)},
+        )
     except ValueError as exc:
         st.session_state.resource_error = str(exc)
-    except Exception:
-        st.session_state.resource_error = "The model could not discuss the uploaded resources. Please retry."
+        return
+
+    user_id = st.session_state.active_user_id
+    project_id = st.session_state.active_project_id
+    repository = get_repository()
+
+    def work(progress) -> dict[str, object]:
+        thread_id, current_state = _load_current_project_for_job(repository, user_id, project_id)
+        operation = "resource_discussion"
+        try:
+            progress(30, "retrieving_pdf_passages")
+            answer = DiscussResourcesUseCase().execute(
+                current_state.resource_library,
+                question,
+                language=current_state.user_profile.preferred_language,
+                chunks=current_state.resource_chunks,
+                evidence_context_mode=current_state.evidence_context_mode,
+                patient_case_mode=current_state.patient_case_mode,
+            )
+            progress(65, "generating_discussion")
+            add_resource_turn(current_state, "assistant", answer)
+            current_state.execution = ExecutionContext(last_tool=operation)
+            progress(85, "persisting_project")
+            repository.save_with_event(
+                user_id,
+                project_id,
+                thread_id,
+                current_state,
+                "RESOURCE_DISCUSSION_COMPLETED",
+                "llm",
+                {"question_length": len(question), "interface": "streamlit"},
+            )
+            return {"project_id": project_id}
+        except Exception as exc:
+            raise _persist_streamlit_job_failure(
+                repository,
+                user_id,
+                project_id,
+                thread_id,
+                current_state,
+                operation,
+                exc,
+                "RESOURCE_DISCUSSION_FAILED",
+            ) from exc
+
+    _queue_streamlit_job("resources", "resource_discussion", work)
+
+
+def queue_presentation_chat(message: str) -> None:
+    """Persist a presentation-chat turn before asynchronously calling the model."""
+    if _project_job_is_running():
+        return
+    state = st.session_state.state
+    state.messages.append(HumanMessage(content=message))
+    add_turn(state, "user", message)
+    state.user_profile = get_repository().get_user_profile(st.session_state.active_user_id)
+    if state.presentation is not None:
+        state.presentation.owner_profile = state.user_profile
+    try:
+        save_state(
+            "USER_MESSAGE_RECEIVED",
+            "user",
+            {"message_length": len(message)},
+        )
+    except ValueError as exc:
+        st.error(str(exc))
+        return
+
+    user_id = st.session_state.active_user_id
+    project_id = st.session_state.active_project_id
+    repository = get_repository()
+
+    def work(progress) -> dict[str, object]:
+        thread_id, current_state = _load_current_project_for_job(repository, user_id, project_id)
+        operation = "presentation_chat"
+        try:
+            progress(25, "preparing_conversation")
+            progress(55, "calling_model")
+            result = get_agent().invoke(current_state, thread_id)
+            completed_state = GraphState(**result)
+            ensure_history(completed_state)
+            assistant_text = next(
+                (
+                    transcript_message_text(model_message)
+                    for model_message in reversed(completed_state.messages)
+                    if getattr(model_message, "type", "") == "ai"
+                    and transcript_message_text(model_message)
+                ),
+                "",
+            )
+            if assistant_text and (
+                not completed_state.conversation_history
+                or completed_state.conversation_history[-1].role != "assistant"
+                or completed_state.conversation_history[-1].text != assistant_text
+            ):
+                add_turn(completed_state, "assistant", assistant_text)
+            progress(85, "persisting_project")
+            repository.save_with_event(
+                user_id,
+                project_id,
+                thread_id,
+                completed_state,
+                "AGENT_TURN_COMPLETED",
+                "llm",
+                {"message_length": len(message), "interface": "streamlit"},
+            )
+            return {"project_id": project_id, "message": assistant_text}
+        except Exception as exc:
+            raise _persist_streamlit_job_failure(
+                repository,
+                user_id,
+                project_id,
+                thread_id,
+                current_state,
+                operation,
+                exc,
+                "AGENT_TURN_FAILED",
+            ) from exc
+
+    _queue_streamlit_job("conversation", "presentation_chat", work)
 
 
 def message_text(message) -> str:
@@ -519,9 +1126,24 @@ with st.sidebar:
     state = load_project_state(user_id, project_id)
     if ensure_history(state):
         save_state()
-    state.user_profile = profile
-    save_state()
+    if state.user_profile != profile:
+        state.user_profile = profile
+        if state.presentation is not None:
+            state.presentation.owner_profile = profile
+        save_state("USER_PROFILE_APPLIED_TO_PROJECT", "user", {"interface": "streamlit"})
     st.caption(f"Project · Session {st.session_state.thread_id[:8]}")
+
+job_notice = st.session_state.pop("streamlit_job_notice", None)
+if job_notice:
+    level, message = job_notice
+    getattr(st, level)(message)
+render_streamlit_job_monitor()
+active_project_job = get_repository().active_job(user_id, project_id)
+if active_project_job:
+    st.info(
+        "A Project operation is running. You can read the current workspace; "
+        "state-changing actions remain disabled until it finishes."
+    )
 
 workspace_key = f"active_workspace_{user_id}_{project_id}"
 workspace = st.segmented_control(
@@ -562,7 +1184,7 @@ if workspace == "Resources":
                 "HPA detects obvious identifiers before LLM use, but cannot guarantee de-identification. "
                 "Remove patient names, full dates, identifiers, contact details and addresses."
             )
-        if st.button("Save evidence settings", use_container_width=True):
+        if st.button("Save evidence settings", use_container_width=True, disabled=bool(active_project_job)):
             try:
                 UpdateProjectEvidenceSettingsUseCase().execute(
                     state,
@@ -577,7 +1199,7 @@ if workspace == "Resources":
                 st.error(str(exc))
 
     uploaded_pdf = st.file_uploader("Upload a PDF", type=["pdf"])
-    if st.button("Add resource", disabled=uploaded_pdf is None, use_container_width=True):
+    if st.button("Add resource", disabled=uploaded_pdf is None or bool(active_project_job), use_container_width=True):
         if uploaded_pdf.size > 20 * 1024 * 1024:
             st.error("PDF files are limited to 20 MB.")
         else:
@@ -608,14 +1230,14 @@ if workspace == "Resources":
             )
             if state.presentation:
                 if resource.id in attached_ids:
-                    if action.button("Detach", key=f"detach_resource_{resource.id}", use_container_width=True):
+                    if action.button("Detach", key=f"detach_resource_{resource.id}", use_container_width=True, disabled=bool(active_project_job)):
                         try:
                             DetachResourceFromPresentationUseCase().execute(state, resource.id)
                             save_state()
                             st.rerun()
                         except ValueError as exc:
                             st.error(str(exc))
-                elif action.button("Use in presentation", key=f"attach_resource_{resource.id}", use_container_width=True):
+                elif action.button("Use in presentation", key=f"attach_resource_{resource.id}", use_container_width=True, disabled=bool(active_project_job)):
                     try:
                         AttachResourceToPresentationUseCase().execute(state, resource.id)
                         save_state()
@@ -623,13 +1245,13 @@ if workspace == "Resources":
                         st.rerun()
                     except ValueError as exc:
                         st.error(str(exc))
-            if remove.button("×", key=f"remove_resource_{resource.id}", help="Remove resource"):
+            if remove.button("×", key=f"remove_resource_{resource.id}", help="Remove resource", disabled=bool(active_project_job)):
                 st.session_state.pending_resource_delete = resource.id
         pending_resource = st.session_state.get("pending_resource_delete")
         if pending_resource:
             st.warning("Removing a resource resets generated content and approvals based on that evidence.")
             confirm, cancel = st.columns(2)
-            if confirm.button("Remove resource", type="primary", use_container_width=True):
+            if confirm.button("Remove resource", type="primary", use_container_width=True, disabled=bool(active_project_job)):
                 remove_resource(pending_resource)
                 st.rerun()
             if cancel.button("Cancel", use_container_width=True):
@@ -643,7 +1265,21 @@ if workspace == "Resources":
             on_click=run_validation,
             args=(validate_resources,),
             key="resource_workspace_validate_resources",
+            disabled=bool(active_project_job),
         )
+    elif state.presentation and state.presentation.state.resources_validated:
+        st.success("Resources are validated for production.")
+        if st.button("Continue to Presentation Studio", type="primary", disabled=bool(active_project_job)):
+            st.session_state[workspace_key] = "Presentation Studio"
+            st.rerun()
+        if state.presentation.state.workflow_status == WorkflowStatus.BLUEPRINT_GENERATION:
+            st.button(
+                "Generate blueprint",
+                on_click=run_explicit_generation,
+                args=("blueprint",),
+                disabled=bool(active_project_job),
+                use_container_width=True,
+            )
     if st.session_state.pop("resource_deleted", False):
         st.success("Resource removed. Dependent generated content and approvals were reset.")
     if resource_error := st.session_state.pop("resource_error", None):
@@ -662,6 +1298,7 @@ if workspace == "Resource Analysis":
         "Analyze uploaded resources",
         on_click=analyze_uploaded_resources,
         use_container_width=True,
+        disabled=bool(active_project_job),
     )
     status_column.caption(f"{len(state.resource_library)} PDF resource(s) in this Project library")
     st.divider()
@@ -685,20 +1322,12 @@ if workspace == "Resource Analysis":
     resource_question = st.chat_input(
         "Ask a question answered only from the uploaded PDFs",
         key=f"resource_discussion_question_{project_id}",
+        disabled=bool(active_project_job),
     )
     if resource_question:
-        with st.chat_message("user"):
-            st.write(resource_question)
-        with st.chat_message("assistant"):
-            with st.spinner("Searching uploaded PDFs..."):
-                discuss_uploaded_resources(resource_question)
-                error = st.session_state.pop("resource_error", None)
-                if error:
-                    st.error(error)
-                else:
-                    render_model_message(
-                        st.session_state.get("resource_discussion_answer", ""), state.resource_library
-                    )
+        discuss_uploaded_resources(resource_question)
+        if error := st.session_state.pop("resource_error", None):
+            st.error(error)
         st.rerun()
     st.stop()
 
@@ -745,6 +1374,15 @@ if state.presentation:
     if selected_theme != state.presentation.theme:
         state.presentation.theme = selected_theme
         save_state()
+    if state.presentation.slides:
+        try:
+            render_presentation_preview(
+                state.presentation,
+                resolve_presentation_resources(state),
+                project_id,
+            )
+        except ValueError as exc:
+            st.warning(f"Presentation preview is unavailable: {exc}")
     if state.presentation.state.slides_validated and not state.presentation.state.presentation_validated:
         st.button(
             "Approve final presentation",
@@ -820,6 +1458,14 @@ if state.presentation is None:
             value=collected_context.objective or "",
             max_chars=4000,
         )
+        with st.expander("Title-slide details (optional)", expanded=False):
+            st.caption("These details are displayed only if you provide them; the assistant never infers them.")
+            setup_presenter_name = st.text_input("Presenter name", value=collected_context.presenter_name or "")
+            setup_presenter_title = st.text_input("Professional title", value=collected_context.presenter_title or "")
+            setup_organization = st.text_input("Organization", value=collected_context.organization or "")
+            setup_event_name = st.text_input("Event name", value=collected_context.event_name or "")
+            setup_venue = st.text_input("Venue", value=collected_context.venue or "")
+            setup_presentation_date = st.text_input("Presentation date", value=collected_context.presentation_date or "")
         setup_submit = st.form_submit_button("Create presentation", type="primary")
     if setup_submit:
         if not setup_topic.strip() or not setup_objective.strip():
@@ -832,6 +1478,12 @@ if state.presentation is None:
                 setup_language,
                 int(setup_duration),
                 setup_objective.strip(),
+                setup_presenter_name.strip(),
+                setup_presenter_title.strip(),
+                setup_organization.strip(),
+                setup_event_name.strip(),
+                setup_venue.strip(),
+                setup_presentation_date.strip(),
             )
             st.rerun()
     st.info("After creation, select PDFs in Resources and validate them before blueprint generation.")
@@ -850,13 +1502,85 @@ if resource_validation_required:
 
 if (
     state.presentation
+    and state.presentation.state.workflow_status == WorkflowStatus.AWAITING_SCOPE_CLARIFICATION
+):
+    st.divider()
+    st.subheader("Professional scope declaration")
+    st.caption(
+        "This workflow check is completed by you, not by the assistant. State your role and purpose, "
+        "then confirm that the presentation is within your professional scope."
+    )
+    existing_declaration = state.presentation.professional_scope_declaration
+    with st.form("professional_scope_declaration_form"):
+        declared_role = st.text_input(
+            "Your current professional role",
+            value=existing_declaration.declared_role if existing_declaration else "",
+            max_chars=200,
+        )
+        delivery_purpose = st.text_area(
+            "Why this presentation is within your professional scope",
+            value=existing_declaration.delivery_purpose if existing_declaration else "",
+            max_chars=1_000,
+        )
+        confirmed_within_scope = st.checkbox(
+            "I confirm that this presentation is within my professional scope.",
+            value=bool(existing_declaration and existing_declaration.confirmed_within_scope),
+        )
+        save_scope = st.form_submit_button("Confirm professional scope", type="primary")
+    if save_scope:
+        try:
+            st.session_state.state = RecordProfessionalScopeUseCase().execute(
+                state,
+                declared_role=declared_role,
+                delivery_purpose=delivery_purpose,
+                confirmed_within_scope=confirmed_within_scope,
+            )
+            st.session_state.state.execution = ExecutionContext(
+                last_tool="record_professional_scope_declaration"
+            )
+            save_state()
+            st.success("Professional scope declaration saved.")
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
+
+if (
+    state.presentation
     and state.presentation.state.workflow_status == WorkflowStatus.AWAITING_SLIDE_RESOLUTION
 ):
-    blocked_slide = state.presentation.state.blocked_slide_number or "?"
-    st.warning(
-        f"Slide {blocked_slide} cannot be generated by AI from the validated PDFs. "
-        "Edit its blueprint item, add a relevant PDF, or select ‘Written by user’."
-    )
+    st.subheader("Slides requiring a decision")
+    blockers = state.presentation.state.slide_generation_blockers
+    for blocker in blockers:
+        st.warning(f"Slide {blocker.slide_number}: {blocker.message}")
+        diagnostic = blocker.diagnostic
+        if diagnostic:
+            with st.expander(f"Evidence diagnostic — slide {blocker.slide_number}", expanded=False):
+                st.json(diagnostic)
+        blueprint_index = next(
+            (
+                index
+                for index, outline in enumerate(state.presentation.blueprint.slides)
+                if outline.slide_number == blocker.slide_number
+            ),
+            None,
+        ) if state.presentation.blueprint else None
+        if blueprint_index is not None:
+            st.button(
+                f"Write slide {blocker.slide_number} myself",
+                on_click=author_blocked_slide,
+                args=(blueprint_index,),
+                key=f"author_blocked_slide_{blocker.slide_number}",
+                disabled=bool(active_project_job),
+            )
+    if any(blocker.code == "INVALID_AI_PROVENANCE" for blocker in blockers):
+        st.button(
+            "Retry remaining slide generation",
+            type="primary",
+            on_click=run_explicit_generation,
+            args=("slides",),
+            key="retry_remaining_slides_command",
+            disabled=bool(active_project_job),
+        )
 
 if state.presentation and state.presentation.state.workflow_status == WorkflowStatus.BLUEPRINT_GENERATION:
     st.subheader("Blueprint generation")
@@ -867,6 +1591,7 @@ if state.presentation and state.presentation.state.workflow_status == WorkflowSt
         on_click=run_explicit_generation,
         args=("blueprint",),
         key="generate_blueprint_command",
+        disabled=bool(active_project_job),
     )
 
 if state.presentation and state.presentation.state.workflow_status == WorkflowStatus.SLIDE_GENERATION:
@@ -878,6 +1603,7 @@ if state.presentation and state.presentation.state.workflow_status == WorkflowSt
         on_click=run_explicit_generation,
         args=("slides",),
         key="generate_slides_command",
+        disabled=bool(active_project_job),
     )
 
 if state.presentation and state.presentation.blueprint:
@@ -955,7 +1681,7 @@ if state.presentation and state.presentation.blueprint:
         approve, reject = st.columns(2)
         approve.button("Valider cet élément", disabled=outline.is_validated, on_click=review_item, args=(ReviewBlueprintItemUseCase(), index, comments), key=f"blueprint_validate_{index}")
         reject.button("Refuser / demander correction", on_click=review_item, args=(RejectBlueprintItemUseCase(), index, comments), key=f"blueprint_reject_{index}")
-        st.button("Régénérer le blueprint avec les commentaires", on_click=run_action, args=(RegenerateBlueprintUseCase(),), key="blueprint_regenerate")
+        st.button("Régénérer le blueprint avec les commentaires", on_click=run_blueprint_regeneration, key="blueprint_regenerate")
         if outline.is_validated:
             st.success("Élément validé.")
 
@@ -1017,7 +1743,7 @@ if state.presentation and state.presentation.slides:
         approve, reject = st.columns(2)
         approve.button("Valider cette slide", disabled=slide.is_validated, on_click=review_item, args=(ReviewSlideUseCase(), index, comments), key=f"slide_validate_{index}")
         reject.button("Refuser / demander correction", on_click=review_item, args=(RejectSlideUseCase(), index, comments), key=f"slide_reject_{index}")
-        st.button("Régénérer cette slide", on_click=run_action, args=(RegenerateSlideUseCase(), index), key=f"slide_regenerate_{index}")
+        st.button("Régénérer cette slide", on_click=run_slide_regeneration, args=(index, comments), key=f"slide_regenerate_{index}")
         if slide.is_validated:
             st.success("Slide validée.")
 
@@ -1029,44 +1755,5 @@ for turn in state.conversation_history:
             st.write(turn.text)
 
 if prompt := st.chat_input("Discutez d’une idée ou demandez explicitement de créer/générer votre présentation..."):
-    with st.chat_message("user"):
-        st.write(prompt)
-    state.messages.append(HumanMessage(content=prompt))
-    add_turn(state, "user", prompt)
-    state.user_profile = get_repository().get_user_profile(user_id)
-    if state.presentation is not None:
-        state.presentation.owner_profile = state.user_profile
-    with st.chat_message("assistant"):
-        with st.spinner("Analyse en cours..."):
-            try:
-                result = get_agent().invoke(state, st.session_state.thread_id)
-                st.session_state.state = GraphState(**result)
-                state = st.session_state.state
-                ensure_history(state)
-                assistant_text = next(
-                    (
-                        transcript_message_text(message)
-                        for message in reversed(state.messages)
-                        if getattr(message, "type", "") == "ai" and transcript_message_text(message)
-                    ),
-                    "",
-                )
-                if assistant_text and (
-                    not state.conversation_history
-                    or state.conversation_history[-1].role != "assistant"
-                    or state.conversation_history[-1].text != assistant_text
-                ):
-                    add_turn(state, "assistant", assistant_text)
-                save_state()
-                if assistant_text:
-                    render_model_message(assistant_text, state.resource_library)
-                else:
-                    st.write("Aucune réponse reçue.")
-            except ValueError as exc:
-                st.error(str(exc))
-            except Exception as exc:
-                text = str(exc)
-                if "RESOURCE_EXHAUSTED" in text or "429" in text:
-                    st.error("Le quota Gemini est atteint. Réessayez plus tard ou utilisez un projet API avec du quota.")
-                else:
-                    st.error("Le modèle n’a pas pu traiter cette demande.")
+    queue_presentation_chat(prompt)
+    st.rerun()

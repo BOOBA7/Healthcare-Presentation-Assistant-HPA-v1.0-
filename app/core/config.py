@@ -71,6 +71,20 @@ class Settings(BaseSettings):
             return False
         return value
 
+    @property
+    def configured_llm_provider(self) -> str:
+        """Return the normalized name of the configured model provider."""
+        return self.llm_provider.lower().strip()
+
+    @property
+    def configured_llm_model(self) -> str:
+        """Return the exact model selected for the configured provider."""
+        return (
+            self.openai_model
+            if self.configured_llm_provider == "openai"
+            else self.gemini_model
+        )
+
 
 @lru_cache
 def get_settings() -> Settings:

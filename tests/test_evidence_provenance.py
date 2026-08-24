@@ -195,3 +195,55 @@ def test_direct_bounded_context_remains_source_bound_without_bm25_ranking():
     assert "PAGE: 1" in retrieved
     assert "PAGE: 2" in retrieved
     assert assessment.is_sufficient
+
+
+def test_bm25_and_direct_apply_the_same_single_passage_evidence_rule():
+    """Direct mode must not pass by pooling partial terms across two passages."""
+    context = PresentationContext(
+        topic="Depression treatment",
+        audience=AudienceType.SPECIALIST,
+        presentation_type=PresentationType.LECTURE,
+        language=Language.ENGLISH,
+        duration_minutes=10,
+        objective="Review treatment options",
+    )
+    resource = Resource(
+        id="pdf-parity",
+        filename="parity.pdf",
+        file_type=ResourceType.PDF,
+        is_validated=True,
+    )
+    chunks = [
+        ResourceChunk(
+            resource_id="pdf-parity",
+            page=1,
+            position=0,
+            title="Parity source",
+            text="Depression background is described here.",
+        ),
+        ResourceChunk(
+            resource_id="pdf-parity",
+            page=2,
+            position=0,
+            title="Parity source",
+            text="Treatment considerations are described separately.",
+        ),
+    ]
+    query = "depression treatment pharmacotherapy"
+    builder = EvidenceContextBuilder()
+
+    bm25 = CreatePresentationUseCase().execute("BM25", context, evidence_context_mode=EvidenceContextMode.BM25)
+    direct = CreatePresentationUseCase().execute(
+        "Direct",
+        context,
+        evidence_context_mode=EvidenceContextMode.DIRECT_BOUNDED,
+    )
+
+    bm25_assessment = builder.assess(bm25, query, [resource], chunks)
+    direct_assessment = builder.assess(direct, query, [resource], chunks)
+
+    assert not bm25_assessment.is_sufficient
+    assert not direct_assessment.is_sufficient
+    assert bm25_assessment.required_matches == direct_assessment.required_matches == 2
+    assert bm25_assessment.selected_locations
+    assert direct_assessment.selected_locations

@@ -139,6 +139,97 @@ uses synonyms or a semantically close but different formulation. In a healthcare
 context, I believe this should be evaluated empirically rather than resolved by
 an immediate theoretical decision.
 
+## First hands-on pilot finding: BM25 generated a blueprint but blocked slides
+
+During the first hands-on test on 23 August 2026, I observed an inconsistency
+that I would like to understand before treating the BM25/direct comparison as a
+meaningful HCP evaluation. With the same user-provided PDF set and Project,
+BM25 mode allowed blueprint generation, then slide generation stopped because
+the system found insufficient evidence. With bounded direct PDF context, the
+same route completed.
+
+I do **not** interpret this as proof that BM25 is unsuitable, that direct
+context is better, or that the evidence gate should be weakened. The blueprint
+uses a broad presentation query while an individual slide uses a more specific
+query. The discrepancy could therefore come from query wording, chunking,
+ranking, a threshold, the slide-level gate, or a difference in selected
+resources/state. Direct context may simply contain a supporting passage that a
+lexical search missed; it does not demonstrate that every generated statement
+is better supported.
+
+On code review, I found one concrete reason this can happen: BM25 assessed the
+best single ranked chunk, whereas Direct assessment pooled matching terms over
+its selected source-balanced chunks. The modes therefore differed not only in
+retrieval but also in how they passed the evidence-sufficiency gate. I treated
+the comparison as invalid and corrected that invariant before collecting more
+HCP preference data.
+
+The correction now applies the same deterministic rule after either retrieval
+strategy: one selected PDF passage must meet the required lexical-support
+threshold. The diagnostics retain the retrieval mode, query-term count,
+required match count, selected resource/page locations, anchor passage and
+BM25 scores where relevant. A regression test covers the case where two
+separate passages each contain a partial term match: neither mode may pass by
+pooling them. The safety rule is unchanged: an insufficient slide is not sent
+to the model for invention.
+
+For the next HCP comparison, I plan to use a fixed resource set and keep an
+execution record for the blueprint and each slide: exact retrieval query, top
+chunk IDs and scores, source pages, selected passages, threshold/refusal reason,
+and the corresponding direct-context selection. This should separate:
+
+1. a legitimate safety refusal because the PDF does not support that exact
+   slide; from
+2. a retrieval defect because an appropriate supporting passage exists in the
+   PDF but BM25 fails to select it.
+
+I would especially value your advice on these questions:
+
+1. Is a same-rule, single selected-passage evidence invariant a sound basis for
+   comparing two passage-selection strategies in this MVP?
+2. If BM25 misses a source-supported slide, would you first try a transparent
+   slide-query reformulation or a bounded retrieval retry, rather than a silent
+   fallback to Direct context?
+3. What minimal regression fixture and telemetry would make a retrieval miss
+   explainable and prevent it from returning?
+4. What would make the HCP comparison methodologically useful without claiming
+   that either mode is a clinical benchmark?
+
+### Related first-pilot product observations
+
+The same test also showed two workflow/UX gaps:
+
+- after resource validation, the Resources workspace did not make the next
+  authorised route into Presentation Studio clear enough;
+- Resource Chat did not feel sufficiently fluid while the model was working.
+
+I implemented both corrections without moving workflow authority into chat.
+Resources now shows the server-authorised **Generate blueprint** command and a
+route to Presentation Studio once the selected PDFs are validated. Resource
+Chat displays the user question immediately and a local in-progress state while
+its job runs. I would welcome feedback on whether this is the right boundary:
+the UI exposes an authorised action, but server-side status checks still decide
+whether the action may run.
+
+### Proposed feature: use a precise PDF table in a precise slide
+
+I also need a way for a user to request a specific table from an uploaded PDF
+on a specific slide. I do not think this should rely only on a natural-language
+prompt. My proposed first version is a deterministic selection flow:
+
+```text
+Choose resource → choose page/table or figure → choose target slide
+→ choose “insert original” or “summarise as editable table” → review
+```
+
+For the first safe version, HPA would insert the original table/figure as an
+image or a defined PDF crop, retain its source title, resource ID, page and
+crop coordinates, and optionally let the LLM draft a caption. It would not ask
+the LLM to retype numerical cells. An editable extracted table should be a
+separate phase, with cell-level validation against the source before use.
+
+Do you agree that this is the right 80/20 boundary for the feature?
+
 ## Open question: hospital-owned learning materials and remote LLMs
 
 I realised that "user-provided PDFs" does not automatically mean that a user is
@@ -201,8 +292,9 @@ I would especially value feedback on the following review materials.
 The repository currently has a provider-free automated suite covering workflow
 transitions, human approvals, evidence provenance (resource / page / excerpt),
 resource deletion invalidation, conversation memory, SQLite persistence, API
-flows, safe provider-failure audit events, and job state. The suite currently
-passes 77 tests.
+flows, safe provider-failure audit events, asynchronous regeneration, evidence
+gate bypass attempts and job state. It runs without consuming an LLM provider
+quota.
 
 I would like to know whether these tests cover the most important failure modes
 for the current stage of the product, and which missing test would provide the
@@ -289,25 +381,22 @@ The intended invariant would remain:
 
 > No user-PDF evidence → no factual educational answer.
 
-### A related evidence-integrity gap
+### Evidence-integrity improvement implemented
 
-The current slide-generation path validates each AI citation against the
-selected resource, PDF page and quoted excerpt before approval and PowerPoint
-export. Resource Overview and Resource Chat ask the LLM to cite pages, but
-their citations are not yet programmatically validated before display.
-
-I am considering a generic `EvidenceCitationValidator` for **all**
-PDF-grounded AI responses: slides, Resource Overview, Resource Chat and a
-future Learning Mode. A structured response would include an answer plus a list
-of citation objects such as:
+The slide-generation path validates each AI citation against the selected
+resource, PDF page and quoted excerpt before approval and PowerPoint export.
+I have now extended the same provenance pattern to Resource Overview and
+Resource Chat through `ResponseCitationValidator`. A PDF-grounded response
+must include structured citations such as:
 
 ```text
 resource_id + page + evidence excerpt
 ```
 
-The system would then verify that the resource exists in the permitted scope,
-the page exists, and the quoted excerpt occurs on that page before rendering the
-citation. A failed validation would require a safe refusal or regeneration.
+The system verifies that the resource exists in the permitted scope, the page
+exists, and the quoted excerpt occurs on that page before rendering the
+citation. A failed validation rejects the generated response rather than
+presenting it as an evidence-grounded answer.
 
 I understand that this proves citation *provenance*, not that the model's wider
 interpretation is clinically correct or fully entailed by that excerpt. The HCP
@@ -350,9 +439,11 @@ remains responsible for scientific interpretation.
 - jobs have durable SQLite state, but a server restart marks them interrupted;
   they are not automatically resumed;
 - `app/interfaces/api/main.py` is still too central despite the existing routers;
-- CI validates JavaScript syntax but does not yet run browser interaction tests;
-- a complete PDF → workflow → PowerPoint business test with a fake LLM remains
-  to be added;
+- CI validates JavaScript syntax and runs a focused Playwright browser journey
+  on GitHub Actions; macOS 10.15 skips that browser locally because Chromium is
+  unsupported there;
+- the end-to-end business workflow is covered with a fake LLM; broader
+  resilience and real-HCP evaluation cases remain to be added;
 - the HCP evaluation will not establish global clinical accuracy or regulatory
   compliance: it measures usefulness and adherence to the evidence contract.
 

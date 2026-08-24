@@ -120,6 +120,37 @@ class DeterministicSlideGeneration:
         return GraphState(**self.agent.invoke(state, "deterministic-slides"))
 
 
+class DeterministicSlideRegeneration:
+    """No-network substitute that proves the persisted reviewer feedback is used."""
+
+    def __init__(self) -> None:
+        self.received_comments: list[str | None] = []
+
+    def execute(self, state: GraphState, index: int) -> GraphState:
+        presentation = state.presentation
+        assert presentation is not None
+        slide = presentation.slides[index]
+        self.received_comments.append(slide.reviewer_comments)
+        slide.content = "Regenerated from the HCP reviewer request."
+        slide.is_validated = False
+        return state
+
+
+class DeterministicBlueprintRegeneration:
+    """No-network substitute proving all typed blueprint feedback is durable."""
+
+    def __init__(self) -> None:
+        self.received_comments: list[str | None] = []
+
+    def execute(self, state: GraphState) -> GraphState:
+        presentation = state.presentation
+        assert presentation is not None and presentation.blueprint is not None
+        self.received_comments = [outline.reviewer_comments for outline in presentation.blueprint.slides]
+        presentation.blueprint.is_validated = False
+        presentation.state.blueprint_validated = False
+        return state
+
+
 class DeterministicResourceOverview:
     """Local substitute for the Resource Overview model boundary."""
 
@@ -274,6 +305,24 @@ def test_end_to_end_human_controlled_workflow_without_live_model(tmp_path, monke
     assert blueprint_job.status_code == 202
     assert _wait_for_job(client, headers, "hcp-e2e", blueprint_job.json()["job_id"])["status"] == "completed"
 
+    deterministic_blueprint_regeneration = DeterministicBlueprintRegeneration()
+    monkeypatch.setattr(
+        job_routes,
+        "RegenerateBlueprintUseCase",
+        lambda: deterministic_blueprint_regeneration,
+    )
+    regenerated_blueprint = client.post(
+        "/api/v1/projects/hcp-e2e/vitamin-d/blueprint/regenerate/jobs",
+        headers=headers,
+        json={"comments_by_index": {"0": "Make the evidence opening more concise for this audience."}},
+    )
+    assert regenerated_blueprint.status_code == 202
+    assert _wait_for_job(client, headers, "hcp-e2e", regenerated_blueprint.json()["job_id"])["status"] == "completed"
+    assert deterministic_blueprint_regeneration.received_comments == [
+        "Make the evidence opening more concise for this audience.",
+        None,
+    ]
+
     assert client.post("/projects/hcp-e2e/vitamin-d/agenda/approve", headers=headers).status_code == 200
     for index in (0, 1):
         assert client.post(
@@ -289,6 +338,29 @@ def test_end_to_end_human_controlled_workflow_without_live_model(tmp_path, monke
     )
     assert slides_job.status_code == 202
     assert _wait_for_job(client, headers, "hcp-e2e", slides_job.json()["job_id"])["status"] == "completed"
+
+    # Regeneration is also a durable job. The typed reviewer comment must be
+    # persisted before the worker runs and made available to the use case.
+    deterministic_regeneration = DeterministicSlideRegeneration()
+    monkeypatch.setattr(
+        job_routes,
+        "RegenerateSlideUseCase",
+        lambda: deterministic_regeneration,
+    )
+    regenerated = client.post(
+        "/api/v1/projects/hcp-e2e/vitamin-d/slides/0/regenerate/jobs",
+        headers=headers,
+        json={"comments": "Make the first slide more concise for the audience."},
+    )
+    assert regenerated.status_code == 202
+    assert _wait_for_job(client, headers, "hcp-e2e", regenerated.json()["job_id"])["status"] == "completed"
+    assert deterministic_regeneration.received_comments == [
+        "Make the first slide more concise for the audience."
+    ]
+    regenerated_project = client.get("/projects/hcp-e2e/vitamin-d", headers=headers).json()
+    assert regenerated_project["presentation"]["slides"][0]["content"] == (
+        "Regenerated from the HCP reviewer request."
+    )
 
     # A direct HCP rewrite is an API-only operation: no extra model call and
     # no inherited AI-evidence label for the new human-authored text.
@@ -307,6 +379,7 @@ def test_end_to_end_human_controlled_workflow_without_live_model(tmp_path, monke
     assert edited.status_code == 200
     assert edited.json()["presentation"]["slides"][1]["evidence_verified"] is False
     assert deterministic_agent.calls == 2
+
 
     for index in (0, 1):
         assert client.post(
@@ -328,3 +401,68 @@ def test_end_to_end_human_controlled_workflow_without_live_model(tmp_path, monke
     assert "Dr Ada Martin" in title_slide_text
     assert "HCP Update 2026" in title_slide_text
     assert deterministic_agent.calls == 2
+
+
+def test_scope_declaration_api_requires_explicit_human_fields(tmp_path, monkeypatch):
+    """The chat model cannot resolve a scope mismatch on the user's behalf."""
+    repository = UserSessionRepository(tmp_path / "hpa-scope.sqlite3")
+    monkeypatch.setattr(api, "get_repository", lambda: repository)
+    client = TestClient(api.app)
+
+    registered = client.post(
+        "/auth/register",
+        json={
+            "user_id": "scope-hcp",
+            "password": "safe-local-password",
+            "professional_role": "veterinarian",
+            "preferred_language": "en",
+        },
+    )
+    headers = {"Authorization": f"Bearer {registered.json()['token']}"}
+    assert client.post(
+        "/projects",
+        headers=headers,
+        json={"user_id": "scope-hcp", "project_id": "scope-project"},
+    ).status_code == 200
+    assert client.post(
+        "/projects/scope-hcp/scope-project/presentation/setup",
+        headers=headers,
+        json={
+            "topic": "Human medicine evidence update",
+            "audience": "general_practitioner",
+            "presentation_type": "Lecture",
+            "language": "English",
+            "duration_minutes": 10,
+            "objective": "Review user-provided evidence for healthcare professionals.",
+        },
+    ).status_code == 200
+    thread_id, state = repository.load("scope-hcp", "scope-project")
+    assert state.presentation is not None
+    state.presentation.state.workflow_status = WorkflowStatus.AWAITING_SCOPE_CLARIFICATION
+    api._save_project("scope-hcp", "scope-project", thread_id, state, event_type="TEST_SCOPE_BLOCK")
+
+    rejected = client.post(
+        "/projects/scope-hcp/scope-project/presentation/scope-clarification",
+        headers=headers,
+        json={
+            "declared_role": "Medical representative",
+            "delivery_purpose": "I present evidence to healthcare professionals.",
+            "confirmed_within_scope": False,
+        },
+    )
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"]["code"] == "SCOPE_CONFIRMATION_REQUIRED"
+
+    accepted = client.post(
+        "/projects/scope-hcp/scope-project/presentation/scope-clarification",
+        headers=headers,
+        json={
+            "declared_role": "Medical representative with veterinary training",
+            "delivery_purpose": "I present human-health scientific information to healthcare professionals.",
+            "confirmed_within_scope": True,
+        },
+    )
+    assert accepted.status_code == 200
+    declaration = accepted.json()["presentation"]["professional_scope_declaration"]
+    assert declaration["declared_role"] == "Medical representative with veterinary training"
+    assert accepted.json()["presentation"]["state"]["workflow_status"] == "blueprint_generation"

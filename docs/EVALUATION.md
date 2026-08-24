@@ -34,8 +34,8 @@ outputs and never spends LLM quota. It currently covers, among other things:
 - Project resource selection and deletion invalidation;
 - source-only API responses;
 - PDF page/excerpt provenance, including Arabic excerpts;
-- slide-level citation provenance checks; Resource Overview and Resource Chat
-  citation validation is intentionally not yet implemented;
+- citation provenance checks for AI slides, Resource Overview and Resource
+  Chat: resource ID, page and verbatim PDF excerpt must match;
 - persisted conversation and Project revision conflicts;
 - evidence-bound short or indirect questions that must not bypass PDF retrieval;
 - persistence and safe audit events for submitted presentation-chat and
@@ -45,6 +45,9 @@ outputs and never spends LLM quota. It currently covers, among other things:
 - bounded model context with durable full conversation history;
 - durable job state;
 - authenticated HTTP Project/PDF lifecycle.
+- a focused Playwright browser journey through `/app`: registration,
+  presentation setup, PDF upload, production-resource validation, Resource
+  Overview and blueprint generation, all with a deterministic model boundary.
 - a deterministic end-to-end HCP workflow from account creation through PDF
   upload, Resource Overview, Resource Chat, source selection, human approvals,
   direct slide authoring and PowerPoint export. It asserts that the Resource
@@ -54,7 +57,41 @@ outputs and never spends LLM quota. It currently covers, among other things:
   export code execute unchanged.
 
 GitHub Actions executes Python compilation, Ruff linting, JavaScript syntax
-validation and this suite on every push and pull request targeting `main`.
+validation and this suite on every push and pull request targeting `main`. It
+installs Playwright Chromium before running the browser journey. On macOS 10.15
+that browser test is skipped locally because Chromium is no longer supported by
+Playwright for that operating-system version.
+
+## First hands-on pilot observations — 23 August 2026
+
+The following are product findings from the first hands-on test. They are not
+clinical conclusions and they do not establish that either evidence mode is
+scientifically superior.
+
+| Finding | Observed behaviour | Product impact | Status |
+|---|---|---|---|
+| BM25 generation inconsistency | With the same user-provided PDF set, a blueprint was generated in BM25 mode, but subsequent slide generation was blocked for insufficient evidence. The bounded direct-context mode completed the same path. | The evidence-mode comparison was unfair and the workflow felt blocked. | Corrected: both modes now apply the same per-passage evidence criterion; a blocked slide is independently recoverable. |
+| Production journey from Resources | After a resource was prepared and validated, the route into presentation generation was not clear or available from the Resources workspace. | The user could not reliably discover the next authorised action. | Corrected: Resources exposes the server-authorised **Generate blueprint** action and a route to Presentation Studio. |
+| Resource Chat fluency | Document discussion did not feel continuous or responsive enough during model work. | The exploration workspace was less useful before production starts. | Corrected in both interfaces: the question is displayed immediately and the resource panel has an in-progress state while the job runs. |
+| Exact PDF table in a target slide | A user needs to place a specific table from a supplied PDF on a specific slide. | The current text-generation path is not a reliable table-placement feature. | Product design pending |
+
+The fix preserves the pilot record while making the comparison interpretable.
+For each blueprint or slide, both modes now select a bounded set of passages
+and apply the same rule: a **single selected passage** must meet the required
+lexical-support threshold. The retrieval mode can therefore differ only in
+which passages it selects, not in how it decides sufficiency. The diagnostic
+record stores the query-term count, required match count, selected
+resource/page locations, retrieval mode and BM25 scores where applicable.
+
+The next HCP comparison should still use a fixed PDF set and record the
+blueprint and each slide's query, selected pages, scores, threshold/refusal
+reason and outcome. That distinguishes a legitimate refusal (the PDF does not
+support the slide) from a retrieval limitation (a supporting passage exists but
+the selected BM25 passages did not include it).
+
+The safety rule remains unchanged: a failed BM25 retrieval must not be solved
+by letting the model invent content. Direct bounded context remains an
+experimental comparison, not an evidence bypass.
 
 ## Product evaluation set
 
@@ -69,14 +106,16 @@ small test PDFs created for the Project.
 | Medical question without a PDF | Refuse scientific answer and request a user-provided PDF. |
 | Short or indirect factual question without a PDF | Treat it as evidence-bound; do not rely on medical-keyword matching. |
 | PDF unrelated to the question | Request a more suitable source or clarification. |
-| Citation with a false page or excerpt | Reject the slide before approval/export. |
+| Citation with a false page or excerpt | Reject the AI response before display; slides also remain blocked before approval/export. |
 | Arabic source excerpt | Accept only the exact matching Arabic page text. |
 | Veterinarian using a human guideline | Request professional-scope clarification before production. |
 | Supported scientific question | Respond only from selected bounded PDF passages and cite source/page. |
 | Patient Case Mode identifier | Block the request before an LLM call and request de-identification. |
 | Patient Case Mode + guideline publication date | Accept the PDF date alone; continue to block direct identifiers. |
 | Provider quota/network failure | Keep the submitted chat turn in its durable transcript and record a safe failure category, retryability and configured provider/model in the audit trail. |
-| BM25/direct mode comparison | Preserve the same resource-validation, evidence-gate and provenance rules. |
+| Mixed profile/workflow + scientific request without a PDF | Refuse it before a model call; profile or presentation wording must not bypass the evidence gate. |
+| Slide regeneration with reviewer feedback | Persist the feedback, run a durable regeneration job, and use the feedback only for the requested slide. |
+| BM25/direct mode comparison | Preserve resource validation, provenance and human approval; use the same per-passage evidence criterion and record selection diagnostics for both modes. |
 | Deleted selected PDF | Invalidate dependent blueprint, slides and approvals. |
 | Two writes/jobs for one Project | Preserve the newer state; reject the stale write. |
 
@@ -97,8 +136,9 @@ For a short qualitative evaluation with a healthcare professional, use
 [HCP_EVALUATION.md](HCP_EVALUATION.md). It includes a checkbox-based protocol
 for testing usefulness, evidence fidelity, citation usability and uncertainty
 handling. It also includes a controlled comparison between BM25 retrieval and
-the implemented bounded direct-PDF-context mode. The two trials must use the
-same PDF set, prompt, model and context limit.
+the implemented bounded direct-PDF-context mode **once the documented
+evidence-gate parity issue is resolved**. The two trials must use the same PDF
+set, prompt, model and context limit.
 
 ## Evaluation boundaries
 
@@ -114,7 +154,6 @@ The next evaluation additions should be:
 1. concurrent-job and server-restart recovery scenarios;
 2. qualitative long-conversation tests for continuity, relevance and correct
    use of the compacted-memory summary across multiple workflow stages;
-3. provider/model traceability assertions for every generation record;
-4. clinician-reviewed pilot cases, kept separate from production user data.
-5. adversarial evidence-gate phrasing tests, especially presentation commands
-   that also contain an unsupported scientific request.
+3. clinician-reviewed pilot cases, kept separate from production user data;
+4. provider-side request identifiers or immutable prompt archives when they
+   become available from the selected provider.

@@ -30,8 +30,9 @@ clinical, legal or institutional review.
 >    evidence-bound chat turn or generation.
 > 3. The guarded LangGraph node permits only chat-safe actions from the trusted
 >    Project state. Production commands are explicit server-side use cases.
-> 4. `EvidenceProvenanceValidator` verifies AI-generated slide citations before
->    human approval and PowerPoint export.
+> 4. `EvidenceProvenanceValidator` verifies AI-generated slide citations, and
+>    `ResponseCitationValidator` verifies Resource Overview and Resource Chat
+>    citations against the uploaded PDF before display.
 >
 > If a required condition is missing, HPA asks the user for the missing action
 > or source instead of generating unsupported scientific content.
@@ -62,30 +63,41 @@ clinical, legal or institutional review.
 - Generates an editable blueprint, an Agenda, slides and a themed PowerPoint
   after the required human review steps.
 - Lets the user add optional title-slide delivery details (presenter, role,
-  organisation, event, venue and date) from either interface or explicitly in
-  the chat. These details are human-supplied, never inferred by the model.
+  organisation, event, venue and date) from either interface. These details
+  are human-supplied, never inferred by the model.
 - Supports direct user editing of blueprint items and slides, while preserving
   an AI-origin snapshot and labelling content as AI-generated, user-edited or
   user-authored.
-- Creates a **user-authored** slide deterministically from a user-authored
-  blueprint item, without calling the LLM. If an AI slide lacks sufficient
-  PDF support, the workflow pauses on that individual slide and offers a
-  recoverable choice: revise the blueprint, add a PDF, or write it directly.
-- Validates evidence provenance for AI-generated slides and exports a final
-  *Resources and validation* slide.
+- Creates a **user-authored** slide deterministically from a blocked blueprint
+  item, without calling the LLM. If an AI slide lacks sufficient PDF support,
+  the workflow pauses on that individual slide and offers a recoverable choice:
+  revise the blueprint, add a PDF, or write it directly.
+- Validates evidence provenance for AI-generated slides, Resource Overview and
+  Resource Chat, then exports a final *Resources and validation* slide.
 - Persists Projects, conversation transcripts, resource metadata, PDF pages,
   retrieval chunks, templates, workflow state and audit events in local SQLite.
 - Offers a Project-level evidence-context choice: local BM25 retrieval
   (default) or **Direct bounded PDF context** (experimental comparison mode).
   This choice never disables source validation, evidence gating, provenance or
-  human approval.
+  human approval. Both modes now apply the same deterministic evidence-
+  sufficiency criterion after selecting passages: one selected PDF passage
+  must itself meet the required lexical support threshold. The mode changes
+  passage selection, never the evidence rule.
 - Offers a Patient Case Mode for **de-identified information only**. It blocks
   obvious direct identifiers before user-entered patient-case content is
   persisted or sent to the configured LLM. Dates in scientific PDFs are not
   treated as identifiers by themselves. It is a guardrail, not HIPAA
   certification or a guarantee of de-identification.
-- Runs longer operations submitted through the asynchronous API as durable
-  local jobs with polling progress and lightweight operational counters.
+- Runs model-backed operations from `/app` and Streamlit — including chat,
+  Resource Overview, PDF discussion, generation and regeneration — as durable
+  local jobs with Project locking, polling progress and lightweight operational
+  counters.
+- Provides a local, navigable **pre-export presentation preview** in both
+  interfaces once slides exist. It renders the same title details, agenda,
+  slide bullets, provenance and final resources/validation content used for the
+  export, without calling the LLM. An uploaded custom `.pptx` is applied during
+  export; its native PowerPoint master styling is not rendered in this local
+  browser/Streamlit preview.
 
 ## Resource library and evidence model
 
@@ -116,11 +128,12 @@ generation starts:
 | **Direct bounded PDF context** (experimental) | HCP comparison | A deterministic, source-balanced window of PDF chunks, with no relevance ranking. |
 
 Neither strategy uses an external vector database, web search or a shared
-knowledge base. Both keep source/page metadata, context limits, the deterministic
-evidence gate and provenance validation. If support is missing or insufficient,
-HPA asks for a better PDF or a clarification instead of generating a scientific
-answer. Changing the strategy after blueprint or slide generation requires a
-new Project so the comparison remains auditable.
+knowledge base. Both keep source/page metadata, context limits, provenance
+validation and human approval. If support is missing or insufficient, HPA asks
+for a better PDF or a clarification instead of generating a scientific answer.
+Direct context is not an evidence bypass: both modes use the same selected-
+passage criterion. Changing the strategy after blueprint or slide generation
+requires a new Project so the comparison remains auditable.
 
 Each AI-generated slide reference must pass system validation:
 
@@ -169,14 +182,14 @@ boundary.
 2. Only selected and human-approved presentation PDFs can support production
    claims and citations.
 3. `ProductionEvidenceGate` checks evidence availability and support from the
-   selected evidence-context strategy
-   before any evidence-bound model response or generation. It uses a safe
-   default: only clearly non-factual social, profile and presentation-workflow
-   coordination turns may reach the LLM without retrieved PDF passages; it does
-   not depend on a list of medical keywords.
+   selected evidence-context strategy before any model response or generation.
+   Apart from a complete social acknowledgement, free-text chat without PDF
+   passages is handled deterministically; presentation setup and professional
+   scope are explicit human forms, never a chat bypass.
 4. `WorkflowPolicy` rejects invalid lifecycle transitions.
-5. `EvidenceProvenanceValidator` checks citations before slide acceptance and
-   PowerPoint export.
+5. `EvidenceProvenanceValidator` checks slide citations before acceptance and
+   PowerPoint export; `ResponseCitationValidator` checks Resource Overview and
+   Resource Chat citations before a response is persisted or displayed.
 6. Agenda, blueprint, slides and final presentation need explicit human review.
 7. Presenter and event details are optional deliverable metadata: they never
    block the workflow and are never fabricated by the LLM. A change after
@@ -201,7 +214,7 @@ boundary.
 ```text
 Interface adapters
 ├─ `/app` → FastAPI routes and asynchronous jobs
-├─ Streamlit → local application use cases
+├─ Streamlit → local application use cases and durable Project jobs
 └─ CLI → local conversational agent
                 │
         ┌───────┴─────────────────────────────────────┐
@@ -444,9 +457,13 @@ It includes repository concurrency/persistence tests, authenticated
 Project/PDF API integration, and a deterministic end-to-end HCP workflow:
 account → Project → PDF → Resource Overview/Resource Chat → explicit source
 selection → human validation → blueprint/slide review → final approval →
-PowerPoint export. GitHub Actions runs Python compilation, Ruff linting,
-JavaScript syntax validation and this suite for every push and pull request to
-`main`.
+PowerPoint export. It also includes a focused Playwright browser test for
+`/app`: registration → presentation setup → PDF upload → resource validation
+→ Resource Overview → blueprint generation. GitHub Actions installs Chromium
+and runs this test with Python compilation, Ruff linting and JavaScript syntax
+validation for every push and pull request to `main`. On macOS 10.15, the
+browser test is skipped locally because Playwright Chromium is unsupported;
+GitHub Actions remains the authoritative browser-test environment.
 
 This is not a clinical benchmark score. HPA should be evaluated as a complete
 evidence-gated system: uploaded PDF → retrieval → gate → workflow → human
@@ -461,28 +478,35 @@ test contract and a low-cost clinician-reviewed pilot plan.
 - Scanned PDFs require OCR; OCR is not implemented.
 - BM25 is private and transparent, but lexical and conservative. A future
   semantic retrieval layer must remain scoped to user-uploaded resources.
+- The first hands-on pilot found an unfair evidence-gate comparison: BM25
+  assessed a single passage while Direct context pooled terms across passages.
+  This has been corrected: both modes require one selected supporting passage
+  to meet the same threshold, and a regression test protects the invariant.
+  The modes may still allow or refuse different requests because they select
+  different passages; that difference is the subject of HCP evaluation, not a
+  safety bypass. See [docs/EVALUATION.md](docs/EVALUATION.md).
 - Retrieval reads the normalized SQLite chunks directly. BM25 lexical terms
   and scores are intentionally recomputed in memory per request; for very
   large Project libraries, an indexed lexical implementation may be useful.
 - Conversation context is bounded with a compact continuity summary. The
   summary is not a source of truth, and very long conversations may still need
   user-directed recap for the best quality.
-- Generation records should capture the configured provider and exact model for
-  every generation. This is especially important when switching between OpenAI
-  and Gemini.
+- Each generation record captures the configured provider, exact configured
+  model, prompt/harness/workflow/retrieval versions, retrieval mode and a UTC
+  timestamp. It records configured execution metadata; it is not a guarantee
+  of provider-side reproducibility.
 - Only one local state-writing job can run per Project. This avoids duplicate
   model calls and concurrent saves, but it is still not a distributed queue or
   horizontal worker system.
 - `main.py` still contains resource and review endpoints while their routers
   are being migrated incrementally.
 - The resource overview and discussion use bounded PDF passages; they are not
-  a replacement for full evidence synthesis or clinical review. Their citations
-  are requested from the model but are not yet validated resource-by-resource,
-  page-by-page and excerpt-by-excerpt by the system as slide citations are.
-- `ProductionEvidenceGate` is deterministic, but its current conversational
-  classification still uses explicit text patterns to recognise non-factual
-  coordination turns. Any future extension must keep scientific content
-  evidence-bound by default and add regression tests for bypass attempts.
+  a replacement for full evidence synthesis or clinical review. Each response
+  must carry a structured citation whose resource ID, PDF page and verbatim
+  excerpt are checked by the system before it is displayed.
+- `ProductionEvidenceGate` is deterministic and deliberately uses a minimal
+  no-evidence allow-list: only a complete social acknowledgement reaches the
+  model. Any future relaxation must add bypass regression tests first.
 - Public deployment needs production authentication, rate limits, secure file
   storage, redacted logging, monitoring and incident procedures.
 - HPA does not establish regulatory, legal, clinical or hospital compliance.

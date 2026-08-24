@@ -50,8 +50,16 @@ Each Project offers two evidence-context modes.
 | BM25 retrieval | Default mode. HPA selects the PDF passages most relevant to the question or generation task. |
 | Direct bounded PDF context | Experimental mode. HPA uses a balanced, limited portion of the same PDFs without BM25 ranking. |
 
-For a fair comparison, use the same PDFs, question and presentation conditions
-in both modes.
+Both modes enforce the same evidence rule after retrieval: one selected PDF
+passage must itself meet the deterministic support threshold. The mode changes
+which bounded passages are selected, never the proof rule. For a useful HCP
+comparison, use the same PDFs, question and presentation conditions in both
+modes, and report a refusal with its displayed source/page diagnostic.
+
+> **Pilot note (23 August 2026):** A first pilot exposed an unfair comparison:
+> BM25 assessed one passage while Direct context could pool terms across several
+> passages. This was corrected before further HCP comparison. Direct mode is
+> still experimental and is never a way to bypass missing evidence.
 
 ## 4. Optional: Patient Case Mode
 
@@ -100,8 +108,9 @@ If the resources are insufficient, HPA should request a more relevant PDF or
 clarification instead of inventing an answer.
 
 > **Note:** Resource Overview and Resource Chat are exploratory features.
-> AI-generated slide citations receive stricter system validation before
-> approval and PowerPoint export.
+> Their citations are verified against the uploaded PDF resource, page and
+> quoted excerpt before display. AI-generated slide citations receive the same
+> provenance checks before approval and PowerPoint export.
 
 ### Manage resources
 
@@ -111,21 +120,24 @@ generation.
 
 ## 6. Start the presentation workflow
 
-Open **Presentation assistant** and describe your objective.
+Open **Presentation Studio** and complete the presentation setup form.
 
 ```text
 I need a 15-minute educational presentation in French for general practitioners
 about depression management, based on the attached guideline.
 ```
 
-HPA may ask for the topic, audience, presentation type, duration, language,
-learning objective or professional-scope clarification.
+The form requires the topic, audience, presentation type, duration, language
+and learning objective. If the workflow requests professional-scope
+clarification, it displays a separate **Professional scope** form.
 
-If requested, provide one clear sentence about your role and purpose.
+Complete that form with your current role, why the presentation is within your
+professional scope, and the confirmation checkbox. This is a human workflow
+declaration; chat cannot complete it for you.
 
 ```text
-I am a medical representative with veterinary training preparing scientific
-information for human healthcare professionals.
+Role: Medical representative with veterinary training
+Purpose: I prepare scientific information for human healthcare professionals.
 ```
 
 ## 7. Validate presentation resources
@@ -184,11 +196,18 @@ generation call.
 
 When all slides are reviewed:
 
-1. Approve the final presentation.
-2. Export the PowerPoint.
+1. Open **Presentation preview** and move through the title slide, Agenda,
+   reviewed slides and final resources slide. This local preview does not call
+   the model.
+2. Approve the final presentation.
+3. Export the PowerPoint.
 
 The export includes the title slide, Agenda as slide 2, reviewed slides, and a
 final **Resources and validation** slide.
+
+If you selected an uploaded custom `.pptx` template, it is applied at export.
+The local preview shows the exported content and selected HPA theme, but not
+the template's native PowerPoint master styling.
 
 ## 12. Suggested HCP test scenarios
 
