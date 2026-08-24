@@ -218,6 +218,17 @@ additionnant des termes trouvés dans plusieurs pages. Le diagnostic conserve le
 mode, les pages sélectionnées, le seuil et, pour BM25, les scores. Cela ne rend
 pas BM25 sémantique ; cela rend la comparaison et le refus traçables.
 
+Ce premier test n’a pas démontré qu’un passage précis avait été raté à cause
+d’un synonyme. En revanche, il a rendu visible une limite structurelle que je
+dois traiter comme un risque produit : BM25 classe les passages selon le
+recouvrement lexical. Il ne comprend pas spontanément les synonymes, les noms
+commerciaux et génériques, les abréviations, les traductions ou l’équivalence
+clinique de deux formulations. Le découpage borné des PDF peut aussi séparer
+deux éléments de preuve liés. Le comportement sûr est donc un faux refus et
+une demande de ressource ou de clarification, jamais une génération non
+soutenue. Je dois mesurer cette limite avec des cas HCP reproductibles avant
+de conclure qu’une couche sémantique est justifiée.
+
 Le test a aussi montré deux sujets produit : l’utilisateur ne trouvait pas assez
 clairement comment passer de Resources à Presentation Studio après validation,
 et Resource Chat ne donnait pas une impression de conversation continue pendant

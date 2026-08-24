@@ -379,7 +379,13 @@ migrate without breaking either local interface.
 ### Trade-offs
 
 - Users must select and validate sources before scientific production.
-- BM25 can reject a concept that is present under different wording or language.
+- BM25 is an auditable lexical retriever, not a semantic understanding layer.
+  It can reject a concept that is present under different wording, abbreviation
+  or language, and bounded fixed-size chunks can separate related evidence.
+  Such a failure is intentionally a safe false refusal: it cannot authorise
+  unsupported generation. The first HCP pilot exposed this as an evaluation
+  risk while also exposing and correcting a separate, unfair evidence-gate
+  comparison between BM25 and Direct bounded context.
 - More gates mean more explicit user interactions and less apparent autonomy.
 - SQLite and local files must be replaced for concurrent production deployment.
 - The local job executor provides persistence and progress, not worker retries

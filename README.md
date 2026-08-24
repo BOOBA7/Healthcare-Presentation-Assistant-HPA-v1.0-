@@ -477,7 +477,13 @@ test contract and a low-cost clinician-reviewed pilot plan.
   and object storage are needed for concurrent or multi-instance deployment.
 - Scanned PDFs require OCR; OCR is not implemented.
 - BM25 is private and transparent, but lexical and conservative. A future
-  semantic retrieval layer must remain scoped to user-uploaded resources.
+  semantic retrieval layer must remain scoped to user-uploaded resources. BM25
+  ranks exact lexical overlap; it does not itself understand synonyms,
+  abbreviations, translations, or clinically equivalent wording. Its fixed
+  bounded chunks can also separate related evidence. Consequently, a refusal
+  can mean either that evidence is absent or that the lexical retriever did not
+  select the supporting passage. This produces a safe false refusal, never a
+  licence for the model to invent content.
 - The first hands-on pilot found an unfair evidence-gate comparison: BM25
   assessed a single passage while Direct context pooled terms across passages.
   This has been corrected: both modes require one selected supporting passage

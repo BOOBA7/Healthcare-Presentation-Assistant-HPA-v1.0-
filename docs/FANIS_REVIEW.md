@@ -108,10 +108,17 @@ solution is fragile, and explain why one technical option is preferable to
 another in a given context.
 
 For instance, I now understand that BM25 is transparent, local, and auditable,
-but may miss semantic similarity. My first instinct was to replace it because
-meaning matters in healthcare. I now think the more disciplined approach is to
-define an evaluation protocol, test it with an HCP, and use the results before
-changing the retrieval architecture.
+but may miss semantic similarity. The first hands-on pilot exposed an unfair
+comparison in the evidence gate between BM25 and Direct bounded context; I
+corrected that implementation issue so both modes now apply the same
+single-passage sufficiency criterion. Separately, the pilot made the remaining
+BM25 boundary more concrete: lexical retrieval does not understand synonyms,
+abbreviations, translations, brand/generic medication names, or clinically
+equivalent wording, and bounded chunks can separate related evidence. This
+does not make HPA generate unsupported content: it creates a safe false refusal
+when the supporting passage is not selected. I would value your view on whether
+I should first quantify this risk with a small HCP evaluation set before adding
+semantic retrieval, and what evidence would justify that architectural change.
 
 I also use coding assistance to accelerate implementation, but I do not want to
 remain dependent on it for architectural judgment. My goal is to become able to

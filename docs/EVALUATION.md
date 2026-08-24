@@ -71,6 +71,7 @@ scientifically superior.
 | Finding | Observed behaviour | Product impact | Status |
 |---|---|---|---|
 | BM25 generation inconsistency | With the same user-provided PDF set, a blueprint was generated in BM25 mode, but subsequent slide generation was blocked for insufficient evidence. The bounded direct-context mode completed the same path. | The evidence-mode comparison was unfair and the workflow felt blocked. | Corrected: both modes now apply the same per-passage evidence criterion; a blocked slide is independently recoverable. |
+| BM25 lexical retrieval boundary | The pilot made clear that BM25 selects passages from lexical term overlap only. It cannot itself recognise synonymous, abbreviated, translated, or clinically equivalent wording, and a fixed text chunk can separate related evidence. | A supporting statement can remain undiscovered even though it exists somewhere in the uploaded PDF; this is a possible false refusal, not permission to generate unsupported content. | Open evaluation risk. The pilot did not prove a semantic miss in a specific PDF; it exposed why BM25 and Direct must be compared with reproducible cases and retrieval diagnostics. |
 | Production journey from Resources | After a resource was prepared and validated, the route into presentation generation was not clear or available from the Resources workspace. | The user could not reliably discover the next authorised action. | Corrected: Resources exposes the server-authorised **Generate blueprint** action and a route to Presentation Studio. |
 | Resource Chat fluency | Document discussion did not feel continuous or responsive enough during model work. | The exploration workspace was less useful before production starts. | Corrected in both interfaces: the question is displayed immediately and the resource panel has an in-progress state while the job runs. |
 | Exact PDF table in a target slide | A user needs to place a specific table from a supplied PDF on a specific slide. | The current text-generation path is not a reliable table-placement feature. | Product design pending |
@@ -92,6 +93,14 @@ the selected BM25 passages did not include it).
 The safety rule remains unchanged: a failed BM25 retrieval must not be solved
 by letting the model invent content. Direct bounded context remains an
 experimental comparison, not an evidence bypass.
+
+BM25 is therefore an intentionally transparent retrieval baseline, not a
+semantic understanding component. It is well suited to auditing why a passage
+was selected, but it does not infer that different wording has the same
+clinical meaning. Any future hybrid or semantic retrieval experiment must use
+only the user's uploaded PDFs, retain the existing PDF/page/excerpt provenance
+checks, and be evaluated against the same versioned HCP cases before becoming
+the default.
 
 ## Product evaluation set
 
