@@ -98,7 +98,8 @@ def _write_pdf(path: Path) -> None:
     page = document.new_page()
     page.insert_text(
         (72, 72),
-        "Vitamin D evidence supplied by the HCP. This PDF is the sole source for the workflow test.",
+        "Vitamin D evidence supplied by the HCP. This PDF is the sole source for the workflow test.\n"
+        "Publication date: 2024",
     )
     document.save(path)
     document.close()
