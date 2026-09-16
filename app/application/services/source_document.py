@@ -1,4 +1,4 @@
-"""Read and verify accepted PDF originals in memory, before any durable write."""
+"""Read and verify accepted source originals in memory, before any durable write."""
 
 import hashlib
 from datetime import datetime, timezone
@@ -17,9 +17,20 @@ class SourceDocument:
     def read(filename: str, content: bytes, resource_id: str) -> Resource:
         if not content or len(content) > SourceScreening.MAX_BYTES:
             raise SourceScreening.incomplete()
+        suffix = filename.rsplit('.', 1)[-1].lower()
+        if suffix not in ('pdf', 'png', 'jpg', 'jpeg', 'pptx'):
+            raise SourceScreening.incomplete()
+        if filename.lower().endswith('.pptx') or content.startswith(b'PK'):
+            from app.application.services.pptx_document import PptxDocument
+            return PptxDocument.read(filename, content, resource_id)
         if content.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8")):
+            detected = 'png' if content.startswith(b'\x89PNG') else 'jpeg'
+            if suffix not in (('png',) if detected == 'png' else ('jpg', 'jpeg')):
+                raise SourceScreening.incomplete()
             from app.application.services.raster_document import RasterDocument
             return RasterDocument.read(filename, content, resource_id)
+        if suffix != 'pdf' or not content.startswith(b'%PDF'):
+            raise SourceScreening.incomplete()
         try:
             with fitz.open(stream=content, filetype="pdf") as document:
                 if any(page.get_images() for page in document):
@@ -73,5 +84,5 @@ class SourceDocument:
         # by a caller; derive them again from the actual original.
         for field in ("file_type", "title", "source", "extracted_text", "extracted_pages", "metadata"):
             if getattr(resource, field) != getattr(checked, field):
-                raise WorkflowError("SOURCE_INTEGRITY_FAILED", "Source content or metadata does not match its original PDF. Replace this resource.")
+                raise WorkflowError("SOURCE_INTEGRITY_FAILED", "Source content or metadata does not match its original. Replace this resource.")
         return content

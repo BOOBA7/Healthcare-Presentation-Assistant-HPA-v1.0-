@@ -6,7 +6,7 @@ from app.domain.models.resource import Resource
 
 
 class ExtractPdfResourceUseCase:
-    """Screen dated PDF/PNG/JPEG in memory; retain the legacy use-case name."""
+    """Screen dated PDF/PNG/JPEG/PPTX in memory; retain the legacy use-case name."""
 
     def execute(self, filename: str, content: bytes, *, patient_case_mode: bool = False, prototype_declaration: str | None = None) -> Resource:
         PrototypePolicy.declaration(prototype_declaration, patient_case_mode=patient_case_mode)

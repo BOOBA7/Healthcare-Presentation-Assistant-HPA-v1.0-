@@ -25,6 +25,7 @@ class EvidenceChunk:
     text: str
     terms: tuple[str, ...]
     provenance: str = "document_extraction"
+    location_kind: str = "page"
 
 
 @dataclass(frozen=True)
@@ -383,7 +384,7 @@ class EvidenceContextBuilder:
         self, resources: list[Resource], persisted_chunks: list[ResourceChunk] | None = None
     ) -> list[EvidenceChunk]:
         SourceDatePolicy.require_all(resources)
-        validated_resources = {resource.id for resource in resources if resource.is_validated}
+        validated_resources = {resource.id: resource for resource in resources if resource.is_validated}
         # An empty cache means this state has not been hydrated from SQLite
         # yet (for example an in-memory unit test or a freshly created state).
         # Fall back to in-state pages only in that compatibility case.
@@ -391,6 +392,7 @@ class EvidenceContextBuilder:
             return [
                 EvidenceChunk(
                     resource_id=chunk.resource_id,
+                    location_kind="slide" if validated_resources[chunk.resource_id].file_type.value == "pptx" else "page",
                     page=chunk.page,
                     title=chunk.title,
                     position=chunk.position,
@@ -415,6 +417,7 @@ class EvidenceContextBuilder:
                         chunks.append(
                             EvidenceChunk(
                                 resource_id=resource.id,
+                                location_kind="slide" if resource.file_type.value == "pptx" else "page",
                                 page=page_number,
                                 title=resource.title or resource.filename,
                                 position=position,
@@ -449,7 +452,7 @@ class EvidenceContextBuilder:
     def _format_chunk(self, chunk: EvidenceChunk) -> str:
         return (
             "BEGIN UNTRUSTED SOURCE EXCERPT\n"
-            f"SOURCE ID: {chunk.resource_id} | TITLE: {chunk.title} | PAGE: {chunk.page} | PROVENANCE: {chunk.provenance}\n"
+            f"SOURCE ID: {chunk.resource_id} | TITLE: {chunk.title} | {chunk.location_kind.upper()}: {chunk.page} | PROVENANCE: {chunk.provenance}\n"
             f"{chunk.text}\n"
             "END UNTRUSTED SOURCE EXCERPT"
         )

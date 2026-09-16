@@ -4,12 +4,16 @@ from app.domain.enums.workflow_status import WorkflowStatus
 from app.domain.models.presentation import Presentation
 from app.domain.models.resource import Resource
 from app.application.services.resource_library import resource_selection
+from app.application.services.source_screening import SourceScreening
+from app.application.services.source_date_policy import SourceDatePolicy
 
 
 class AddResourceUseCase:
-    """Add a PDF resource at any workflow stage without leaving stale output."""
+    """Add a verified resource at any workflow stage without leaving stale output."""
 
     def execute(self, presentation: Presentation, resource: Resource) -> Presentation:
+        SourceScreening.resource(resource, require_text=True)
+        SourceDatePolicy.require(resource)
         presentation.resources.append(resource_selection(resource))
 
         # A new source changes the evidence set. Existing generated content is

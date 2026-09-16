@@ -133,7 +133,8 @@
               <p class="muted" data-i18n="resourceWorkspaceHint">Upload, analyse and discuss this Project’s PDFs without changing the presentation workflow.</p>
             </div>
             <div class="resource-upload-grid">
-              <label class="dropzone resource-dropzone" for="pdf-file"><span>↑</span> <span data-i18n="uploadPdf">Upload a PDF</span><input id="pdf-file" type="file" accept="application/pdf,image/png,image/jpeg" /></label>
+              <label class="dropzone resource-dropzone" for="pdf-file"><span>↑</span> <span data-i18n="uploadPdf">Upload PDF, PNG, JPEG or PPTX</span><input id="pdf-file" type="file" accept="application/pdf,image/png,image/jpeg,.pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation" /></label>
+              <p class="muted" data-i18n="pptxHint">PPTX evidence: native text and simple tables; images are inventoried only. Unsupported embedded content is refused.</p>
               <p class="muted" data-i18n="rasterHint">Scans and images: clean monochrome English text only. Figures, photos and noisy scans are refused. Automated checks cannot guarantee anonymisation.</p>
               <p id="file-name" class="muted" data-i18n="maxSize">20 MB maximum</p>
               <button id="upload-resource" class="secondary" disabled data-i18n="addResource">Add resource</button>

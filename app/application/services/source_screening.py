@@ -8,7 +8,7 @@ from app.domain.models.resource import Resource
 
 
 class SourceScreening:
-    VERSION = "source-raster-metadata-v3"
+    VERSION = "source-pptx-metadata-v4"
     MAX_BYTES = 20 * 1024 * 1024
     MAX_PAGES = 1000
 
@@ -26,7 +26,8 @@ class SourceScreening:
             payload = resource.model_dump(mode="json")
             checked = Resource.model_validate(payload)
             raster = checked.metadata.origin == "raster_memory_import"
-            if checked.metadata.assets or checked.path:
+            pptx = checked.metadata.origin == "pptx_memory_import"
+            if (checked.metadata.assets and not pptx) or checked.path:
                 raise cls.incomplete()
             if raster:
                 from app.application.services.local_image_screening import LocalImageScreening
@@ -34,6 +35,24 @@ class SourceScreening:
                         or checked.metadata.ocr_engine != LocalImageScreening.ENGINE
                         or not checked.metadata.ocr_regions
                         or checked.is_validated != bool(checked.metadata.ocr_reviews)):
+                    raise cls.incomplete()
+            elif pptx:
+                from app.application.services.raster_privacy import screen_raster_text
+
+                def screen_strings(value):
+                    if isinstance(value, str):
+                        screen_raster_text(value)
+                    elif isinstance(value, dict):
+                        for item in value.values():
+                            screen_strings(item)
+                    elif isinstance(value, list):
+                        for item in value:
+                            screen_strings(item)
+
+                screen_strings(payload)
+                if (checked.file_type.value != "pptx" or checked.metadata.ocr_engine
+                        or checked.metadata.ocr_regions or checked.metadata.ocr_reviews
+                        or any(asset.location.kind != "slide" for asset in checked.metadata.assets)):
                     raise cls.incomplete()
             elif checked.file_type.value != "pdf" or checked.metadata.ocr_engine or checked.metadata.ocr_regions or checked.metadata.ocr_reviews:
                 raise cls.incomplete()

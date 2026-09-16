@@ -310,7 +310,7 @@ def _project_response(user_id: str, project_id: str, thread_id: str, state: Grap
 
 
 def _resource_response(resource) -> dict[str, object]:
-    """Expose resource metadata only; extracted PDF text never leaves the API."""
+    """Expose source descriptors only; no raw extraction or embedded metadata."""
     try:
         date_evidence = SourceDatePolicy.require(resource, allow_unconfirmed=True).model_dump(mode="json")
         from app.application.services.ocr_review import is_reviewed
@@ -329,6 +329,12 @@ def _resource_response(resource) -> dict[str, object]:
         "uploaded_at": resource.uploaded_at.isoformat(),
         "is_validated": resource.is_validated,
         "page_count": len(resource.extracted_pages),
+        "location_kind": "slide" if resource.file_type.value == "pptx" else "page",
+        "asset_inventory": [
+            {"id": asset.id, "kind": asset.kind, "media_type": asset.media_type,
+             "location": asset.location.model_dump(mode="json")}
+            for asset in resource.metadata.assets
+        ],
         "characters_extracted": len(resource.extracted_text or ""),
         "scientific_date": date_evidence,
         "source_blocker": date_blocker,
@@ -731,7 +737,7 @@ def chat(request: ChatRequest, authenticated_user: str = Depends(_authenticated_
 @app.post("/resources/{user_id}/{project_id}")
 @app.post("/resources/pdf/{user_id}/{project_id}")
 async def upload_pdf_resource(user_id: str, project_id: str, request: Request, authenticated_user: str = Depends(_authenticated_user)):
-    """Screen PDF/PNG/JPEG into the library; OCR remains pending review."""
+    """Screen PDF/PNG/JPEG/PPTX into the library; OCR remains pending review."""
     _assert_owner(user_id, authenticated_user)
     stored = get_repository().load(user_id, project_id)
     if stored is None:
@@ -740,20 +746,21 @@ async def upload_pdf_resource(user_id: str, project_id: str, request: Request, a
     _require_prototype(state)
     original_filename, media_type, content = await read_pdf_upload(request)
     filename = Path(original_filename).name
-    # Some browsers/local proxies send application/octet-stream for a valid
-    # PDF. The extension is accepted here; PyMuPDF below remains the actual
-    # content validation boundary.
-    if (media_type not in {"application/pdf", "application/x-pdf", "image/png", "image/jpeg"}
-            and not filename.lower().endswith((".pdf", ".png", ".jpg", ".jpeg"))):
-        raise HTTPException(status_code=415, detail="Only PDF, PNG and JPEG uploads are accepted.")
+    # The shared reader checks the package and filename independently of MIME.
+    if (media_type not in {"application/pdf", "application/x-pdf", "image/png", "image/jpeg", "application/vnd.openxmlformats-officedocument.presentationml.presentation"}
+            and not filename.lower().endswith((".pdf", ".png", ".jpg", ".jpeg", ".pptx"))):
+        raise HTTPException(status_code=415, detail="Only PDF, PNG, JPEG and PPTX uploads are accepted.")
     try:
+        # Inspect the supplied name before basename normalization can discard it.
+        from app.application.services.raster_privacy import screen_raster_text
+        screen_raster_text(original_filename)
         resource = ExtractPdfResourceUseCase().execute(
             filename,
             content,
             patient_case_mode=state.patient_case_mode,
             prototype_declaration=state.prototype_declaration,
         )
-        extensions = {"pdf": (".pdf",), "png": (".png",), "jpeg": (".jpg", ".jpeg")}
+        extensions = {"pdf": (".pdf",), "png": (".png",), "jpeg": (".jpg", ".jpeg"), "pptx": (".pptx",)}
         if not filename.lower().endswith(extensions[resource.file_type.value]):
             raise WorkflowError("SOURCE_FORMAT_MISMATCH", "The filename does not match the detected source format.")
         ensure_resource_library(state)

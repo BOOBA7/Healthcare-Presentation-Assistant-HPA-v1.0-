@@ -11,8 +11,8 @@ class Resource(BaseModel):
     """
     Represents a scientific resource uploaded by the user.
 
-    A resource may be a PDF, DOCX, PPTX or any scientific
-    document used as evidence for presentation generation.
+    Supported originals are PDF, PNG/JPEG and restricted PPTX evidence.
+    Legacy enum values do not authorise other input formats.
     """
 
     metadata: SourceMetadata = Field(default_factory=SourceMetadata)
@@ -75,7 +75,7 @@ class Resource(BaseModel):
 
     extracted_pages: list[dict[str, object]] = Field(
         default_factory=list,
-        description="Extracted PDF pages with page number and text for evidence provenance.",
+        description="Extracted source pages or PPTX slides; page holds the original 1-based location.",
     )
 
     is_validated: bool = Field(

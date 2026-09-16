@@ -78,7 +78,7 @@ class SourceMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal[1] = 1
-    origin: Literal["legacy", "pdf_memory_import", "raster_memory_import"] = "legacy"
+    origin: Literal["legacy", "pdf_memory_import", "raster_memory_import", "pptx_memory_import"] = "legacy"
     media_type: str | None = None
     author: str | None = None
     organisation: str | None = None

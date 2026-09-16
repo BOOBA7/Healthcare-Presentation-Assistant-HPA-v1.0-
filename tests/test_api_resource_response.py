@@ -1,3 +1,4 @@
+from app.tests.source_fixtures import dated_resource
 from fastapi import HTTPException
 
 from app.ai.workflows.graph_state import GraphState
@@ -44,7 +45,7 @@ def test_resource_validation_action_is_available_immediately_after_upload():
     presentation = CreatePresentationUseCase().execute("Evidence review", context)
     AddResourceUseCase().execute(
         presentation,
-        Resource(
+        dated_resource(
             id="pdf-1",
             filename="evidence.pdf",
             file_type=ResourceType.PDF,

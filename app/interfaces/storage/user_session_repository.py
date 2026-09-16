@@ -15,7 +15,7 @@ from uuid import uuid4
 from langchain_core.messages import AIMessage, HumanMessage, messages_from_dict, messages_to_dict
 
 from app.ai.workflows.graph_state import GraphState
-from app.application.services.resource_library import ensure_resource_library
+from app.application.services.resource_library import ensure_resource_library, resource_selection
 from app.domain.exceptions.concurrent_modification_error import ConcurrentModificationError
 from app.domain.exceptions.project_job_running_error import ProjectJobRunningError
 from app.domain.models.resource import Resource
@@ -720,6 +720,16 @@ class UserSessionRepository(SourceLifecycleRepository):
         for resource in state.presentation.resources if state.presentation else []:
             self._assert_not_deleted(connection, user_id, "source", resource.id)
             SourceScreening.resource(resource)
+        # PPTX selections are references to canonical owner-library evidence,
+        # never an alternate place to persist caller-supplied asset descriptors.
+        for selected in state.presentation.resources if state.presentation else []:
+            if selected.file_type.value == "pptx" or selected.metadata.origin == "pptx_memory_import":
+                canonical = next((source for source in state.resource_library if source.id == selected.id), None)
+                if canonical is not None:
+                    if resource_selection(selected) != resource_selection(canonical):
+                        raise WorkflowError("SOURCE_INTEGRITY_FAILED", "Selected source metadata differs from its verified library original.")
+                elif not selected.extracted_pages:
+                    raise WorkflowError("SOURCE_ORIGINAL_REQUIRED", "Select a verified library source before saving.")
         ensure_resource_library(state)
         existing = connection.execute(
             "SELECT revision FROM project_sessions WHERE user_id = ? AND project_id = ?",
