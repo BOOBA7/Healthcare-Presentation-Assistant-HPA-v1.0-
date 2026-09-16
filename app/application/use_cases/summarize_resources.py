@@ -1,5 +1,6 @@
 """Generate a bounded, source-only overview of uploaded PDF resources."""
 
+from app.application.services.prototype_policy import PrototypePolicy
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.ai.llm.llm import get_llm
@@ -23,7 +24,11 @@ class SummarizeResourcesUseCase:
         chunks: list[ResourceChunk] | None = None,
         evidence_context_mode: EvidenceContextMode = EvidenceContextMode.BM25,
         patient_case_mode: bool = False,
+        prototype_declaration: str | None = None,
     ) -> ResourceAnalysis:
+        PrototypePolicy.declaration(prototype_declaration, patient_case_mode=patient_case_mode)
+        PrototypePolicy.screen(resources)
+        PrototypePolicy.screen(chunks)
         if not resources:
             raise ValueError("Upload at least one PDF before requesting a resource overview.")
 

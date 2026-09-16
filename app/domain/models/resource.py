@@ -1,7 +1,8 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
+from app.domain.models.source_metadata import SourceMetadata
 from app.domain.enums.resource_type import ResourceType
 from app.domain.enums.language import Language
 
@@ -13,6 +14,26 @@ class Resource(BaseModel):
     A resource may be a PDF, DOCX, PPTX or any scientific
     document used as evidence for presentation generation.
     """
+
+    metadata: SourceMetadata = Field(default_factory=SourceMetadata)
+    # Never serialized into Project JSON, telemetry, API payloads or model prompts.
+    _original_content: bytes | None = PrivateAttr(default=None)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_metadata(cls, value):
+        """Upgrade old JSON in memory without inventing provenance or page numbers."""
+        if isinstance(value, dict) and "metadata" not in value:
+            value = dict(value)
+            value["metadata"] = {
+                "media_type": "application/pdf" if value.get("file_type") == "pdf" else None,
+                "locations": [
+                    {"kind": "page", "number": page["page"]}
+                    for page in value.get("extracted_pages", [])
+                    if type(page.get("page")) is int and page["page"] > 0
+                ],
+            }
+        return value
 
     id: str = Field(
         ...,
@@ -33,6 +54,7 @@ class Resource(BaseModel):
         default=None,
         description="Publisher or source of the document.",
     )
+
 
     language: Language = Language.ENGLISH
     file_type: ResourceType = Field(

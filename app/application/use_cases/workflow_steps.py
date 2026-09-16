@@ -1,5 +1,7 @@
 """State-based workflow use cases used exclusively by HPA business tools."""
 
+from app.application.services.prototype_policy import PrototypePolicy
+from app.application.services.source_date_policy import SourceDatePolicy
 from app.ai.workflows.graph_state import GraphState
 from app.application.use_cases.build_blueprint import BuildBlueprintUseCase
 from app.application.use_cases.create_presentation import CreatePresentationUseCase
@@ -27,6 +29,7 @@ class CollectPresentationContextUseCase:
     def execute(self, state: GraphState, **updates: object) -> GraphState:
         allowed = {
             "topic", "audience", "presentation_type", "language", "duration_minutes", "objective",
+            "target_slide_count", "special_instructions", "professional_scope", "is_multidisciplinary",
             "presenter_name", "presenter_title", "organization", "event_name", "venue", "presentation_date",
         }
         values = {key: value for key, value in updates.items() if key in allowed and value is not None}
@@ -57,6 +60,7 @@ class CreatePresentationWorkflowUseCase:
             state.user_profile,
             state.evidence_context_mode,
         )
+        presentation.prototype_declaration = state.prototype_declaration
         return state.model_copy(update={"presentation": presentation, "conversation_mode": ConversationMode.PRODUCTION})
 
 
@@ -71,6 +75,7 @@ class ValidateResourcesWorkflowUseCase:
 
 class BuildBlueprintWorkflowUseCase:
     def execute(self, state: GraphState) -> GraphState:
+        PrototypePolicy.state(state)
         if state.presentation is None:
             raise WorkflowError("PRESENTATION_NOT_CREATED", "Create the presentation before generating its blueprint.")
         if not state.presentation.state.resources_validated:
@@ -81,6 +86,7 @@ class BuildBlueprintWorkflowUseCase:
             "generate the blueprint",
         )
         resources = resolve_presentation_resources(state)
+        SourceDatePolicy.require_all(resources)
         clarification = PresentationCompatibilityValidator().clarification_message(state.presentation, resources)
         if clarification:
             state.presentation.state.workflow_status = WorkflowStatus.AWAITING_SCOPE_CLARIFICATION
@@ -128,7 +134,12 @@ class RecordProfessionalScopeUseCase:
                 "SCOPE_CONFIRMATION_REQUIRED",
                 "Confirm that this presentation is within your professional scope before continuing.",
             )
+        previous = state.presentation.professional_scope_declaration
         declaration = ProfessionalScopeDeclaration(
+            actor_user_id=previous.actor_user_id if previous else None,
+            context_digest=previous.context_digest if previous else None,
+            is_multidisciplinary=previous.is_multidisciplinary if previous else None,
+            confirmed_multidisciplinary=previous.confirmed_multidisciplinary if previous else False,
             declared_role=normalized_role,
             delivery_purpose=normalized_purpose,
             confirmed_within_scope=True,
@@ -171,6 +182,7 @@ class ValidateBlueprintWorkflowUseCase:
 
 class GenerateSlidesWorkflowUseCase:
     def execute(self, state: GraphState) -> GraphState:
+        PrototypePolicy.state(state)
         if state.presentation is None or not state.presentation.state.blueprint_validated:
             raise WorkflowError("BLUEPRINT_NOT_VALIDATED", "Validate the blueprint before generating slides.")
         WorkflowPolicy.require_status(
@@ -179,6 +191,7 @@ class GenerateSlidesWorkflowUseCase:
             "generate slides",
         )
         resources = resolve_presentation_resources(state)
+        SourceDatePolicy.require_all(resources)
         clarification = PresentationCompatibilityValidator().clarification_message(state.presentation, resources)
         if clarification:
             state.presentation.state.workflow_status = WorkflowStatus.AWAITING_SCOPE_CLARIFICATION
@@ -496,6 +509,7 @@ class RejectSlideUseCase:
 
 class RegenerateBlueprintUseCase:
     def execute(self, state: GraphState) -> GraphState:
+        PrototypePolicy.state(state)
         if state.presentation is None or state.presentation.blueprint is None:
             raise ValueError("Generate a blueprint before requesting revisions.")
         WorkflowPolicy.require_status(
@@ -504,6 +518,7 @@ class RegenerateBlueprintUseCase:
             "regenerate the blueprint",
         )
         resources = resolve_presentation_resources(state)
+        SourceDatePolicy.require_all(resources)
         clarification = PresentationCompatibilityValidator().clarification_message(state.presentation, resources)
         if clarification:
             state.presentation.state.workflow_status = WorkflowStatus.AWAITING_SCOPE_CLARIFICATION
@@ -522,6 +537,7 @@ class RegenerateBlueprintUseCase:
 
 class RegenerateSlideUseCase:
     def execute(self, state: GraphState, index: int) -> GraphState:
+        PrototypePolicy.state(state)
         if state.presentation is None or state.presentation.blueprint is None:
             raise ValueError("Generate a blueprint before regenerating a slide.")
         WorkflowPolicy.require_status(
@@ -552,6 +568,7 @@ class RegenerateSlideUseCase:
                 "This slide was written by the user. Edit it directly instead of asking the model to regenerate it.",
             )
         resources = resolve_presentation_resources(state)
+        SourceDatePolicy.require_all(resources)
         evidence_error = ProductionEvidenceGate.generation_error(
             state.presentation,
             EvidenceContextBuilder.slide_query(state.presentation, outline),

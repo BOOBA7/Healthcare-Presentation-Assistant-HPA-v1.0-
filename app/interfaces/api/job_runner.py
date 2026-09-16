@@ -48,7 +48,10 @@ def submit(
             )
             record("async_job_completed", domain=domain)
         except Exception as exc:  # The API returns safe details on the polling endpoint.
-            logger.exception("Async job failed job_id=%s domain=%s", job_id, domain)
+            current = repository.get_job(user_id, job_id)
+            if current is None or current["status"] == "cancelled":
+                return
+            logger.error("Async job failed job_id=%s domain=%s error_type=%s", job_id, domain, type(exc).__name__)
             repository.update_job(
                 user_id,
                 job_id,

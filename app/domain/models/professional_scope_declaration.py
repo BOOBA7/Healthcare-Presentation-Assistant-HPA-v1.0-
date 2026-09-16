@@ -11,4 +11,8 @@ class ProfessionalScopeDeclaration(BaseModel):
     declared_role: str = Field(min_length=3, max_length=200)
     delivery_purpose: str = Field(min_length=12, max_length=1_000)
     confirmed_within_scope: bool
+    actor_user_id: str | None = None
+    context_digest: str | None = None
+    is_multidisciplinary: bool | None = None
+    confirmed_multidisciplinary: bool = False
     declared_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

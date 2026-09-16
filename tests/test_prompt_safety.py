@@ -1,3 +1,4 @@
+from app.tests.source_fixtures import dated_resource
 from app.ai.harness.healthcare_harness import HEALTHCARE_HARNESS
 from app.ai.prompt_builders.blueprint_prompt_builder import BlueprintPromptBuilder
 from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuilder
@@ -13,7 +14,6 @@ from app.domain.enums.audience_type import AudienceType
 from app.domain.enums.language import Language
 from app.domain.enums.presentation_type import PresentationType
 from app.domain.enums.resource_type import ResourceType
-from app.domain.models.resource import Resource
 from app.domain.models.blueprint import Blueprint
 from app.domain.models.slide_outline import SlideOutline
 from app.domain.models.user_profile import UserProfile
@@ -28,6 +28,8 @@ def _presentation():
         presentation_type=PresentationType.LECTURE,
         language=Language.ENGLISH,
         duration_minutes=15,
+        target_slide_count=10, special_instructions="None",
+        professional_scope="Teaching stewardship", is_multidisciplinary=False,
         objective="Review stewardship evidence",
     )
     presentation = CreatePresentationUseCase().execute(
@@ -35,8 +37,15 @@ def _presentation():
         context,
         UserProfile(professional_role="veterinarian", preferred_language="fr"),
     )
+    from app.domain.models.professional_scope_declaration import ProfessionalScopeDeclaration
+    from app.application.services.presentation_context_policy import PresentationContextPolicy
+    presentation.professional_scope_declaration = ProfessionalScopeDeclaration(
+        declared_role="veterinarian", delivery_purpose="Teaching stewardship",
+        confirmed_within_scope=True, actor_user_id="synthetic-professor",
+        context_digest=PresentationContextPolicy.digest(context), is_multidisciplinary=False,
+    )
     presentation.resources = [
-        Resource(
+        dated_resource(
             id="pdf-1",
             filename="evidence.pdf",
             file_type=ResourceType.PDF,
@@ -71,7 +80,7 @@ def test_prompt_hierarchy_explicitly_treats_document_text_as_untrusted():
 
 def test_production_evidence_gate_blocks_unsupported_or_missing_evidence_in_french():
     presentation = _presentation()
-    state = GraphState(presentation=presentation, user_profile=presentation.owner_profile)
+    state = GraphState(prototype_declaration="synthetic", presentation=presentation, user_profile=presentation.owner_profile)
     gate = ProductionEvidenceGate()
 
     assert gate.block_reason(state, "Que dit le PDF sur la posologie de l'amoxicilline ?")
@@ -84,7 +93,7 @@ def test_production_evidence_gate_blocks_unsupported_or_missing_evidence_in_fren
 def test_production_evidence_gate_allows_a_question_supported_by_validated_pdf():
     presentation = _presentation()
     presentation.state.resources_validated = True
-    state = GraphState(presentation=presentation, user_profile=presentation.owner_profile)
+    state = GraphState(prototype_declaration="synthetic", presentation=presentation, user_profile=presentation.owner_profile)
 
     assert ProductionEvidenceGate().block_reason(
         state,
@@ -93,7 +102,7 @@ def test_production_evidence_gate_allows_a_question_supported_by_validated_pdf()
 
 
 def test_general_mode_refuses_scientific_chat_without_user_pdf():
-    state = GraphState(conversation_mode=ConversationMode.GENERAL)
+    state = GraphState(prototype_declaration="synthetic", conversation_mode=ConversationMode.GENERAL)
 
     answer = ProductionEvidenceGate().block_reason(state, "What is the treatment for depression?")
 
@@ -103,20 +112,20 @@ def test_general_mode_refuses_scientific_chat_without_user_pdf():
 
 def test_evidence_gate_uses_a_safe_default_for_short_or_unexpected_factual_questions():
     """A keyword list must not let factual questions bypass PDF retrieval."""
-    state = GraphState(conversation_mode=ConversationMode.GENERAL)
+    state = GraphState(prototype_declaration="synthetic", conversation_mode=ConversationMode.GENERAL)
 
     assert ProductionEvidenceGate().block_reason(state, "What about CBT?") is not None
     assert ProductionEvidenceGate().block_reason(state, "Et la fatigue ?") is not None
 
 
 def test_evidence_gate_blocks_free_text_workflow_planning_without_pdf_evidence():
-    state = GraphState(conversation_mode=ConversationMode.GENERAL)
+    state = GraphState(prototype_declaration="synthetic", conversation_mode=ConversationMode.GENERAL)
 
     assert ProductionEvidenceGate().block_reason(state, "I want to create a presentation project.") is not None
 
 
 def test_evidence_gate_blocks_presentation_context_collection_before_pdf_validation():
-    state = GraphState(conversation_mode=ConversationMode.GENERAL)
+    state = GraphState(prototype_declaration="synthetic", conversation_mode=ConversationMode.GENERAL)
     gate = ProductionEvidenceGate()
 
     assert gate.block_reason(
@@ -132,7 +141,7 @@ def test_evidence_gate_blocks_presentation_context_collection_before_pdf_validat
 
 def test_evidence_gate_rejects_a_scientific_request_hidden_in_profile_or_workflow_text():
     """Profile and presentation words must not bypass the PDF evidence gate."""
-    state = GraphState(conversation_mode=ConversationMode.GENERAL)
+    state = GraphState(prototype_declaration="synthetic", conversation_mode=ConversationMode.GENERAL)
     gate = ProductionEvidenceGate()
 
     for message in (
@@ -153,7 +162,7 @@ def test_missing_pdf_evidence_returns_before_the_model_workflow_is_invoked():
     agent = object.__new__(HealthcarePresentationAgent)
     agent.evidence_gate = ProductionEvidenceGate()
     agent.workflow = ModelWorkflowMustNotRun()
-    state = GraphState(messages=[HumanMessage(content="Create a presentation about Zoloft dosing.")])
+    state = GraphState(prototype_declaration="synthetic", messages=[HumanMessage(content="Create a presentation about Zoloft dosing.")])
 
     result = agent.invoke(state, "strict-evidence-gate")
 
@@ -218,7 +227,7 @@ def test_system_prompt_keeps_presentation_setup_out_of_chat():
 def test_production_chat_receives_the_same_retrieved_pdf_context():
     presentation = _presentation()
     presentation.state.resources_validated = True
-    state = GraphState(presentation=presentation, user_profile=presentation.owner_profile)
+    state = GraphState(prototype_declaration="synthetic", presentation=presentation, user_profile=presentation.owner_profile)
 
     context = HealthcarePresentationAgent._conversation_retrieval_context(
         state, "What does antimicrobial stewardship reduce?"

@@ -20,6 +20,9 @@ from app.domain.enums.evidence_context_mode import EvidenceContextMode
 class GraphState(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="ignore")
 
+    # Missing on legacy snapshots: explicit owner declaration is required.
+    prototype_declaration: str | None = None
+
     messages: Annotated[list[BaseMessage], add_messages] = Field(default_factory=list)
     # Presentation-assistant transcript. It never contains resource-only
     # overview or PDF-discussion turns.
@@ -37,8 +40,8 @@ class GraphState(BaseModel):
     # Project-level evidence experiment setting. It changes passage selection,
     # never the validation, provenance, or human-approval rules.
     evidence_context_mode: EvidenceContextMode = EvidenceContextMode.BM25
-    # Patient Case Mode accepts de-identified cases only and enables identifier
-    # checks before content is persisted or sent to the configured LLM.
+    # Preserve legacy patient flags so the prototype policy can refuse them.
+    # These flags cannot be enabled in the public prototype.
     patient_case_mode: bool = False
     patient_case_acknowledged: bool = False
     conversation_mode: ConversationMode = ConversationMode.GENERAL

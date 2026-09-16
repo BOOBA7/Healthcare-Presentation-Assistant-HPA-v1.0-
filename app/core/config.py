@@ -59,6 +59,10 @@ class Settings(BaseSettings):
         alias="APP_NAME",
     )
 
+    execution_mode: str = Field(default="public_prototype", alias="EXECUTION_MODE")
+
+    local_bind_host: str = Field(default="127.0.0.1", alias="LOCAL_BIND_HOST")
+
     debug: bool = Field(
         default=True,
         alias="DEBUG",
@@ -69,6 +73,13 @@ class Settings(BaseSettings):
     def normalize_debug(cls, value: object) -> object:
         if isinstance(value, str) and value.lower() in {"release", "production", "prod"}:
             return False
+        return value
+
+    @field_validator("local_bind_host")
+    @classmethod
+    def require_loopback_bind_host(cls, value: str) -> str:
+        if value not in {"127.0.0.1", "::1"}:
+            raise ValueError("LOCAL_BIND_HOST must be a loopback address.")
         return value
 
     @property

@@ -40,6 +40,9 @@ def record(event: str, **attributes: object) -> None:
 
 def observe_llm_call(stage: str, prompt: object, invoke: Callable[[], T]) -> T:
     """Measure a model invocation and record duration, prompt size and errors."""
+    from app.application.services.prototype_policy import PrototypePolicy
+
+    PrototypePolicy.mode()
     started_at = perf_counter()
     size = prompt_size(prompt)
     try:

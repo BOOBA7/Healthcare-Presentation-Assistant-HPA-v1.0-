@@ -1,8 +1,8 @@
+from app.tests.source_fixtures import dated_resource
 from langchain_core.messages import AIMessage
 
 from app.application.use_cases.summarize_resources import SummarizeResourcesUseCase
 from app.domain.enums.resource_type import ResourceType
-from app.domain.models.resource import Resource
 
 
 class _FakeModel:
@@ -17,7 +17,7 @@ class _FakeModel:
 
 def test_resource_analysis_uses_uploaded_pdf_context(monkeypatch):
     resources = [
-        Resource(
+        dated_resource(
             id="pdf-1",
             filename="guideline.pdf",
             file_type=ResourceType.PDF,
@@ -27,7 +27,7 @@ def test_resource_analysis_uses_uploaded_pdf_context(monkeypatch):
     ]
     monkeypatch.setattr("app.application.use_cases.summarize_resources.get_llm", lambda: _FakeModel())
 
-    analysis = SummarizeResourcesUseCase().execute(resources, language="en")
+    analysis = SummarizeResourcesUseCase().execute(resources, language="en", prototype_declaration="synthetic")
 
     assert analysis.resource_ids == ["pdf-1"]
     assert "structured follow-up" in analysis.summary
@@ -39,7 +39,7 @@ def test_resource_analysis_rejects_an_unverifiable_citation(monkeypatch):
             return AIMessage(content="Unsupported claim [[cite: pdf-1 | p. 2 | Not present in the PDF.]].")
 
     resources = [
-        Resource(
+        dated_resource(
             id="pdf-1",
             filename="guideline.pdf",
             file_type=ResourceType.PDF,
@@ -52,4 +52,4 @@ def test_resource_analysis_rejects_an_unverifiable_citation(monkeypatch):
     import pytest
 
     with pytest.raises(ValueError, match="PDF page|evidence excerpt"):
-        SummarizeResourcesUseCase().execute(resources, language="en")
+        SummarizeResourcesUseCase().execute(resources, language="en", prototype_declaration="synthetic")

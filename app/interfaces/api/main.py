@@ -1,14 +1,24 @@
+from app.application.services.presentation_context_policy import PresentationContextPolicy
+from app.domain.models.professional_scope_declaration import ProfessionalScopeDeclaration
 from functools import lru_cache
 import logging
+from io import BytesIO
 from pathlib import Path
 
 import httpx
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Request, Depends, FastAPI, Header, HTTPException
+from app.interfaces.api.memory_upload import read_pdf_upload
+from app.application.services.source_screening import SourceScreening
+from app.application.services.source_date_policy import SourceDatePolicy
+from app.application.services.source_document import SourceDocument
+from fastapi.responses import Response
+from urllib.parse import quote
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 
+from app.application.services.prototype_policy import PrototypePolicy
 from app.ai.agents.healthcare_presentation_agent import HealthcarePresentationAgent
 from app.ai.workflows.graph_state import GraphState
 from app.application.use_cases.export_powerpoint import ExportPowerPointUseCase
@@ -73,6 +83,22 @@ _exports_dir = Path("exports")
 _web_dir = Path(__file__).resolve().parent.parent / "web"
 
 
+@app.middleware("http")
+async def prototype_input_boundary(request: Request, call_next):
+    # Account credentials are not presentation content and must never be inspected here.
+    path = request.url.path
+    if request.method in {"POST", "PUT", "PATCH"} and (
+        "/projects" in path or "/chat" in path or "/conversations" in path
+    ) and "application/json" in request.headers.get("content-type", ""):
+        try:
+            PrototypePolicy.screen(await request.json())
+        except DomainError as exc:
+            return JSONResponse(status_code=409, content={"detail": {"code": exc.code, "message": exc.user_message}})
+        except ValueError:
+            return JSONResponse(status_code=422, content={"detail": "Invalid JSON."})
+    return await call_next(request)
+
+
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=20_000)
     user_id: str = Field(min_length=1, max_length=128)
@@ -83,6 +109,8 @@ class ProjectRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=128)
     project_id: str = Field(min_length=1, max_length=128)
     project_name: str | None = Field(default=None, min_length=1, max_length=128)
+    prototype_declaration: str | None = None
+    external_processing_acknowledged: bool = False
 
 
 class CredentialsRequest(BaseModel):
@@ -166,8 +194,14 @@ class PresentationSetupRequest(BaseModel):
     audience: AudienceType
     presentation_type: PresentationType
     language: Language
-    duration_minutes: int = Field(gt=0, le=480)
+    duration_minutes: int = Field(strict=True, gt=0, le=480)
     objective: str = Field(min_length=1, max_length=4_000)
+    target_slide_count: int = Field(strict=True, gt=0, le=200)
+    special_instructions: str = Field(min_length=1, max_length=4000)
+    professional_scope: str = Field(min_length=12, max_length=1000)
+    is_multidisciplinary: bool = Field(strict=True)
+    confirmed_within_scope: bool = Field(strict=True)
+    confirmed_multidisciplinary: bool = Field(default=False, strict=True)
     # Title-slide details are optional and must remain explicitly human supplied.
     # They are never inferred by the LLM.
     presenter_name: str | None = Field(default=None, max_length=200)
@@ -240,11 +274,15 @@ def _project_response(user_id: str, project_id: str, thread_id: str, state: Grap
         "thread_id": thread_id,
         "presentation": presentation,
         "resource_library": [_resource_response(resource) for resource in state.resource_library],
+        "owner_library": [_resource_response(resource) for resource in get_repository().list_library_resources(user_id)],
         "resource_analysis": state.resource_analysis.model_dump(mode="json") if state.resource_analysis else None,
         "messages": messages,
         "resource_messages": resource_messages,
         "conversation_context": state.conversation_context.model_dump(mode="json"),
         "evidence_context_mode": state.evidence_context_mode.value,
+        "prototype_declaration": state.prototype_declaration,
+        "prototype_policy_version": PrototypePolicy.VERSION,
+        "external_processing_disclosure": PrototypePolicy.DISCLOSURE,
         "patient_case_mode": state.patient_case_mode,
         "patient_case_acknowledged": state.patient_case_acknowledged,
         "user_profile": state.user_profile.model_dump(mode="json"),
@@ -263,6 +301,12 @@ def _project_response(user_id: str, project_id: str, thread_id: str, state: Grap
 
 def _resource_response(resource) -> dict[str, object]:
     """Expose resource metadata only; extracted PDF text never leaves the API."""
+    try:
+        date_evidence = SourceDatePolicy.require(resource).model_dump(mode="json")
+        date_blocker = None
+    except DomainError as exc:
+        date_evidence = None
+        date_blocker = {"code": exc.code, "message": exc.user_message}
     return {
         "id": resource.id,
         "filename": resource.filename,
@@ -274,6 +318,14 @@ def _resource_response(resource) -> dict[str, object]:
         "is_validated": resource.is_validated,
         "page_count": len(resource.extracted_pages),
         "characters_extracted": len(resource.extracted_text or ""),
+        "scientific_date": date_evidence,
+        "source_blocker": date_blocker,
+        "original_available": resource._original_content is not None,
+        "original_sha256": resource.metadata.original_sha256,
+        "media_type": resource.metadata.media_type,
+        "author": resource.metadata.author,
+        "publisher": resource.metadata.publisher,
+        "rights": resource.metadata.rights,
     }
 
 
@@ -304,11 +356,32 @@ def _required_human_action(state: GraphState) -> dict[str, str] | None:
     return None
 
 
-def _get_project(user_id: str, project_id: str) -> tuple[str, GraphState]:
+def _require_prototype_input(value):
+    try:
+        PrototypePolicy.screen(value)
+    except ValueError as exc:
+        raise _workflow_conflict(exc) from exc
+
+
+def _require_prototype(state):
+    try:
+        PrototypePolicy.state(state)
+    except ValueError as exc:
+        raise _workflow_conflict(exc) from exc
+
+
+def _get_project(user_id: str, project_id: str, *, require_prototype: bool = True, require_context: bool = True) -> tuple[str, GraphState]:
     stored = get_repository().load(user_id, project_id)
     if stored is None:
         raise HTTPException(status_code=404, detail="Project not found.")
     thread_id, state = stored
+    if require_prototype:
+        _require_prototype(state)
+        if require_context:
+            try:
+                PresentationContextPolicy.require(state.presentation)
+            except ValueError as exc:
+                raise _workflow_conflict(exc) from exc
     state.resource_chunks = get_repository().load_resource_chunks(user_id, project_id)
     return thread_id, state
 
@@ -355,6 +428,9 @@ def _audit_payload(state: GraphState, extra: dict[str, object] | None = None) ->
         "last_tool": state.execution.last_tool,
         "error": state.execution.error,
         "evidence_context_mode": state.evidence_context_mode.value,
+        "prototype_declaration": state.prototype_declaration,
+        "prototype_policy_version": PrototypePolicy.VERSION,
+        "external_processing_disclosure": PrototypePolicy.DISCLOSURE,
         "patient_case_mode": state.patient_case_mode,
     }
     if presentation and presentation.generation_records:
@@ -434,9 +510,24 @@ def setup_presentation(
 ):
     """Create a presentation from explicit human input, without an LLM decision."""
     _assert_owner(user_id, authenticated_user)
-    thread_id, state = _get_project(user_id, project_id)
-    if state.presentation is not None:
-        raise HTTPException(status_code=409, detail="A presentation already exists for this Project.")
+    _require_prototype_input(request)
+    thread_id, state = _get_project(user_id, project_id, require_context=False)
+    existing = state.presentation
+    if existing is not None:
+        # This slice completes legacy context only; substantive editing/invalidation is deferred.
+        try:
+            PresentationContextPolicy.require(existing)
+        except ValueError:
+            pass
+        else:
+            raise HTTPException(status_code=409, detail="Presentation context is already complete.")
+        for field, value in existing.context.model_dump().items():
+            if value is not None and getattr(request, field, value) != value:
+                raise HTTPException(status_code=409, detail=f"Preserve existing context field: {field}")
+    if (not request.confirmed_within_scope or not request.professional_scope.strip()
+            or len(request.professional_scope.strip()) < 12
+            or (request.is_multidisciplinary and not request.confirmed_multidisciplinary)):
+        raise HTTPException(status_code=409, detail="Explicit scope and multidisciplinary competence confirmation required.")
     if state.patient_case_mode:
         try:
             PatientCasePrivacyGuard().ensure_texts_safe((request.topic, request.objective))
@@ -451,15 +542,36 @@ def setup_presentation(
     except ValueError as exc:
         raise _workflow_conflict(exc) from exc
 
+    if existing is not None:
+        existing.context = state.presentation_context
+        existing.state.context = state.presentation_context
+    declaration = ProfessionalScopeDeclaration(
+        declared_role=state.user_profile.professional_role,
+        delivery_purpose=request.professional_scope.strip(),
+        confirmed_within_scope=True,
+        actor_user_id=authenticated_user,
+        context_digest=PresentationContextPolicy.digest(state.presentation.context),
+        is_multidisciplinary=request.is_multidisciplinary,
+        confirmed_multidisciplinary=request.confirmed_multidisciplinary,
+    )
+    state.presentation.professional_scope_declaration = declaration
     state.execution = ExecutionContext(last_tool="create_presentation")
     return _save_project(
         user_id,
         project_id,
         thread_id,
         state,
-        event_type="PRESENTATION_CREATED_FROM_FORM",
+        event_type="PRESENTATION_CONTEXT_COMPLETED" if existing else "PRESENTATION_CREATED_FROM_FORM",
         actor="user",
         extra_audit={
+            "actor_user_id": authenticated_user,
+            "approval": True,
+            "context_digest": declaration.context_digest,
+            "confirmed_within_scope": True,
+            "is_multidisciplinary": request.is_multidisciplinary,
+            "confirmed_multidisciplinary": request.confirmed_multidisciplinary,
+            "declared_at": declaration.declared_at.isoformat(),
+            "target_slide_count": request.target_slide_count,
             "topic_length": len(request.topic),
             "objective_length": len(request.objective),
             "duration_minutes": request.duration_minutes,
@@ -479,6 +591,7 @@ def record_professional_scope_declaration(
 ):
     """Resolve a scope mismatch through explicit, durable human input only."""
     _assert_owner(user_id, authenticated_user)
+    _require_prototype_input(request)
     thread_id, state = _get_project(user_id, project_id)
     try:
         state = RecordProfessionalScopeUseCase().execute(state, **request.model_dump())
@@ -493,6 +606,8 @@ def record_professional_scope_declaration(
         event_type="PROFESSIONAL_SCOPE_DECLARED",
         actor="user",
         extra_audit={
+            "actor_user_id": authenticated_user,
+            "approval": True,
             "declared_role": request.declared_role.strip(),
             "confirmed_within_scope": request.confirmed_within_scope,
         },
@@ -503,12 +618,12 @@ def record_professional_scope_declaration(
 def chat(request: ChatRequest, authenticated_user: str = Depends(_authenticated_user)):
     """Send a user message to the presentation workflow."""
     _assert_owner(request.user_id, authenticated_user)
+    _require_prototype_input(request)
     stored = get_repository().load(request.user_id, request.project_id)
-    thread_id, state = (
-        stored
-        if stored
-        else get_repository().create_empty(request.user_id, request.project_id)
-    )
+    if stored is None:
+        raise HTTPException(status_code=404, detail="Create a Project and declare public/synthetic content first.")
+    thread_id, state = stored
+    _require_prototype(state)
     state.resource_chunks = get_repository().load_resource_chunks(request.user_id, request.project_id)
     if state.patient_case_mode:
         try:
@@ -599,32 +714,34 @@ def chat(request: ChatRequest, authenticated_user: str = Depends(_authenticated_
 
 
 @app.post("/resources/pdf/{user_id}/{project_id}")
-async def upload_pdf_resource(user_id: str, project_id: str, file: UploadFile = File(...), authenticated_user: str = Depends(_authenticated_user)):
+async def upload_pdf_resource(user_id: str, project_id: str, request: Request, authenticated_user: str = Depends(_authenticated_user)):
     """Extract a PDF into the Project library; production selection is explicit."""
     _assert_owner(user_id, authenticated_user)
-    filename = Path(file.filename or "resource.pdf").name
-    # Some browsers/local proxies send application/octet-stream for a valid
-    # PDF. The extension is accepted here; PyMuPDF below remains the actual
-    # content validation boundary.
-    if file.content_type not in {"application/pdf", "application/x-pdf"} and not filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=415, detail="Only PDF uploads are accepted.")
     stored = get_repository().load(user_id, project_id)
     if stored is None:
         raise HTTPException(status_code=404, detail="Project not found.")
     thread_id, state = stored
-    content = await file.read()
-    if len(content) > 20 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="PDF files are limited to 20 MB.")
+    _require_prototype(state)
+    original_filename, media_type, content = await read_pdf_upload(request)
+    filename = Path(original_filename).name
+    # Some browsers/local proxies send application/octet-stream for a valid
+    # PDF. The extension is accepted here; PyMuPDF below remains the actual
+    # content validation boundary.
+    if media_type not in {"application/pdf", "application/x-pdf"} and not filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=415, detail="Only PDF uploads are accepted.")
     try:
         resource = ExtractPdfResourceUseCase().execute(
             filename,
             content,
             patient_case_mode=state.patient_case_mode,
+            prototype_declaration=state.prototype_declaration,
         )
+        ensure_resource_library(state)
+        AddProjectResourceUseCase().execute(state, resource)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail={"code": exc.code, "message": exc.user_message}) from None
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    ensure_resource_library(state)
-    AddProjectResourceUseCase().execute(state, resource)
     state.execution = ExecutionContext()
     _save_project(
         user_id,
@@ -633,16 +750,67 @@ async def upload_pdf_resource(user_id: str, project_id: str, file: UploadFile = 
         state,
         event_type="RESOURCE_UPLOADED",
         actor="user",
-        extra_audit={"resource_id": resource.id, "filename": resource.filename, "pages": len(resource.extracted_pages)},
+        extra_audit={"resource_id": resource.id, "filename": resource.filename, "pages": len(resource.extracted_pages), "screening_policy": SourceScreening.VERSION,
+                     "original_sha256": resource.metadata.original_sha256, "date_policy": SourceDatePolicy.VERSION,
+                     "scientific_date": resource.metadata.scientific_date.value, "date_origin": resource.metadata.scientific_date.origin},
     )
     return {"resource_id": resource.id, "filename": resource.filename, "characters_extracted": len(resource.extracted_text or "")}
+
+
+@app.get("/users/{user_id}/resources")
+def owner_library(user_id: str, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
+    return {"resources": [_resource_response(resource) for resource in get_repository().list_library_resources(user_id)]}
+
+
+@app.post("/projects/{user_id}/{project_id}/library/{resource_id}")
+def add_library_source(user_id: str, project_id: str, resource_id: str, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
+    thread, state = _get_project(user_id, project_id, require_context=False)
+    resource = get_repository().library_resource(user_id, resource_id)
+    if resource is None:
+        raise HTTPException(404, "Library resource not found.")
+    try:
+        AddProjectResourceUseCase().execute(state, resource)
+        return _save_project(user_id, project_id, thread, state, event_type="LIBRARY_SOURCE_ADDED", actor=authenticated_user, extra_audit={"resource_id": resource_id})
+    except ValueError as exc:
+        raise _workflow_conflict(exc) from exc
+
+
+@app.delete("/users/{user_id}/resources/{resource_id}")
+def delete_library_source(user_id: str, resource_id: str, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
+    try:
+        result = get_repository().permanently_delete_source(user_id, resource_id, authenticated_user)
+    except ValueError as exc:
+        raise _workflow_conflict(exc) from exc
+    if result is None:
+        raise HTTPException(404, "Library resource not found.")
+    return JSONResponse(result, status_code=202 if result["cleanup_pending"] else 200)
+
+
+@app.get("/projects/{user_id}/{project_id}/resources/{resource_id}/original")
+def original_pdf(user_id: str, project_id: str, resource_id: str, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
+    _, state = _get_project(user_id, project_id, require_context=False)
+    resource = next((item for item in state.resource_library if item.id == resource_id), None)
+    if resource is None or resource._original_content is None:
+        raise HTTPException(404, "The original PDF is unavailable. Replace this legacy resource.")
+    try:
+        content = SourceDocument.verify(resource, resource._original_content)
+    except DomainError as exc:
+        raise _workflow_conflict(exc) from None
+    return Response(content, media_type="application/pdf", headers={
+        "Content-Disposition": "attachment; filename*=UTF-8''" + quote(resource.filename, safe=""),
+        "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+    })
 
 
 @app.post("/projects/{user_id}/{project_id}/resources/summary")
 def summarize_resources(user_id: str, project_id: str, authenticated_user: str = Depends(_authenticated_user)):
     """Generate a separate, source-only overview to support discussion before production."""
     _assert_owner(user_id, authenticated_user)
-    thread_id, state = _get_project(user_id, project_id)
+    thread_id, state = _get_project(user_id, project_id, require_context=False)
     try:
         ensure_resource_library(state)
         language = state.user_profile.preferred_language
@@ -652,6 +820,7 @@ def summarize_resources(user_id: str, project_id: str, authenticated_user: str =
             chunks=state.resource_chunks,
             evidence_context_mode=state.evidence_context_mode,
             patient_case_mode=state.patient_case_mode,
+            prototype_declaration=state.prototype_declaration,
         )
     except ValueError as exc:
         raise _workflow_conflict(exc) from exc
@@ -679,8 +848,13 @@ def discuss_resources(
 ):
     """Discuss project PDFs independently from the presentation workflow."""
     _assert_owner(user_id, authenticated_user)
-    thread_id, state = _get_project(user_id, project_id)
+    _require_prototype_input(request)
+    thread_id, state = _get_project(user_id, project_id, require_context=False)
     ensure_resource_library(state)
+    try:
+        SourceDatePolicy.require_all(state.resource_library)
+    except DomainError as exc:
+        raise _workflow_conflict(exc) from None
     if state.patient_case_mode:
         try:
             PatientCasePrivacyGuard().ensure_text_safe(request.question)
@@ -706,6 +880,7 @@ def discuss_resources(
             chunks=state.resource_chunks,
             evidence_context_mode=state.evidence_context_mode,
             patient_case_mode=state.patient_case_mode,
+            prototype_declaration=state.prototype_declaration,
         )
     except ValueError as exc:
         state.execution = ExecutionContext(error=str(exc))
@@ -774,7 +949,7 @@ def delete_resource(
 ):
     """Remove a PDF and safely reset content that could depend on it."""
     _assert_owner(user_id, authenticated_user)
-    thread_id, state = _get_project(user_id, project_id)
+    thread_id, state = _get_project(user_id, project_id, require_context=False)
     try:
         ensure_resource_library(state)
         RemoveProjectResourceUseCase().execute(state, resource_id)
@@ -785,7 +960,7 @@ def delete_resource(
         project_id,
         thread_id,
         state,
-        event_type="RESOURCE_DELETED",
+        event_type="RESOURCE_REMOVED_FROM_PROJECT",
         actor="user",
         extra_audit={"resource_id": resource_id},
     )
@@ -811,7 +986,7 @@ def detach_resource_from_presentation(
     user_id: str, project_id: str, resource_id: str, authenticated_user: str = Depends(_authenticated_user)
 ):
     _assert_owner(user_id, authenticated_user)
-    thread_id, state = _get_project(user_id, project_id)
+    thread_id, state = _get_project(user_id, project_id, require_context=False)
     try:
         DetachResourceFromPresentationUseCase().execute(state, resource_id)
     except ValueError as exc:
@@ -823,6 +998,7 @@ def detach_resource_from_presentation(
 @app.post("/projects/{user_id}/{project_id}/blueprint/items/{index}/approve")
 def approve_blueprint_item(user_id: str, project_id: str, index: int, request: ReviewRequest, authenticated_user: str = Depends(_authenticated_user)):
     _assert_owner(user_id, authenticated_user)
+    _require_prototype_input(request)
     thread_id, state = _get_project(user_id, project_id)
     try:
         state = ReviewBlueprintItemUseCase().execute(state, index, request.comments)
@@ -834,6 +1010,7 @@ def approve_blueprint_item(user_id: str, project_id: str, index: int, request: R
 @app.post("/projects/{user_id}/{project_id}/blueprint/items/{index}/reject")
 def reject_blueprint_item(user_id: str, project_id: str, index: int, request: ReviewRequest, authenticated_user: str = Depends(_authenticated_user)):
     _assert_owner(user_id, authenticated_user)
+    _require_prototype_input(request)
     thread_id, state = _get_project(user_id, project_id)
     try:
         state = RejectBlueprintItemUseCase().execute(state, index, request.comments)
@@ -852,6 +1029,7 @@ def edit_blueprint_item(
 ):
     """Save direct user-authored or user-edited blueprint content."""
     _assert_owner(user_id, authenticated_user)
+    _require_prototype_input(request)
     thread_id, state = _get_project(user_id, project_id)
     try:
         state = EditBlueprintItemUseCase().execute(state, index, **request.model_dump())
@@ -908,6 +1086,7 @@ def approve_blueprint(user_id: str, project_id: str, authenticated_user: str = D
 def update_agenda(user_id: str, project_id: str, request: AgendaRequest, authenticated_user: str = Depends(_authenticated_user)):
     """Save a human edit of the model-proposed agenda."""
     _assert_owner(user_id, authenticated_user)
+    _require_prototype_input(request)
     thread_id, state = _get_project(user_id, project_id)
     if state.presentation is None or state.presentation.agenda is None:
         raise HTTPException(status_code=409, detail="Generate a blueprint before editing the agenda.")
@@ -955,6 +1134,7 @@ def approve_agenda(user_id: str, project_id: str, authenticated_user: str = Depe
 @app.put("/projects/{user_id}/{project_id}/theme")
 def update_theme(user_id: str, project_id: str, request: ThemeRequest, authenticated_user: str = Depends(_authenticated_user)):
     _assert_owner(user_id, authenticated_user)
+    _require_prototype_input(request)
     thread_id, state = _get_project(user_id, project_id)
     if state.presentation is None:
         raise HTTPException(status_code=409, detail="Create a presentation before selecting a theme.")
@@ -979,6 +1159,7 @@ def update_project_evidence_settings(
 ):
     """Persist human-controlled retrieval and patient-case privacy settings."""
     _assert_owner(user_id, authenticated_user)
+    _require_prototype_input(request)
     thread_id, state = _get_project(user_id, project_id)
     try:
         state = UpdateProjectEvidenceSettingsUseCase().execute(state, **request.model_dump())
@@ -1007,6 +1188,7 @@ def update_presentation_details(
 ):
     """Save human-supplied title-slide metadata without involving the LLM."""
     _assert_owner(user_id, authenticated_user)
+    _require_prototype_input(request)
     thread_id, state = _get_project(user_id, project_id)
     try:
         state = UpdatePresentationDetailsUseCase().execute(state, **request.model_dump())
@@ -1026,6 +1208,7 @@ def update_presentation_details(
 @app.post("/projects/{user_id}/{project_id}/slides/{index}/approve")
 def approve_slide(user_id: str, project_id: str, index: int, request: ReviewRequest, authenticated_user: str = Depends(_authenticated_user)):
     _assert_owner(user_id, authenticated_user)
+    _require_prototype_input(request)
     thread_id, state = _get_project(user_id, project_id)
     try:
         state = ReviewSlideUseCase().execute(state, index, request.comments)
@@ -1037,6 +1220,7 @@ def approve_slide(user_id: str, project_id: str, index: int, request: ReviewRequ
 @app.post("/projects/{user_id}/{project_id}/slides/{index}/reject")
 def reject_slide(user_id: str, project_id: str, index: int, request: ReviewRequest, authenticated_user: str = Depends(_authenticated_user)):
     _assert_owner(user_id, authenticated_user)
+    _require_prototype_input(request)
     thread_id, state = _get_project(user_id, project_id)
     try:
         state = RejectSlideUseCase().execute(state, index, request.comments)
@@ -1055,6 +1239,7 @@ def edit_slide(
 ):
     """Save direct slide edits while retaining the original model snapshot."""
     _assert_owner(user_id, authenticated_user)
+    _require_prototype_input(request)
     thread_id, state = _get_project(user_id, project_id)
     try:
         state = EditSlideUseCase().execute(state, index, **request.model_dump())
@@ -1115,9 +1300,10 @@ def export_powerpoint(user_id: str, project_id: str, authenticated_user: str = D
             if state.presentation.custom_template_id
             else None
         )
-        path = ExportPowerPointUseCase().execute(
+        output = BytesIO()
+        ExportPowerPointUseCase().execute(
             state.presentation,
-            _exports_dir,
+            output,
             custom_template,
             resolve_presentation_resources(state),
         )
@@ -1131,9 +1317,9 @@ def export_powerpoint(user_id: str, project_id: str, authenticated_user: str = D
         state,
         event_type="PRESENTATION_EXPORTED",
         actor="user",
-        extra_audit={"filename": path.name},
+        extra_audit={"delivery": "memory_download"},
     )
-    return FileResponse(path, media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation", filename=f"{state.presentation.title}.pptx")
+    return Response(output.getvalue(), media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation", headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(state.presentation.title, safe='')}.pptx", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
 
 from app.interfaces.api.routers import auth, jobs, platform, projects  # noqa: E402
@@ -1150,4 +1336,4 @@ app.include_router(projects.router)
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host=settings.local_bind_host, port=8000)

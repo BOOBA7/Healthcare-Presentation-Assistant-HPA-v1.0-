@@ -1,5 +1,8 @@
 """Use cases for the project resource library and production selection."""
 
+from app.application.services.prototype_policy import PrototypePolicy
+from app.application.services.source_screening import SourceScreening
+from app.application.services.source_date_policy import SourceDatePolicy
 from app.ai.workflows.graph_state import GraphState
 from app.application.use_cases.add_resource import AddResourceUseCase
 from app.application.use_cases.remove_resource import RemoveResourceUseCase
@@ -9,6 +12,9 @@ from app.domain.models.resource import Resource
 
 class AddProjectResourceUseCase:
     def execute(self, state: GraphState, resource: Resource) -> GraphState:
+        PrototypePolicy.state(state)
+        SourceScreening.resource(resource, require_text=True)
+        SourceDatePolicy.require(resource)
         if any(item.id == resource.id for item in state.resource_library):
             raise WorkflowError("RESOURCE_ALREADY_EXISTS", "This PDF is already in the Project library.")
         state.resource_library.append(resource)
@@ -23,6 +29,7 @@ class AttachResourceToPresentationUseCase:
         resource = next((item for item in state.resource_library if item.id == resource_id), None)
         if resource is None:
             raise WorkflowError("RESOURCE_NOT_FOUND", "The selected PDF is not in this Project library.")
+        SourceDatePolicy.require(resource)
         if any(item.id == resource_id for item in state.presentation.resources):
             return state
         AddResourceUseCase().execute(state.presentation, resource.model_copy(deep=True))

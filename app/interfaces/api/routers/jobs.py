@@ -28,6 +28,7 @@ router = APIRouter(prefix="/api/v1", tags=["jobs"])
 
 def _create_project_job(repository, user_id: str, project_id: str, domain: str) -> dict[str, object]:
     """Map the repository's Project-wide job lock to a stable API conflict."""
+    api._get_project(user_id, project_id, require_context=domain != "resources")
     try:
         return repository.create_job(user_id, project_id, domain)
     except ProjectJobRunningError as exc:
@@ -40,6 +41,12 @@ def _load_workflow_state(repository, user_id: str, project_id: str):
     if stored is None:
         raise HTTPException(status_code=404, detail="Project not found.")
     thread_id, state = stored
+    api._require_prototype(state)
+    try:
+        api.PresentationContextPolicy.require(state.presentation)
+        api.SourceDatePolicy.require_all(resolve_presentation_resources(state))
+    except ValueError as exc:
+        raise api._workflow_conflict(exc) from exc
     state.resource_chunks = repository.load_resource_chunks(user_id, project_id)
     return thread_id, state
 
@@ -248,6 +255,7 @@ def _queue_regeneration_job(
             )
         raise api._workflow_conflict(exc) from exc
 
+    api._require_prototype_input([comments, blueprint_comments])
     normalized_comments = comments.strip()
     normalized_blueprint_comments = {
         int(index): str(comment).strip()
@@ -351,6 +359,7 @@ def start_conversation_job(
 ) -> dict[str, object]:
     """Run an agent turn asynchronously; clients poll the returned job."""
     api._assert_owner(request.user_id, authenticated_user)
+    api._require_prototype_input(request)
     repository = api.get_repository()
     if repository.load(request.user_id, request.project_id) is None:
         raise HTTPException(status_code=404, detail="Project not found.")

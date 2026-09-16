@@ -39,7 +39,7 @@ def test_human_presentation_setup_creates_a_production_draft_without_model_acces
     assert client.post(
         "/projects",
         headers=headers,
-        json={"user_id": "clinician", "project_id": "draft-1", "project_name": "Draft"},
+        json={"prototype_declaration": "synthetic", "external_processing_acknowledged": True, "user_id": "clinician", "project_id": "draft-1", "project_name": "Draft"},
     ).status_code == 200
 
     response = client.post(
@@ -51,6 +51,9 @@ def test_human_presentation_setup_creates_a_production_draft_without_model_acces
             "presentation_type": "Lecture",
             "language": "English",
             "duration_minutes": 12,
+            "target_slide_count": 10, "special_instructions": "None",
+            "professional_scope": "Teaching within my specialty",
+            "is_multidisciplinary": False, "confirmed_within_scope": True,
             "objective": "Review the supplied evidence.",
             "presenter_name": "Dr Ada Martin",
             "presenter_title": "Medical Affairs Lead",
@@ -117,7 +120,7 @@ def test_authenticated_project_resource_lifecycle_is_durable_and_hides_pdf_text(
     created = client.post(
         "/projects",
         headers=headers,
-        json={"user_id": "clinician", "project_id": "review-1", "project_name": "Clinical review"},
+        json={"prototype_declaration": "synthetic", "external_processing_acknowledged": True, "user_id": "clinician", "project_id": "review-1", "project_name": "Clinical review"},
     )
     assert created.status_code == 200
 
@@ -125,6 +128,7 @@ def test_authenticated_project_resource_lifecycle_is_durable_and_hides_pdf_text(
     page = document.new_page()
     source_text = "Clinical evidence must remain within the uploaded Project PDF."
     page.insert_text((72, 72), source_text)
+    document[0].insert_text((72, 40), "Publication date: 2024")
     pdf_bytes = document.tobytes()
     document.close()
     uploaded = client.post(
@@ -144,7 +148,7 @@ def test_authenticated_project_resource_lifecycle_is_durable_and_hides_pdf_text(
     assert deleted.status_code == 200
     assert client.get("/projects/clinician/review-1", headers=headers).json()["resource_library"] == []
     events = client.get("/projects/clinician/review-1/audit-events", headers=headers).json()["events"]
-    assert {event["event_type"] for event in events} >= {"PROJECT_CREATED", "RESOURCE_UPLOADED", "RESOURCE_DELETED"}
+    assert {event["event_type"] for event in events} >= {"PROJECT_CREATED", "RESOURCE_UPLOADED", "RESOURCE_REMOVED_FROM_PROJECT"}
 
 
 def test_resource_discussion_has_its_own_history_and_does_not_pollute_presentation_chat(tmp_path, monkeypatch):
@@ -169,11 +173,12 @@ def test_resource_discussion_has_its_own_history_and_does_not_pollute_presentati
     )
     headers = {"Authorization": f"Bearer {registration.json()['token']}"}
     assert client.post(
-        "/projects", headers=headers, json={"user_id": "reviewer", "project_id": "project-1"}
+        "/projects", headers=headers, json={"prototype_declaration": "synthetic", "external_processing_acknowledged": True, "user_id": "reviewer", "project_id": "project-1"}
     ).status_code == 200
 
     document = fitz.open()
     document.new_page().insert_text((72, 72), "The uploaded PDF supports the requested topic.")
+    document[0].insert_text((72, 40), "Publication date: 2024")
     uploaded = client.post(
         "/resources/pdf/reviewer/project-1",
         headers=headers,
@@ -215,7 +220,7 @@ def test_chat_persists_user_turn_when_the_model_provider_fails(tmp_path, monkeyp
     )
     headers = {"Authorization": f"Bearer {registration.json()['token']}"}
     assert client.post(
-        "/projects", headers=headers, json={"user_id": "history-user", "project_id": "history-project"}
+        "/projects", headers=headers, json={"prototype_declaration": "synthetic", "external_processing_acknowledged": True, "user_id": "history-user", "project_id": "history-project"}
     ).status_code == 200
 
     response = client.post(
@@ -261,7 +266,7 @@ def test_resource_discussion_persists_question_and_audits_provider_failure(tmp_p
     assert client.post(
         "/projects",
         headers=headers,
-        json={"user_id": "resource-history-user", "project_id": "resource-history-project"},
+        json={"prototype_declaration": "synthetic", "external_processing_acknowledged": True, "user_id": "resource-history-user", "project_id": "resource-history-project"},
     ).status_code == 200
 
     response = client.post(
@@ -286,7 +291,7 @@ def test_resource_discussion_persists_question_and_audits_provider_failure(tmp_p
     }
 
 
-def test_project_evidence_settings_are_persisted_and_require_patient_acknowledgement(tmp_path, monkeypatch):
+def test_project_evidence_settings_preserve_retrieval_but_forbid_patient_cases(tmp_path, monkeypatch):
     repository = UserSessionRepository(tmp_path / "hpa.sqlite3")
     monkeypatch.setattr(api, "get_repository", lambda: repository)
     client = TestClient(app)
@@ -296,7 +301,7 @@ def test_project_evidence_settings_are_persisted_and_require_patient_acknowledge
     )
     headers = {"Authorization": f"Bearer {registration.json()['token']}"}
     assert client.post(
-        "/projects", headers=headers, json={"user_id": "settings-user", "project_id": "comparison"}
+        "/projects", headers=headers, json={"prototype_declaration": "synthetic", "external_processing_acknowledged": True, "user_id": "settings-user", "project_id": "comparison"}
     ).status_code == 200
 
     missing_acknowledgement = client.put(
@@ -305,7 +310,7 @@ def test_project_evidence_settings_are_persisted_and_require_patient_acknowledge
         json={"evidence_context_mode": "direct_bounded", "patient_case_mode": True},
     )
     assert missing_acknowledgement.status_code == 409
-    assert missing_acknowledgement.json()["detail"]["code"] == "PATIENT_CASE_ACKNOWLEDGEMENT_REQUIRED"
+    assert missing_acknowledgement.json()["detail"]["code"] == "PROTOTYPE_DECLARATION_REQUIRED"
 
     updated = client.put(
         "/projects/settings-user/comparison/evidence-settings",
@@ -316,6 +321,12 @@ def test_project_evidence_settings_are_persisted_and_require_patient_acknowledge
             "patient_case_acknowledged": True,
         },
     )
-    assert updated.status_code == 200
-    assert updated.json()["evidence_context_mode"] == "direct_bounded"
-    assert updated.json()["patient_case_mode"] is True
+    assert updated.status_code == 409
+    assert updated.json()["detail"]["code"] == "PROTOTYPE_DECLARATION_REQUIRED"
+    allowed = client.put(
+        "/projects/settings-user/comparison/evidence-settings", headers=headers,
+        json={"evidence_context_mode": "direct_bounded"},
+    )
+    assert allowed.status_code == 200
+    assert allowed.json()["evidence_context_mode"] == "direct_bounded"
+    assert allowed.json()["patient_case_mode"] is False

@@ -27,6 +27,9 @@ class Presentation(BaseModel):
     blueprint and generated slides.
     """
 
+    # Missing on legacy snapshots: explicit owner declaration is required.
+    prototype_declaration: str | None = None
+
     id: str = Field(
         ...,
         description="Unique presentation identifier.",

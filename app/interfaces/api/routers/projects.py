@@ -1,9 +1,11 @@
 """Project, template and audit routes."""
 
+from app.application.services.prototype_policy import PrototypePolicy
+from xml.etree import ElementTree
 import io
 from zipfile import BadZipFile, ZipFile
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from app.interfaces.api import main as api
 
@@ -19,6 +21,15 @@ def list_projects(
     return {"projects": api.get_repository().list_projects(user_id)}
 
 
+@router.get("/users/{user_id}/dashboard")
+def project_dashboard(
+    user_id: str, authenticated_user: str = Depends(api._authenticated_user)
+) -> dict[str, object]:
+    """Return persisted Project cards for the authenticated owner."""
+    api._assert_owner(user_id, authenticated_user)
+    return api.get_repository().project_dashboard(user_id)
+
+
 @router.get("/users/{user_id}/templates")
 def list_templates(
     user_id: str, authenticated_user: str = Depends(api._authenticated_user)
@@ -31,9 +42,18 @@ def list_templates(
 async def upload_template(
     user_id: str,
     file: UploadFile = File(...),
+    prototype_declaration: str = Form(...),
+    external_processing_acknowledged: bool = Form(...),
     authenticated_user: str = Depends(api._authenticated_user),
 ) -> dict[str, str]:
     api._assert_owner(user_id, authenticated_user)
+    try:
+        PrototypePolicy.declaration(prototype_declaration)
+        if not external_processing_acknowledged:
+            PrototypePolicy.declaration(None)
+        PrototypePolicy.screen(file.filename)
+    except ValueError as exc:
+        raise api._workflow_conflict(exc) from exc
     if not (file.filename or "").lower().endswith(".pptx"):
         raise HTTPException(status_code=415, detail="Only .pptx templates are accepted.")
     content = await file.read()
@@ -43,9 +63,16 @@ async def upload_template(
         with ZipFile(io.BytesIO(content)) as archive:
             if "ppt/presentation.xml" not in archive.namelist():
                 raise BadZipFile("Not a PowerPoint file")
-    except BadZipFile as exc:
+            # Templates can contain slide text and speaker notes, not just styling.
+            for name in archive.namelist():
+                if name.endswith(".xml"):
+                    element = ElementTree.fromstring(archive.read(name))
+                    PrototypePolicy.screen(" ".join(element.itertext()))
+    except ValueError as exc:
+        raise api._workflow_conflict(exc) from exc
+    except (BadZipFile, ElementTree.ParseError) as exc:
         raise HTTPException(status_code=422, detail="The uploaded file is not a valid .pptx template.") from exc
-    return api.get_repository().save_presentation_template(user_id, file.filename or "template.pptx", content)
+    return api.get_repository().save_presentation_template(user_id, file.filename or "template.pptx", content, prototype_declaration=prototype_declaration)
 
 
 @router.post("/projects")
@@ -54,12 +81,34 @@ def create_or_open_project(
     authenticated_user: str = Depends(api._authenticated_user),
 ) -> dict[str, object]:
     api._assert_owner(request.user_id, authenticated_user)
+    api._require_prototype_input(request)
     repository = api.get_repository()
     stored = repository.load(request.user_id, request.project_id)
+    if request.prototype_declaration is not None:
+        try:
+            PrototypePolicy.declaration(request.prototype_declaration)
+            if not request.external_processing_acknowledged:
+                PrototypePolicy.declaration(None)
+            if stored is not None:
+                PrototypePolicy.screen(stored[1])
+        except ValueError as exc:
+            raise api._workflow_conflict(exc) from exc
     if stored is None:
-        thread_id, state = repository.create_empty(request.user_id, request.project_id, request.project_name)
+        try:
+            thread_id, state = repository.create_empty(request.user_id, request.project_id, request.project_name)
+        except ValueError as exc:
+            raise api._workflow_conflict(exc) from exc
     else:
         thread_id, state = stored
+    if request.prototype_declaration is not None:
+        state.prototype_declaration = request.prototype_declaration
+        if state.presentation is not None:
+            state.presentation.prototype_declaration = state.prototype_declaration
+        repository.save_with_event(
+            request.user_id, request.project_id, thread_id, state,
+            "PROTOTYPE_DECLARATION_RECORDED", "user",
+            api._audit_payload(state, {"actor_user_id": authenticated_user, "external_processing_acknowledged": True}),
+        )
     if stored is not None and request.project_name:
         repository.save_with_event(
             request.user_id,
@@ -81,7 +130,7 @@ def get_project(
     authenticated_user: str = Depends(api._authenticated_user),
 ) -> dict[str, object]:
     api._assert_owner(user_id, authenticated_user)
-    thread_id, state = api._get_project(user_id, project_id)
+    thread_id, state = api._get_project(user_id, project_id, require_prototype=False)
     return api._project_response(user_id, project_id, thread_id, state)
 
 
@@ -92,7 +141,7 @@ def list_audit_events(
     authenticated_user: str = Depends(api._authenticated_user),
 ) -> dict[str, object]:
     api._assert_owner(user_id, authenticated_user)
-    api._get_project(user_id, project_id)
+    api._get_project(user_id, project_id, require_prototype=False)
     return {"events": api.get_repository().list_events(user_id, project_id)}
 
 
@@ -103,11 +152,22 @@ def delete_project(
     authenticated_user: str = Depends(api._authenticated_user),
 ) -> None:
     api._assert_owner(user_id, authenticated_user)
-    if not api.get_repository().delete_project(user_id, project_id):
+    try:
+        deleted = api.get_repository().delete_project(user_id, project_id)
+    except ValueError as exc:
+        raise api._workflow_conflict(exc) from exc
+    if not deleted:
         raise HTTPException(status_code=404, detail="Project not found.")
+    if api.get_repository().source_cleanup_pending():
+        return api.JSONResponse({"deleted": True, "cleanup_pending": True}, status_code=202)
 
 
 @router.delete("/users/{user_id}", status_code=204)
 def delete_user(user_id: str, authenticated_user: str = Depends(api._authenticated_user)) -> None:
     api._assert_owner(user_id, authenticated_user)
-    api.get_repository().delete_user(user_id)
+    try:
+        api.get_repository().delete_user(user_id)
+    except ValueError as exc:
+        raise api._workflow_conflict(exc) from exc
+    if api.get_repository().source_cleanup_pending():
+        return api.JSONResponse({"deleted": True, "cleanup_pending": True}, status_code=202)

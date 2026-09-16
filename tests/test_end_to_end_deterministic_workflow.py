@@ -183,6 +183,7 @@ def _pdf_bytes() -> bytes:
         "Vitamin D status should be assessed using the supplied clinical evidence. "
         "This source is provided by the user for the presentation workflow.",
     )
+    document[0].insert_text((72, 40), "Publication date: 2024")
     content = document.tobytes()
     document.close()
     return content
@@ -234,7 +235,7 @@ def test_end_to_end_human_controlled_workflow_without_live_model(tmp_path, monke
     assert client.post(
         "/projects",
         headers=headers,
-        json={"user_id": "hcp-e2e", "project_id": "vitamin-d", "project_name": "Vitamin D update"},
+        json={"prototype_declaration": "synthetic", "external_processing_acknowledged": True, "user_id": "hcp-e2e", "project_id": "vitamin-d", "project_name": "Vitamin D update"},
     ).status_code == 200
 
     setup = client.post(
@@ -246,6 +247,9 @@ def test_end_to_end_human_controlled_workflow_without_live_model(tmp_path, monke
             "presentation_type": "Lecture",
             "language": "English",
             "duration_minutes": 10,
+            "target_slide_count": 10, "special_instructions": "None",
+            "professional_scope": "Teaching within my specialty",
+            "is_multidisciplinary": False, "confirmed_within_scope": True,
             "objective": "Review the supplied clinical evidence.",
             "presenter_name": "Dr Ada Martin",
             "presenter_title": "Rheumatologist",
@@ -390,11 +394,18 @@ def test_end_to_end_human_controlled_workflow_without_live_model(tmp_path, monke
     assert client.post("/projects/hcp-e2e/vitamin-d/slides/approve", headers=headers).status_code == 200
     assert client.post("/projects/hcp-e2e/vitamin-d/presentation/approve", headers=headers).status_code == 200
 
+    # 03.3 uses BytesIO: any internal filesystem export would fail this test.
+    original_export = api.ExportPowerPointUseCase.execute
+    def memory_export(self, presentation, destination, *args):
+        assert isinstance(destination, BytesIO)
+        return original_export(self, presentation, destination, *args)
+    monkeypatch.setattr(api.ExportPowerPointUseCase, "execute", memory_export)
     exported = client.get("/presentations/hcp-e2e/vitamin-d/export/pptx", headers=headers)
     assert exported.status_code == 200
     assert exported.headers["content-type"].startswith(
         "application/vnd.openxmlformats-officedocument.presentationml.presentation"
     )
+    assert exported.headers["cache-control"] == "no-store"
     deck = PowerPoint(BytesIO(exported.content))
     title_slide_text = " ".join(shape.text for shape in deck.slides[0].shapes if hasattr(shape, "text"))
     assert len(deck.slides) == 5  # title, agenda, two slides, mandatory resources slide
@@ -422,7 +433,7 @@ def test_scope_declaration_api_requires_explicit_human_fields(tmp_path, monkeypa
     assert client.post(
         "/projects",
         headers=headers,
-        json={"user_id": "scope-hcp", "project_id": "scope-project"},
+        json={"prototype_declaration": "synthetic", "external_processing_acknowledged": True, "user_id": "scope-hcp", "project_id": "scope-project"},
     ).status_code == 200
     assert client.post(
         "/projects/scope-hcp/scope-project/presentation/setup",
@@ -433,6 +444,9 @@ def test_scope_declaration_api_requires_explicit_human_fields(tmp_path, monkeypa
             "presentation_type": "Lecture",
             "language": "English",
             "duration_minutes": 10,
+            "target_slide_count": 10, "special_instructions": "None",
+            "professional_scope": "Teaching within my specialty",
+            "is_multidisciplinary": False, "confirmed_within_scope": True,
             "objective": "Review user-provided evidence for healthcare professionals.",
         },
     ).status_code == 200

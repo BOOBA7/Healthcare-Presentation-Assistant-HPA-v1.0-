@@ -4,6 +4,7 @@ from app.domain.enums.workflow_status import WorkflowStatus
 from app.domain.models.presentation import Presentation
 from app.domain.models.resource import Resource
 from app.application.services.workflow_policy import WorkflowPolicy
+from app.application.services.source_date_policy import SourceDatePolicy
 
 
 class ValidateResourcesUseCase:
@@ -33,7 +34,9 @@ class ValidateResourcesUseCase:
         )
         # A presentation contains lightweight selections.  The project library
         # owns the parsed PDF payload used for validation and retrieval.
-        is_valid, messages = self.validator.validate(resources if resources is not None else presentation.resources)
+        resolved = resources if resources is not None else presentation.resources
+        SourceDatePolicy.require_all(resolved)
+        is_valid, messages = self.validator.validate(resolved)
 
         if not is_valid:
             raise ValueError("\n".join(messages))

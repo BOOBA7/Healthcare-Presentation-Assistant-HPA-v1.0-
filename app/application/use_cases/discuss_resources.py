@@ -1,5 +1,6 @@
 """Answer questions about the project PDF library without entering production."""
 
+from app.application.services.prototype_policy import PrototypePolicy
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.ai.llm.llm import get_llm
@@ -22,7 +23,12 @@ class DiscussResourcesUseCase:
         chunks: list[ResourceChunk] | None = None,
         evidence_context_mode: EvidenceContextMode = EvidenceContextMode.BM25,
         patient_case_mode: bool = False,
+        prototype_declaration: str | None = None,
     ) -> str:
+        PrototypePolicy.declaration(prototype_declaration, patient_case_mode=patient_case_mode)
+        PrototypePolicy.screen(resources)
+        PrototypePolicy.screen(chunks)
+        PrototypePolicy.screen(question)
         question = question.strip()
         if not question:
             raise ValueError("Enter a question about the uploaded resources.")

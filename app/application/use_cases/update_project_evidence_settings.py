@@ -1,5 +1,6 @@
 """Human-controlled Project settings for evidence context and patient cases."""
 
+from app.application.services.prototype_policy import PrototypePolicy
 from app.ai.workflows.graph_state import GraphState
 from app.application.services.patient_case_privacy import PatientCasePrivacyGuard
 from app.domain.enums.evidence_context_mode import EvidenceContextMode
@@ -17,6 +18,9 @@ class UpdateProjectEvidenceSettingsUseCase:
         patient_case_mode: bool,
         patient_case_acknowledged: bool,
     ) -> GraphState:
+        PrototypePolicy.state(state)
+        if patient_case_mode or patient_case_acknowledged:
+            PrototypePolicy.declaration(None, patient_case_mode=True)
         if patient_case_mode and not patient_case_acknowledged:
             raise WorkflowError(
                 "PATIENT_CASE_ACKNOWLEDGEMENT_REQUIRED",

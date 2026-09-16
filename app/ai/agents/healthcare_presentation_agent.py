@@ -3,6 +3,7 @@ import re
 
 from langchain_core.messages import AIMessage, SystemMessage
 
+from app.application.services.prototype_policy import PrototypePolicy
 from app.ai.agents.agent_builder import AgentBuilder
 from app.ai.workflows.graph_state import GraphState
 from app.ai.workflows.presentation_graph import PresentationGraph
@@ -39,6 +40,7 @@ class HealthcarePresentationAgent:
         """
         Execute one reasoning session.
         """
+        PrototypePolicy.state(state)
         logger.info("Executing workflow (thread=%s)", thread_id)
 
         latest_user_message = next(

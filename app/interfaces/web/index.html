@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/web/styles.css?v=20260823-presentation-preview-v1" />
+    <link rel="stylesheet" href="/web/styles.css?v=20260915-dashboard-v1" />
   </head>
   <body>
     <section id="auth-screen" class="auth-screen">
@@ -20,11 +20,9 @@
         <input id="auth-user-id" maxlength="128" autocomplete="username" placeholder="ex. anis" />
         <label for="auth-password" data-i18n="password">Password</label>
         <input id="auth-password" type="password" minlength="8" maxlength="256" autocomplete="current-password" data-i18n-placeholder="passwordHint" placeholder="At least 8 characters" />
-        <label for="auth-role" data-i18n="professionalProfile">Professional profile</label>
-        <select id="auth-role"></select>
         <label for="auth-language" data-i18n="language">Language</label>
-        <select id="auth-language"><option value="en">English</option><option value="fr">Français</option><option value="ar">العربية</option></select>
-        <div class="auth-actions"><button id="login" class="primary" data-i18n="login">Sign in</button><button id="register" class="outline-button" data-i18n="register">Sign up</button><button id="reset-password" class="outline-button" data-i18n="resetPassword">Reset password</button></div>
+        <select id="auth-language"><option value="en">English</option><option value="fr">Français</option></select>
+        <div class="auth-actions"><button id="login" class="primary" data-i18n="login">Sign in</button><button id="register" class="outline-button" data-i18n="register">Sign up</button></div>
         <p id="auth-error" class="auth-error" hidden></p>
       </div>
     </section>
@@ -38,10 +36,8 @@
           <details class="workspace-menu">
             <summary><span class="menu-label" data-i18n="connectedUser">Connected user</span><strong id="user-display">—</strong></summary>
             <div class="workspace-menu-content">
-              <label for="user-role" data-i18n="professionalProfile">Professional profile</label>
-              <select id="user-role"></select>
               <label for="user-language" data-i18n="language">Language</label>
-              <select id="user-language"><option value="en">English</option><option value="fr">Français</option><option value="ar">العربية</option></select>
+              <select id="user-language"><option value="en">English</option><option value="fr">Français</option></select>
               <button id="logout" class="secondary full" data-i18n="logout">Sign out</button>
               <button id="delete-user" class="secondary full danger-button" data-i18n="deleteAccount">Delete my account</button>
             </div>
@@ -81,6 +77,11 @@
             <button id="export-pptx" class="primary" disabled data-i18n="downloadPptx">Download PowerPoint</button>
           </div>
         </header>
+
+        <section class="dashboard-card card" aria-labelledby="dashboard-title">
+          <div class="card-heading"><div><p class="eyebrow" data-i18n="personalDashboard">Personal dashboard</p><h2 id="dashboard-title" data-i18n="projects">Projects</h2></div><strong id="dashboard-count" class="pill">0</strong></div>
+          <div id="project-dashboard" class="project-dashboard" aria-live="polite"></div>
+        </section>
 
         <section id="notice" class="notice" hidden></section>
         <nav class="workspace-tabs" aria-label="Workspace">
@@ -156,6 +157,6 @@
         <div id="template-modal-preview" class="template-large-preview clinical"><span>HPA</span><strong>Healthcare presentation</strong><small>Scientific evidence · Human review</small></div>
       </div>
     </div>
-    <script src="/web/app.js?v=20260823-presentation-preview-v1" defer></script>
+    <script src="/web/app.js?v=03.3-source-lifecycle" defer></script>
   </body>
 </html>

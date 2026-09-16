@@ -395,7 +395,7 @@ API keys, session tokens or Streamlit secrets.
 ### Web interface
 
 ```bash
-uvicorn app.interfaces.api.main:app --reload
+uvicorn app.interfaces.api.main:app --host 127.0.0.1 --reload
 ```
 
 Open [http://127.0.0.1:8000/app](http://127.0.0.1:8000/app). API documentation

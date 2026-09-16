@@ -21,6 +21,7 @@ def resource_selection(resource: Resource) -> Resource:
         path=resource.path,
         is_validated=resource.is_validated,
         uploaded_at=resource.uploaded_at,
+        metadata=resource.metadata.model_copy(deep=True, update={"pdf_metadata": {}, "xml_metadata": None}),
     )
 
 

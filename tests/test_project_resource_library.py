@@ -1,3 +1,4 @@
+from app.tests.source_fixtures import dated_resource
 from app.ai.workflows.graph_state import GraphState
 from app.ai.workflows.tools import collect_context, create_presentation, validate_context
 from app.application.services.resource_library import ensure_resource_library, resolve_presentation_resources
@@ -15,7 +16,7 @@ from app.domain.models.resource import Resource
 
 
 def _resource() -> Resource:
-    return Resource(
+    return dated_resource(
         id="pdf-1",
         filename="guideline.pdf",
         file_type=ResourceType.PDF,
@@ -26,19 +27,21 @@ def _resource() -> Resource:
 
 def _presentation_state() -> GraphState:
     state = collect_context.func(
-        GraphState(),
+        GraphState(prototype_declaration="synthetic"),
         topic="Topic",
         audience=AudienceType.SPECIALIST,
         presentation_type=PresentationType.LECTURE,
         language=Language.ENGLISH,
         duration_minutes=10,
+        target_slide_count=10, special_instructions="None",
+        professional_scope="Teaching within my specialty", is_multidisciplinary=False,
         objective="Review evidence",
     )
     return create_presentation.func(validate_context.func(state))
 
 
 def test_project_library_is_independent_from_presentation_creation():
-    state = GraphState()
+    state = GraphState(prototype_declaration="synthetic")
     AddProjectResourceUseCase().execute(state, _resource())
 
     assert [resource.id for resource in state.resource_library] == ["pdf-1"]
@@ -54,7 +57,7 @@ def test_explicit_attachment_and_detachment_reset_only_production_state():
     assert [resource.id for resource in state.presentation.resources] == ["pdf-1"]
     assert state.presentation.resources[0].extracted_text is None
     assert state.presentation.resources[0].extracted_pages == []
-    assert resolve_presentation_resources(state)[0].extracted_pages == [{"page": 1, "text": "Evidence text."}]
+    assert resolve_presentation_resources(state)[0].extracted_pages == [{"page": 1, "text": "Evidence text.\nPublication date: 2024"}]
     assert state.presentation.state.workflow_status == WorkflowStatus.AWAITING_RESOURCE_VALIDATION
     DetachResourceFromPresentationUseCase().execute(state, "pdf-1")
     assert not state.presentation.resources

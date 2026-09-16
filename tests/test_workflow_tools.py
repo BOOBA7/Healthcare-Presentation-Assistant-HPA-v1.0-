@@ -1,3 +1,4 @@
+from app.tests.source_fixtures import dated_resource
 import pytest
 
 from app.ai.workflows.graph_state import GraphState
@@ -32,7 +33,6 @@ from app.application.use_cases.add_resource import AddResourceUseCase
 from app.application.services.workflow_policy import WorkflowPolicy
 from app.ai.agents.healthcare_presentation_agent import HealthcarePresentationAgent
 from app.domain.enums.resource_type import ResourceType
-from app.domain.models.resource import Resource
 from app.domain.models.agenda import Agenda
 from app.domain.models.user_profile import UserProfile
 from app.domain.enums.workflow_status import WorkflowStatus
@@ -42,12 +42,14 @@ from pptx import Presentation as PowerPoint
 
 def test_context_can_create_a_presentation_without_a_live_llm():
     state = collect_context.func(
-        GraphState(user_profile=UserProfile(professional_role="biologist", preferred_language="ar")),
+        GraphState(prototype_declaration="synthetic", user_profile=UserProfile(professional_role="biologist", preferred_language="ar")),
         topic="Depression",
         audience=AudienceType.SPECIALIST,
         presentation_type=PresentationType.LECTURE,
         language=Language.FRENCH,
         duration_minutes=20,
+        target_slide_count=10, special_instructions="None",
+        professional_scope="Teaching within my specialty", is_multidisciplinary=False,
         objective="Review novel treatment strategies",
     )
 
@@ -61,12 +63,14 @@ def test_context_can_create_a_presentation_without_a_live_llm():
 
 def test_optional_title_slide_details_are_preserved_without_blocking_context_validation():
     state = collect_context.func(
-        GraphState(),
+        GraphState(prototype_declaration="synthetic"),
         topic="Depression",
         audience=AudienceType.SPECIALIST,
         presentation_type=PresentationType.LECTURE,
         language=Language.ENGLISH,
         duration_minutes=20,
+        target_slide_count=10, special_instructions="None",
+        professional_scope="Teaching within my specialty", is_multidisciplinary=False,
         objective="Review treatment strategies",
         presenter_name="Dr Ada Martin",
         presenter_title="Associate Professor of Psychiatry",
@@ -85,12 +89,14 @@ def test_optional_title_slide_details_are_preserved_without_blocking_context_val
 
 def test_updating_title_slide_details_reopens_only_final_approval():
     state = collect_context.func(
-        GraphState(),
+        GraphState(prototype_declaration="synthetic"),
         topic="Depression",
         audience=AudienceType.SPECIALIST,
         presentation_type=PresentationType.LECTURE,
         language=Language.ENGLISH,
         duration_minutes=20,
+        target_slide_count=10, special_instructions="None",
+        professional_scope="Teaching within my specialty", is_multidisciplinary=False,
         objective="Review treatment strategies",
     )
     state = create_presentation.func(validate_context.func(state))
@@ -109,7 +115,7 @@ def test_updating_title_slide_details_reopens_only_final_approval():
 
 
 def test_final_approval_requires_slide_approval_first():
-    state = GraphState()
+    state = GraphState(prototype_declaration="synthetic")
     state.presentation = type("Presentation", (), {"slides": [Slide(slide_number=1, title="Test")], "state": type("State", (), {"slides_validated": False, "presentation_validated": False, "workflow_status": WorkflowStatus.AWAITING_SLIDE_APPROVAL})()})()
 
     state = ReviewSlideUseCase().execute(state, index=0, comments="Approved")
@@ -122,17 +128,19 @@ def test_final_approval_requires_slide_approval_first():
 
 def test_veterinarian_profile_requires_scope_clarification_before_blueprint_generation():
     state = collect_context.func(
-        GraphState(user_profile=UserProfile(professional_role="veterinarian", preferred_language="fr")),
+        GraphState(prototype_declaration="synthetic", user_profile=UserProfile(professional_role="veterinarian", preferred_language="fr")),
         topic="Depression",
         audience=AudienceType.GENERAL_PRACTITIONER,
         presentation_type=PresentationType.LECTURE,
         language=Language.FRENCH,
         duration_minutes=20,
+        target_slide_count=10, special_instructions="None",
+        professional_scope="Teaching within my specialty", is_multidisciplinary=False,
         objective="Review treatment guidelines",
     )
     state = create_presentation.func(validate_context.func(state))
     state.presentation.resources = [
-        Resource(
+        dated_resource(
             id="apa-pdf",
             filename="apa-depression-guideline.pdf",
             file_type=ResourceType.PDF,
@@ -160,7 +168,7 @@ def test_veterinarian_profile_requires_scope_clarification_before_blueprint_gene
 
 
 def test_scope_clarification_resumes_slide_generation_when_blueprint_was_already_approved():
-    state = GraphState()
+    state = GraphState(prototype_declaration="synthetic")
     state.presentation = type(
         "Presentation",
         (),
@@ -174,6 +182,7 @@ def test_scope_clarification_resumes_slide_generation_when_blueprint_was_already
                 },
             )(),
             "professional_scope": None,
+            "professional_scope_declaration": None,
         },
     )()
 
@@ -190,12 +199,14 @@ def test_scope_clarification_resumes_slide_generation_when_blueprint_was_already
 def test_scope_clarification_is_not_accepted_from_chat_text():
     """Only the explicit scope form can resume a blocked workflow."""
     state = collect_context.func(
-        GraphState(user_profile=UserProfile(professional_role="veterinarian", preferred_language="en")),
+        GraphState(prototype_declaration="synthetic", user_profile=UserProfile(professional_role="veterinarian", preferred_language="en")),
         topic="Depression",
         audience=AudienceType.GENERAL_PRACTITIONER,
         presentation_type=PresentationType.LECTURE,
         language=Language.ENGLISH,
         duration_minutes=20,
+        target_slide_count=10, special_instructions="None",
+        professional_scope="Teaching within my specialty", is_multidisciplinary=False,
         objective="Review approved product evidence",
     )
     state = create_presentation.func(validate_context.func(state))
@@ -208,7 +219,7 @@ def test_scope_clarification_is_not_accepted_from_chat_text():
 
 
 def test_scope_clarification_prompt_is_deterministic_and_concise():
-    state = GraphState(user_profile=UserProfile(professional_role="veterinarian", preferred_language="en"))
+    state = GraphState(prototype_declaration="synthetic", user_profile=UserProfile(professional_role="veterinarian", preferred_language="en"))
     state.presentation = type(
         "Presentation",
         (),
@@ -223,7 +234,7 @@ def test_scope_clarification_prompt_is_deterministic_and_concise():
 
 
 def test_scope_declaration_requires_human_confirmation():
-    state = GraphState()
+    state = GraphState(prototype_declaration="synthetic")
     state.presentation = type(
         "Presentation",
         (),
@@ -236,6 +247,7 @@ def test_scope_declaration_requires_human_confirmation():
                 },
             )(),
             "professional_scope": None,
+            "professional_scope_declaration": None,
         },
     )()
 
@@ -250,17 +262,19 @@ def test_scope_declaration_requires_human_confirmation():
 
 def test_deleting_a_resource_resets_generated_content_and_approvals():
     state = collect_context.func(
-        GraphState(),
+        GraphState(prototype_declaration="synthetic"),
         topic="Depression",
         audience=AudienceType.SPECIALIST,
         presentation_type=PresentationType.LECTURE,
         language=Language.FRENCH,
         duration_minutes=20,
+        target_slide_count=10, special_instructions="None",
+        professional_scope="Teaching within my specialty", is_multidisciplinary=False,
         objective="Review treatment guidelines",
     )
     presentation = create_presentation.func(validate_context.func(state)).presentation
     presentation.resources = [
-        Resource(
+        dated_resource(
             id="resource-1",
             filename="guideline.pdf",
             file_type=ResourceType.PDF,
@@ -285,12 +299,14 @@ def test_deleting_a_resource_resets_generated_content_and_approvals():
 
 def test_adding_a_resource_is_allowed_late_and_resets_dependent_output():
     state = collect_context.func(
-        GraphState(),
+        GraphState(prototype_declaration="synthetic"),
         topic="Depression",
         audience=AudienceType.SPECIALIST,
         presentation_type=PresentationType.LECTURE,
         language=Language.FRENCH,
         duration_minutes=20,
+        target_slide_count=10, special_instructions="None",
+        professional_scope="Teaching within my specialty", is_multidisciplinary=False,
         objective="Review treatment guidelines",
     )
     presentation = create_presentation.func(validate_context.func(state)).presentation
@@ -311,7 +327,7 @@ def test_adding_a_resource_is_allowed_late_and_resets_dependent_output():
 
     AddResourceUseCase().execute(
         presentation,
-        Resource(
+        dated_resource(
             id="resource-new",
             filename="new-guideline.pdf",
             file_type=ResourceType.PDF,
@@ -331,17 +347,19 @@ def test_adding_a_resource_is_allowed_late_and_resets_dependent_output():
 
 def test_blueprint_request_surfaces_human_resource_validation_only_when_needed():
     state = collect_context.func(
-        GraphState(),
+        GraphState(prototype_declaration="synthetic"),
         topic="Depression",
         audience=AudienceType.SPECIALIST,
         presentation_type=PresentationType.LECTURE,
         language=Language.FRENCH,
         duration_minutes=20,
+        target_slide_count=10, special_instructions="None",
+        professional_scope="Teaching within my specialty", is_multidisciplinary=False,
         objective="Review treatment guidelines",
     )
     state = create_presentation.func(validate_context.func(state))
     state.presentation.resources = [
-        Resource(
+        dated_resource(
             id="resource-1",
             filename="guideline.pdf",
             file_type=ResourceType.PDF,
@@ -366,12 +384,14 @@ def test_blueprint_request_surfaces_human_resource_validation_only_when_needed()
 
 def test_user_blueprint_edit_is_traced_and_invalidates_dependent_workflow_steps():
     state = collect_context.func(
-        GraphState(),
+        GraphState(prototype_declaration="synthetic"),
         topic="Depression",
         audience=AudienceType.SPECIALIST,
         presentation_type=PresentationType.LECTURE,
         language=Language.FRENCH,
         duration_minutes=20,
+        target_slide_count=10, special_instructions="None",
+        professional_scope="Teaching within my specialty", is_multidisciplinary=False,
         objective="Review treatment guidelines",
     )
     state = create_presentation.func(validate_context.func(state))
@@ -411,7 +431,7 @@ def test_user_blueprint_edit_is_traced_and_invalidates_dependent_workflow_steps(
 
 
 def test_user_slide_edit_requires_new_human_approval_without_inheriting_ai_evidence():
-    state = GraphState()
+    state = GraphState(prototype_declaration="synthetic")
     state.presentation = type(
         "Presentation",
         (),
@@ -460,12 +480,14 @@ def test_user_slide_edit_requires_new_human_approval_without_inheriting_ai_evide
 
 def test_powerpoint_always_ends_with_user_validated_resources(tmp_path):
     state = collect_context.func(
-        GraphState(),
+        GraphState(prototype_declaration="synthetic"),
         topic="Depression",
         audience=AudienceType.SPECIALIST,
         presentation_type=PresentationType.LECTURE,
         language=Language.FRENCH,
         duration_minutes=20,
+        target_slide_count=10, special_instructions="None",
+        professional_scope="Teaching within my specialty", is_multidisciplinary=False,
         objective="Review novel treatment strategies",
     )
     state = create_presentation.func(validate_context.func(state))
@@ -486,7 +508,7 @@ def test_powerpoint_always_ends_with_user_validated_resources(tmp_path):
         )
     ]
     presentation.resources = [
-        Resource(
+        dated_resource(
             id="resource-1",
             filename="guideline.pdf",
             title="Clinical guideline",
@@ -536,12 +558,14 @@ def test_powerpoint_always_ends_with_user_validated_resources(tmp_path):
 
 def test_powerpoint_splits_many_resource_blocks_over_multiple_final_slides(tmp_path):
     state = collect_context.func(
-        GraphState(),
+        GraphState(prototype_declaration="synthetic"),
         topic="Depression",
         audience=AudienceType.SPECIALIST,
         presentation_type=PresentationType.LECTURE,
         language=Language.ENGLISH,
         duration_minutes=20,
+        target_slide_count=10, special_instructions="None",
+        professional_scope="Teaching within my specialty", is_multidisciplinary=False,
         objective="Review treatment strategies",
     )
     presentation = create_presentation.func(validate_context.func(state)).presentation
@@ -561,7 +585,7 @@ def test_powerpoint_splits_many_resource_blocks_over_multiple_final_slides(tmp_p
         )
     ]
     presentation.resources = [
-        Resource(
+        dated_resource(
             id=f"resource-{index}",
             filename=f"guideline-{index}.pdf",
             title=f"A deliberately readable title for guideline {index}",
@@ -592,12 +616,14 @@ def test_powerpoint_splits_many_resource_blocks_over_multiple_final_slides(tmp_p
 
 def test_powerpoint_labels_user_authored_slide_without_claiming_verified_evidence(tmp_path):
     state = collect_context.func(
-        GraphState(),
+        GraphState(prototype_declaration="synthetic"),
         topic="Depression",
         audience=AudienceType.SPECIALIST,
         presentation_type=PresentationType.LECTURE,
         language=Language.ENGLISH,
         duration_minutes=10,
+        target_slide_count=10, special_instructions="None",
+        professional_scope="Teaching within my specialty", is_multidisciplinary=False,
         objective="Review treatment options",
     )
     presentation = create_presentation.func(validate_context.func(state)).presentation
@@ -611,7 +637,7 @@ def test_powerpoint_labels_user_authored_slide_without_claiming_verified_evidenc
         )
     ]
     presentation.resources = [
-        Resource(
+        dated_resource(
             id="resource-1",
             filename="guideline.pdf",
             file_type=ResourceType.PDF,
@@ -635,12 +661,14 @@ def test_powerpoint_labels_user_authored_slide_without_claiming_verified_evidenc
 
 def test_user_authored_blueprint_item_becomes_a_slide_without_a_model_call():
     state = collect_context.func(
-        GraphState(),
+        GraphState(prototype_declaration="synthetic"),
         topic="Depression",
         audience=AudienceType.SPECIALIST,
         presentation_type=PresentationType.LECTURE,
         language=Language.ENGLISH,
         duration_minutes=10,
+        target_slide_count=10, special_instructions="None",
+        professional_scope="Teaching within my specialty", is_multidisciplinary=False,
         objective="Review a user-authored message",
     )
     presentation = create_presentation.func(validate_context.func(state)).presentation
@@ -660,7 +688,7 @@ def test_user_authored_blueprint_item_becomes_a_slide_without_a_model_call():
         ],
     )
     presentation.resources = [
-        Resource(
+        dated_resource(
             id="resource-1",
             filename="guideline.pdf",
             file_type=ResourceType.PDF,
@@ -681,12 +709,14 @@ def test_user_authored_blueprint_item_becomes_a_slide_without_a_model_call():
 
 def test_unsupported_ai_outline_blocks_only_that_slide_and_keeps_supported_user_output():
     state = collect_context.func(
-        GraphState(),
+        GraphState(prototype_declaration="synthetic"),
         topic="Depression",
         audience=AudienceType.SPECIALIST,
         presentation_type=PresentationType.LECTURE,
         language=Language.ENGLISH,
         duration_minutes=10,
+        target_slide_count=10, special_instructions="None",
+        professional_scope="Teaching within my specialty", is_multidisciplinary=False,
         objective="Review treatment evidence",
     )
     presentation = create_presentation.func(validate_context.func(state)).presentation
@@ -712,7 +742,7 @@ def test_unsupported_ai_outline_blocks_only_that_slide_and_keeps_supported_user_
         ],
     )
     presentation.resources = [
-        Resource(
+        dated_resource(
             id="resource-1",
             filename="guideline.pdf",
             file_type=ResourceType.PDF,

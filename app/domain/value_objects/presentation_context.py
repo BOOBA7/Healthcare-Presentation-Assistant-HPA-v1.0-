@@ -42,6 +42,12 @@ class PresentationContext(BaseModel):
         description="Main objective of the presentation.",
     )
 
+    # None preserves legacy projects without inventing user input.
+    target_slide_count: int | None = Field(default=None, strict=True, gt=0, le=200)
+    special_instructions: str | None = Field(default=None, max_length=4000)
+    professional_scope: str | None = Field(default=None, max_length=1000)
+    is_multidisciplinary: bool | None = Field(default=None, strict=True)
+
     presenter_name: str | None = Field(default=None, description="Name shown on the title slide.")
     presenter_title: str | None = Field(default=None, description="Professional title shown on the title slide.")
     organization: str | None = Field(default=None, description="Affiliation shown on the title slide.")

@@ -44,7 +44,7 @@ class StateSummaryBuilder:
                 "- In GENERAL mode, do not answer scientific or clinical questions without user-PDF evidence. Direct presentation setup to Presentation Studio.",
                 "- Chat never creates a presentation and never generates a blueprint or slides. Presentation fields are entered through the explicit Presentation Studio form.",
                 "- In PRODUCTION mode, scientific discussion is allowed only when grounded in retrieved user-PDF passages.",
-                "- When Patient Case Mode is active, work only with de-identified case information. Do not request, repeat, or infer patient identifiers.",
+                "- Public/synthetic prototype only. Patient cases and confidential professional documents are forbidden. Professional mode is unavailable.",
                 "- Resource, blueprint, slide and final validations are human actions performed in the interface, never LLM tools.",
                 "- Title-slide details are optional human-supplied metadata entered in Presentation Studio; never invent or require them.",
                 "- If scope clarification is required, direct the user to the Professional scope form in Presentation Studio. Chat never records or confirms scope declarations.",

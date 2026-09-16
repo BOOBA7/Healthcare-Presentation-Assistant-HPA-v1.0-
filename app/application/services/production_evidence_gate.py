@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from app.application.services.presentation_context_policy import PresentationContextPolicy
+from app.application.services.source_date_policy import SourceDatePolicy
 from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuilder
 from app.ai.workflows.graph_state import GraphState
 from app.application.services.resource_library import resolve_presentation_resources
@@ -55,7 +57,15 @@ class ProductionEvidenceGate:
             record("evidence_refusal", reason="production_without_presentation")
             return self._message(state, "missing")
 
+        try:
+            PresentationContextPolicy.require(presentation)
+        except ValueError as exc:
+            return str(exc)
         resources = resolve_presentation_resources(state)
+        try:
+            SourceDatePolicy.require_all(resources)
+        except ValueError as exc:
+            return str(exc)
         if not presentation.state.resources_validated:
             record("evidence_refusal", reason="resources_not_human_validated")
             return self._message(state, "missing")
@@ -73,6 +83,7 @@ class ProductionEvidenceGate:
 
     @staticmethod
     def generation_error(presentation, query: str, resources=None, chunks=None) -> str | None:
+        PresentationContextPolicy.require(presentation)
         assessment = ProductionEvidenceGate.generation_assessment(presentation, query, resources, chunks)
         if not assessment.has_validated_resources:
             record("generation_refusal", reason="no_validated_resources", **assessment.diagnostic())

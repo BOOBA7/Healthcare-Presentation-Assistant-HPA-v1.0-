@@ -38,20 +38,6 @@ def login(credentials: api.CredentialsRequest) -> dict[str, object]:
     }
 
 
-@router.post("/auth/reset-password")
-def reset_password(credentials: api.CredentialsRequest) -> dict[str, object]:
-    """Local-only recovery flow; public deployments must replace it."""
-    try:
-        api.get_repository().reset_password_without_verification(credentials.user_id, credentials.password)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return {
-        "user_id": credentials.user_id,
-        "token": api.get_repository().create_auth_token(credentials.user_id),
-        "profile": api.get_repository().get_user_profile(credentials.user_id).model_dump(),
-    }
-
-
 @router.get("/users/{user_id}/profile")
 def get_user_profile(
     user_id: str, authenticated_user: str = Depends(api._authenticated_user)

@@ -5,6 +5,10 @@ import json
 import secrets
 import sqlite3
 from pathlib import Path
+from app.application.services.prototype_policy import PrototypePolicy
+from app.application.services.source_screening import SourceScreening
+from app.application.services.source_document import SourceDocument
+from app.domain.exceptions.workflow_error import WorkflowError
 from collections.abc import Iterable
 from uuid import uuid4
 
@@ -19,11 +23,16 @@ from app.domain.models.resource_chunk import ResourceChunk
 from app.domain.models.user_profile import UserProfile
 
 
-class UserSessionRepository:
+from app.interfaces.storage.source_lifecycle_repository import SourceLifecycleRepository
+
+
+class UserSessionRepository(SourceLifecycleRepository):
     """Small local SQLite store for workflow memory scoped by user and project."""
 
     def __init__(self, database_path: Path = Path("data/hpa.sqlite3")) -> None:
+        self._resource_removal_token = object()
         self.database_path = database_path
+        self.legacy_exports_path = Path("exports")
         self.templates_path = database_path.parent / "templates"
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.templates_path.mkdir(parents=True, exist_ok=True)
@@ -133,12 +142,23 @@ class UserSessionRepository:
                 """CREATE INDEX IF NOT EXISTS idx_project_events_project
                    ON project_events (user_id, project_id, created_at)"""
             )
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(presentation_templates)")}
+            if "prototype_declaration" not in columns:
+                connection.execute("ALTER TABLE presentation_templates ADD COLUMN prototype_declaration TEXT")
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(project_resources)")}
+            if "original_pdf" not in columns:
+                connection.execute("ALTER TABLE project_resources ADD COLUMN original_pdf BLOB")
             self._ensure_project_name_column(connection)
             self._ensure_project_revision_column(connection)
             self._ensure_user_profile_columns(connection)
             self._migrate_legacy_user_sessions(connection)
             self._recover_interrupted_jobs(connection)
             self._ensure_one_active_job_per_project(connection)
+            self._init_source_lifecycle(connection)
+        with self._connect() as connection:
+            pending = connection.execute("SELECT pending FROM source_cleanup_state WHERE id = 1").fetchone()[0]
+        if pending:
+            self.finish_source_cleanup()
 
     def load(self, user_id: str, project_id: str) -> tuple[str, GraphState] | None:
         with self._connect() as connection:
@@ -209,6 +229,7 @@ class UserSessionRepository:
     ) -> None:
         with self._connect() as connection:
             self._save_project_row(connection, user_id, project_id, thread_id, state, project_name)
+        self._cleanup_if_pending()
 
     def save_with_event(
         self,
@@ -225,6 +246,13 @@ class UserSessionRepository:
         with self._connect() as connection:
             self._save_project_row(connection, user_id, project_id, thread_id, state, project_name)
             self._insert_event(connection, user_id, project_id, event_type, actor, payload)
+        self._cleanup_if_pending()
+
+    def _cleanup_if_pending(self):
+        with self._connect() as connection:
+            pending = connection.execute("SELECT pending FROM source_cleanup_state WHERE id = 1").fetchone()[0]
+        if pending:
+            self.finish_source_cleanup()
 
     def create_empty(self, user_id: str, project_id: str, project_name: str | None = None) -> tuple[str, GraphState]:
         thread_id, state = str(uuid4()), GraphState()
@@ -249,6 +277,80 @@ class UserSessionRepository:
                 (user_id,),
             ).fetchall()
         return [{"id": row[0], "name": row[1]} for row in rows]
+
+    def project_dashboard(self, user_id: str) -> dict[str, object]:
+        """Return metadata-only cards for the authenticated user's Projects.
+
+        This is read-only recovery data.  ``updated_at`` changes in the same
+        SQLite transaction as persisted state and its audit event, so a failed
+        save cannot be shown here as a successful save.
+        """
+        with self._connect() as connection:
+            projects = connection.execute(
+                """SELECT project_id, project_name, state_json, updated_at
+                   FROM project_sessions WHERE user_id = ?
+                   ORDER BY updated_at DESC, project_id ASC""",
+                (user_id,),
+            ).fetchall()
+            events = connection.execute(
+                """SELECT project_id, event_type, actor, created_at
+                   FROM project_events WHERE user_id = ?
+                   ORDER BY created_at DESC, rowid DESC""",
+                (user_id,),
+            ).fetchall()
+            resources = connection.execute(
+                """SELECT project_id, resource_id, metadata_json
+                   FROM project_resources WHERE user_id = ?""",
+                (user_id,),
+            ).fetchall()
+            templates = connection.execute(
+                """SELECT template_id, filename FROM presentation_templates
+                   WHERE user_id = ?""",
+                (user_id,),
+            ).fetchall()
+
+        recent_by_project: dict[str, list[dict[str, str]]] = {}
+        for project_id, event_type, actor, created_at in events:
+            recent = recent_by_project.setdefault(project_id, [])
+            if len(recent) < 5:
+                recent.append({
+                    "event_type": event_type,
+                    "actor": actor,
+                    "created_at": created_at,
+                })
+        resources_by_project: dict[str, dict[str, str]] = {}
+        for project_id, resource_id, metadata_json in resources:
+            metadata = json.loads(metadata_json)
+            resources_by_project.setdefault(project_id, {})[resource_id] = str(
+                metadata.get("file_type", "unknown")
+            )
+        template_names = {template_id: filename for template_id, filename in templates}
+
+        cards: list[dict[str, object]] = []
+        for project_id, project_name, state_json, updated_at in projects:
+            state = self._deserialize_state(json.loads(state_json))
+            presentation = state.presentation
+            selected_ids = {resource.id for resource in presentation.resources} if presentation else set()
+            type_counts: dict[str, int] = {}
+            for resource_id in selected_ids:
+                resource_type = resources_by_project.get(project_id, {}).get(resource_id, "unknown")
+                type_counts[resource_type] = type_counts.get(resource_type, 0) + 1
+            cards.append({
+                "id": project_id,
+                "name": project_name,
+                "workflow_status": presentation.state.workflow_status.value if presentation else "context_collection",
+                "context": presentation.context.model_dump(mode="json") if presentation else None,
+                "theme": presentation.theme.value if presentation else None,
+                "custom_template_name": (
+                    template_names.get(presentation.custom_template_id)
+                    if presentation and presentation.custom_template_id else None
+                ),
+                "resource_count": len(selected_ids),
+                "resource_types": type_counts,
+                "recent_actions": recent_by_project.get(project_id, []),
+                "last_successful_save": updated_at,
+            })
+        return {"project_count": len(cards), "projects": cards}
 
     def list_project_ids(self, user_id: str) -> list[str]:
         """Compatibility helper for the legacy Streamlit interface."""
@@ -284,19 +386,6 @@ class UserSessionRepository:
             return False
         actual = self._hash_password(password, self._decode(row[0]))
         return hmac.compare_digest(actual, self._decode(row[1]))
-
-    def reset_password_without_verification(self, user_id: str, password: str) -> None:
-        """Local-only recovery requested by the product owner; never expose publicly."""
-        salt = secrets.token_bytes(16)
-        password_hash = self._hash_password(password, salt)
-        with self._connect() as connection:
-            cursor = connection.execute(
-                """UPDATE users SET password_salt = ?, password_hash = ? WHERE user_id = ?""",
-                (self._encode(salt), self._encode(password_hash), user_id),
-            )
-            connection.execute("DELETE FROM auth_tokens WHERE user_id = ?", (user_id,))
-        if cursor.rowcount == 0:
-            raise ValueError("User not found.")
 
     def get_user_profile(self, user_id: str) -> UserProfile:
         with self._connect() as connection:
@@ -339,25 +428,15 @@ class UserSessionRepository:
             ).fetchone()
         return row[0] if row else None
 
-    def delete_project(self, user_id: str, project_id: str) -> bool:
-        with self._connect() as connection:
-            for table in ("project_resource_chunks", "project_resource_pages", "project_resources", "project_jobs"):
-                connection.execute(
-                    f"DELETE FROM {table} WHERE user_id = ? AND project_id = ?",
-                    (user_id, project_id),
-                )
-            connection.execute(
-                "DELETE FROM project_events WHERE user_id = ? AND project_id = ?",
-                (user_id, project_id),
-            )
-            cursor = connection.execute(
-                "DELETE FROM project_sessions WHERE user_id = ? AND project_id = ?",
-                (user_id, project_id),
-            )
-        return cursor.rowcount > 0
-
     def delete_user(self, user_id: str) -> None:
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for (project,) in connection.execute("SELECT project_id FROM project_sessions WHERE user_id = ?", (user_id,)).fetchall():
+                self._delete_project_rows(connection, user_id, project)
+            connection.execute("INSERT OR IGNORE INTO deletion_markers(user_id, kind, object_id) SELECT user_id, 'source', resource_id FROM owner_resources WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM owner_resources WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM source_deletion_audit WHERE user_id = ?", (user_id,))
+            connection.execute("UPDATE source_cleanup_state SET pending = pending + 1 WHERE id = 1")
             rows = connection.execute(
                 "SELECT stored_filename FROM presentation_templates WHERE user_id = ?", (user_id,)
             ).fetchall()
@@ -370,19 +449,22 @@ class UserSessionRepository:
             connection.execute("DELETE FROM project_events WHERE user_id = ?", (user_id,))
             connection.execute("DELETE FROM presentation_templates WHERE user_id = ?", (user_id,))
             connection.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+        self.finish_source_cleanup()
         for row in rows:
             (self.templates_path / row[0]).unlink(missing_ok=True)
 
-    def save_presentation_template(self, user_id: str, filename: str, content: bytes) -> dict[str, str]:
+    def save_presentation_template(self, user_id: str, filename: str, content: bytes, *, prototype_declaration: str | None = None) -> dict[str, str]:
+        PrototypePolicy.declaration(prototype_declaration)
+        PrototypePolicy.screen(filename)
         template_id = str(uuid4())
         safe_filename = Path(filename).name
         stored_filename = f"{template_id}.pptx"
         (self.templates_path / stored_filename).write_bytes(content)
         with self._connect() as connection:
             connection.execute(
-                """INSERT INTO presentation_templates (template_id, user_id, filename, stored_filename)
-                   VALUES (?, ?, ?, ?)""",
-                (template_id, user_id, safe_filename, stored_filename),
+                """INSERT INTO presentation_templates (template_id, user_id, filename, stored_filename, prototype_declaration)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (template_id, user_id, safe_filename, stored_filename, prototype_declaration),
             )
         return {"id": template_id, "filename": safe_filename}
 
@@ -398,11 +480,13 @@ class UserSessionRepository:
     def presentation_template_path(self, user_id: str, template_id: str) -> Path | None:
         with self._connect() as connection:
             row = connection.execute(
-                """SELECT stored_filename FROM presentation_templates
+                """SELECT stored_filename, prototype_declaration FROM presentation_templates
                    WHERE user_id = ? AND template_id = ?""",
                 (user_id, template_id),
             ).fetchone()
         if row is None:
+            return None
+        if row[1] not in ("public", "synthetic"):
             return None
         path = self.templates_path / row[0]
         return path if path.is_file() else None
@@ -443,6 +527,8 @@ class UserSessionRepository:
         job_id = str(uuid4())
         try:
             with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                self._assert_not_deleted(connection, user_id, "project", project_id)
                 connection.execute(
                     """INSERT INTO project_jobs (job_id, user_id, project_id, domain, status, progress, stage)
                        VALUES (?, ?, ?, ?, 'queued', 0, 'queued')""",
@@ -470,7 +556,7 @@ class UserSessionRepository:
             cursor = connection.execute(
                 """UPDATE project_jobs SET status = ?, progress = ?, stage = ?, result_json = ?,
                    error_message = ?, updated_at = CURRENT_TIMESTAMP
-                   WHERE job_id = ? AND user_id = ?""",
+                   WHERE job_id = ? AND user_id = ? AND status != 'cancelled'""",
                 (status, progress, stage, json.dumps(result, default=str) if result is not None else None,
                  error_message, job_id, user_id),
             )
@@ -612,6 +698,7 @@ class UserSessionRepository:
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path, timeout=10)
         connection.execute("PRAGMA busy_timeout = 10000")
+        connection.execute("PRAGMA secure_delete = ON")
         return connection
 
     def _save_project_row(
@@ -623,6 +710,16 @@ class UserSessionRepository:
         state: GraphState,
         project_name: str | None,
     ) -> None:
+        if not connection.in_transaction:
+            connection.execute("BEGIN IMMEDIATE")
+        self._assert_not_deleted(connection, user_id, "project", project_id)
+        # Check both copies before normalization can discard a malicious selection.
+        for resource in state.resource_library:
+            self._assert_not_deleted(connection, user_id, "source", resource.id)
+            SourceScreening.resource(resource, require_text=True)
+        for resource in state.presentation.resources if state.presentation else []:
+            self._assert_not_deleted(connection, user_id, "source", resource.id)
+            SourceScreening.resource(resource)
         ensure_resource_library(state)
         existing = connection.execute(
             "SELECT revision FROM project_sessions WHERE user_id = ? AND project_id = ?",
@@ -633,8 +730,23 @@ class UserSessionRepository:
             raise ConcurrentModificationError()
 
         next_revision = 1 if current_revision is None else current_revision + 1
+        old_resources = []
+        previous_row = connection.execute("SELECT state_json FROM project_sessions WHERE user_id = ? AND project_id = ?", (user_id, project_id)).fetchone()
+        if previous_row:
+            previous = self._deserialize_state(json.loads(previous_row[0]))
+            old_resources = self._load_resources(connection, user_id, project_id) or previous.resource_library
+            removed = {r.id for r in old_resources} - {r.id for r in state.resource_library}
+            old_selected = {r.id for r in previous.presentation.resources} if previous.presentation else set()
+            selected = {r.id for r in state.presentation.resources} if state.presentation else set()
+            if removed or old_selected - selected:
+                self._invalidate_project_storage(connection, user_id, project_id, state)
+        self._sync_resources(connection, user_id, project_id, state.resource_library, _removal_token=self._resource_removal_token)
+        for resource in old_resources:
+            present = connection.execute("SELECT 1 FROM owner_resources WHERE user_id = ? AND resource_id = ?", (user_id, resource.id)).fetchone()
+            deleted = connection.execute("SELECT 1 FROM deletion_markers WHERE user_id = ? AND kind = 'source' AND object_id = ?", (user_id, resource.id)).fetchone()
+            if not present and not deleted:
+                self._remember_source(connection, user_id, resource)
         state.project_revision = next_revision
-        self._sync_resources(connection, user_id, project_id, state.resource_library)
         payload = json.dumps(self._serialize_state(state))
 
         if current_revision is None:
@@ -682,8 +794,38 @@ class UserSessionRepository:
         return chunks
 
     def _sync_resources(
-        self, connection: sqlite3.Connection, user_id: str, project_id: str, resources: list[Resource]
+        self, connection: sqlite3.Connection, user_id: str, project_id: str, resources: list[Resource], *, _removal_token=None
     ) -> None:
+        if not connection.in_transaction:
+            connection.execute("BEGIN IMMEDIATE")
+        self._assert_not_deleted(connection, user_id, "project", project_id)
+        # All checks precede even DELETEs; private repository calls cannot skip them.
+        for resource in resources:
+            self._assert_not_deleted(connection, user_id, "source", resource.id)
+            SourceScreening.resource(resource, require_text=True)
+        # Verify the whole batch before any mutation, including removals.
+        originals = {}
+        stored_resources = {item.id: item for item in self._load_resources(connection, user_id, project_id)}
+        row = connection.execute(
+            "SELECT state_json FROM project_sessions WHERE user_id = ? AND project_id = ?", (user_id, project_id)
+        ).fetchone()
+        if row:
+            for item in self._deserialize_state(json.loads(row[0])).resource_library:
+                stored_resources.setdefault(item.id, item)
+        for resource in resources:
+            previous = stored_resources.get(resource.id)
+            content = resource._original_content or (previous._original_content if previous else None)
+            if content is not None:
+                if previous is not None and content != previous._original_content:
+                    raise WorkflowError("SOURCE_REPLACEMENT_REQUIRED", "Import a replacement under a new resource ID; an existing source original cannot be overwritten.")
+                originals[resource.id] = SourceDocument.verify(resource, content)
+                resource._original_content = content
+            elif previous is None or resource.model_dump(mode="json", exclude={"uploaded_at", "extracted_text"}) != previous.model_dump(mode="json", exclude={"uploaded_at", "extracted_text"}):
+                raise WorkflowError("SOURCE_ORIGINAL_REQUIRED", "The original PDF is missing. Replace this source by importing its dated original.")
+            else:
+                # Unchanged historical records can still be saved/read/removed;
+                # their absence of reliable dates blocks scientific use separately.
+                originals[resource.id] = None
         existing = {
             row[0]: row[1]
             for row in connection.execute(
@@ -693,6 +835,12 @@ class UserSessionRepository:
         }
         incoming_ids = {resource.id for resource in resources}
         removed_ids = set(existing).difference(incoming_ids)
+        if removed_ids and _removal_token is not self._resource_removal_token:
+            raise WorkflowError("SOURCE_REMOVAL_REQUIRES_STATE", "Remove the source through a Project state transaction.")
+        for resource in resources:
+            self._remember_source(connection, user_id, resource, check_only=True)
+        for resource in resources:
+            self._remember_source(connection, user_id, resource)
         for resource_id in removed_ids:
             for table in ("project_resource_chunks", "project_resource_pages", "project_resources"):
                 connection.execute(
@@ -708,12 +856,13 @@ class UserSessionRepository:
             if existing.get(resource.id) == content_hash:
                 continue
             connection.execute(
-                """INSERT INTO project_resources (user_id, project_id, resource_id, metadata_json, content_hash)
-                   VALUES (?, ?, ?, ?, ?)
+                """INSERT INTO project_resources (user_id, project_id, resource_id, metadata_json, content_hash, original_pdf)
+                   VALUES (?, ?, ?, ?, ?, ?)
                    ON CONFLICT(user_id, project_id, resource_id) DO UPDATE SET
                    metadata_json = excluded.metadata_json, content_hash = excluded.content_hash,
+                   original_pdf = excluded.original_pdf,
                    updated_at = CURRENT_TIMESTAMP""",
-                (user_id, project_id, resource.id, json.dumps(metadata), content_hash),
+                (user_id, project_id, resource.id, json.dumps(metadata), content_hash, originals[resource.id]),
             )
             connection.execute(
                 "DELETE FROM project_resource_pages WHERE user_id = ? AND project_id = ? AND resource_id = ?",
@@ -741,12 +890,12 @@ class UserSessionRepository:
     @staticmethod
     def _load_resources(connection: sqlite3.Connection, user_id: str, project_id: str) -> list[Resource]:
         rows = connection.execute(
-            """SELECT resource_id, metadata_json FROM project_resources
+            """SELECT resource_id, metadata_json, original_pdf FROM project_resources
                WHERE user_id = ? AND project_id = ? ORDER BY updated_at, resource_id""",
             (user_id, project_id),
         ).fetchall()
         resources: list[Resource] = []
-        for resource_id, metadata_json in rows:
+        for resource_id, metadata_json, original_pdf in rows:
             pages = connection.execute(
                 """SELECT page_number, page_text FROM project_resource_pages
                    WHERE user_id = ? AND project_id = ? AND resource_id = ? ORDER BY page_number""",
@@ -763,6 +912,7 @@ class UserSessionRepository:
                     }
                 )
             )
+            resources[-1]._original_content = original_pdf
         return resources
 
     @staticmethod
@@ -774,6 +924,7 @@ class UserSessionRepository:
         actor: str,
         payload: dict[str, object] | None,
     ) -> None:
+        SourceLifecycleRepository._assert_not_deleted(connection, user_id, "project", project_id)
         connection.execute(
             """INSERT INTO project_events
                (event_id, user_id, project_id, event_type, actor, payload_json)

@@ -45,6 +45,12 @@ class ConversationContext(BaseModel):
         description="Presentation objective.",
     )
 
+    # None preserves legacy projects without inventing user input.
+    target_slide_count: int | None = Field(default=None, strict=True, gt=0, le=200)
+    special_instructions: str | None = Field(default=None, max_length=4000)
+    professional_scope: str | None = Field(default=None, max_length=1000)
+    is_multidisciplinary: bool | None = Field(default=None, strict=True)
+
     presenter_name: str | None = None
     presenter_title: str | None = None
     organization: str | None = None
@@ -58,19 +64,13 @@ class ConversationContext(BaseModel):
         has been collected.
         """
 
-        return all(
-            (
-                self.topic,
-                self.audience,
-                self.presentation_type,
-                self.language,
-                self.duration_minutes,
-                self.objective,
-            )
-        )
+        return not self.missing_fields()
 
     def missing_fields(self) -> list[str]:
         required_fields = (
-            "topic", "audience", "presentation_type", "language", "duration_minutes", "objective"
+            "topic", "audience", "presentation_type", "language", "duration_minutes", "objective",
+            "target_slide_count", "special_instructions", "professional_scope", "is_multidisciplinary",
         )
-        return [name for name in required_fields if getattr(self, name) is None]
+        return [name for name in required_fields if getattr(self, name) is None
+                or (name == "duration_minutes" and getattr(self, name) <= 0)
+                or (isinstance(getattr(self, name), str) and not getattr(self, name).strip())]

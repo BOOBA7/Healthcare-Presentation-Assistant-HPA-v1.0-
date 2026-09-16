@@ -1,3 +1,4 @@
+from app.tests.source_fixtures import dated_resource
 import pytest
 
 from app.application.validators.evidence_provenance_validator import EvidenceProvenanceValidator
@@ -16,7 +17,7 @@ from app.domain.value_objects.presentation_context import PresentationContext
 
 
 def resource() -> Resource:
-    return Resource(
+    return dated_resource(
         id="pdf-1",
         filename="guideline.pdf",
         title="Clinical guideline",
@@ -52,6 +53,7 @@ def test_evidence_reference_is_verified_against_its_pdf_page():
 
 
 def test_arabic_evidence_excerpt_must_match_the_exact_pdf_page():
+    # This unit test checks exact Unicode matching, independently of ingestion.
     arabic_resource = Resource(
         id="arabic-pdf",
         filename="guideline-ar.pdf",
@@ -105,9 +107,10 @@ def test_retrieval_context_is_compact_and_keeps_page_metadata():
     presentation = CreatePresentationUseCase().execute("Depression treatment", context)
     evidence = resource()
     evidence.extracted_pages = [
-        {"page": 1, "text": "Background " * 1_000},
+        {"page": 1, "text": "Publication date: 2024\n" + "Background " * 1_000},
         {"page": 2, "text": "Depression treatment should be individualized according to clinical response."},
     ]
+    evidence = dated_resource(**evidence.model_dump(exclude={"metadata"}))
     presentation.resources = [evidence]
     outline = SlideOutline(
         slide_number=1,
@@ -125,9 +128,11 @@ def test_retrieval_context_is_compact_and_keeps_page_metadata():
 
 def test_retrieval_prefers_normalized_sqlite_chunks_over_in_state_pdf_pages():
     evidence = resource()
-    # Presentation selections intentionally do not carry full PDF pages after
-    # resource-library normalization. Retrieval must still work from storage.
-    evidence.extracted_pages = []
+    # Resolved sources retain document date evidence. Scientific passages may
+    # still be retrieved from normalized SQLite chunks rather than this page.
+    evidence = dated_resource(id=evidence.id, filename=evidence.filename, title=evidence.title,
+                              file_type=evidence.file_type, is_validated=True,
+                              extracted_pages=[{"page": 1, "text": "Date evidence retained in the resolved library"}])
 
     context = EvidenceContextBuilder().for_resources(
         [evidence],
@@ -207,7 +212,7 @@ def test_bm25_and_direct_apply_the_same_single_passage_evidence_rule():
         duration_minutes=10,
         objective="Review treatment options",
     )
-    resource = Resource(
+    resource = dated_resource(
         id="pdf-parity",
         filename="parity.pdf",
         file_type=ResourceType.PDF,

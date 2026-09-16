@@ -1,3 +1,4 @@
+from app.tests.source_fixtures import seed_legacy_sources
 import pytest
 
 from app.ai.workflows.graph_state import GraphState
@@ -97,15 +98,14 @@ def test_pharmacist_is_a_supported_professional_profile():
     assert profile.professional_role == "pharmacist"
 
 
-def test_local_password_reset_and_user_templates(tmp_path):
+def test_user_templates_are_scoped_and_deleted_with_the_user(tmp_path):
     repository = UserSessionRepository(tmp_path / "sessions.sqlite3")
     repository.register_user("anis", "old-safe-password")
 
-    repository.reset_password_without_verification("anis", "new-safe-password")
-    template = repository.save_presentation_template("anis", "my-theme.pptx", b"template-content")
+    template = repository.save_presentation_template("anis", "my-theme.pptx", b"template-content", prototype_declaration="synthetic")
 
-    assert not repository.authenticate_user("anis", "old-safe-password")
-    assert repository.authenticate_user("anis", "new-safe-password")
+    assert repository.authenticate_user("anis", "old-safe-password")
+    assert not hasattr(repository, "reset_password_without_verification")
     assert repository.list_presentation_templates("anis") == [template]
     assert repository.presentation_template_path("anis", template["id"]).read_bytes() == b"template-content"
 
@@ -199,6 +199,7 @@ def test_pdf_pages_and_chunks_are_not_serialized_in_project_state(tmp_path):
         ]
     )
 
+    seed_legacy_sources(repository, state, "user-1", "project-a")
     repository.save("user-1", "project-a", "thread-1", state)
     _, restored = repository.load("user-1", "project-a")
 
@@ -228,6 +229,7 @@ def test_normalized_resource_chunks_can_be_loaded_without_pdf_pages_in_state(tmp
             )
         ]
     )
+    seed_legacy_sources(repository, state, "user-1", "project-a")
     repository.save("user-1", "project-a", "thread-1", state)
 
     chunks = repository.load_resource_chunks("user-1", "project-a", ["pdf-1"])

@@ -8,6 +8,10 @@ learning process, testing approach and HCP-facing guidance.
 
 ## Main documents
 
+- [Product requirements](PRD.md) — validated product baseline;
+- [Implementation phases](phases/README.md) — ordered plans and acceptance gates;
+- [Implementation prompt](phases/PROMPT.md) — reusable prompt for one focused slice;
+
 - [Architecture evolution](ARCHITECTURE_EVOLUTION.md) — my design journey,
   difficulties, attempted solutions and questions for senior review;
 - [Architecture history](architecture-history/README.md) — preserved records of

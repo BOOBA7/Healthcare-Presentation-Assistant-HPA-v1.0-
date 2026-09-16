@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from app.application.services.presentation_context_policy import PresentationContextPolicy
+from app.application.services.source_date_policy import SourceDatePolicy
+from app.application.services.resource_library import resolve_presentation_resources
+from app.domain.exceptions.domain_error import DomainError
 from app.ai.workflows.graph_state import GraphState
 from app.domain.enums.workflow_status import WorkflowStatus
 
@@ -13,7 +17,7 @@ class WorkflowViewBuilder:
     def build(state: GraphState, active_job: dict[str, object] | None = None) -> dict[str, object]:
         presentation = state.presentation
         if presentation is None:
-            return {
+            response = {
                 "stage": WorkflowStatus.CONTEXT_COLLECTION.value,
                 "status": "blocked",
                 "allowed_actions": ["setup_presentation"],
@@ -27,6 +31,31 @@ class WorkflowViewBuilder:
                 ],
                 "active_job": active_job,
             }
+            response["next_action"] = WorkflowViewBuilder._next_action(
+                response["allowed_actions"], response["blockers"], active_job
+            )
+            return response
+
+        try:
+            PresentationContextPolicy.require(presentation)
+        except ValueError as exc:
+            response = {"stage": "context_collection", "status": "blocked",
+                    "allowed_actions": ["setup_presentation"], "active_job": active_job,
+                    "blockers": [WorkflowViewBuilder._blocker(
+                        "PRESENTATION_CONTEXT_REQUIRED", "presentation_setup", str(exc), ["setup_presentation"])]}
+            response["next_action"] = WorkflowViewBuilder._next_action(
+                response["allowed_actions"], response["blockers"], active_job
+            )
+            return response
+
+        try:
+            SourceDatePolicy.require_all(resolve_presentation_resources(state))
+        except DomainError as exc:
+            response = {"stage": presentation.state.workflow_status.value, "status": "blocked",
+                        "allowed_actions": ["replace_resource"], "active_job": active_job,
+                        "blockers": [WorkflowViewBuilder._blocker(exc.code, "evidence_selection", exc.user_message, ["replace_resource"])]}
+            response["next_action"] = WorkflowViewBuilder._next_action(response["allowed_actions"], response["blockers"], active_job)
+            return response
 
         workflow = presentation.state
         status = workflow.workflow_status
@@ -99,7 +128,7 @@ class WorkflowViewBuilder:
         if error:
             blockers.append(error)
 
-        return {
+        response = {
             "stage": status.value,
             "status": "running" if active_job else ("blocked" if blockers else "ready"),
             "allowed_actions": allowed,
@@ -118,6 +147,31 @@ class WorkflowViewBuilder:
                 "presentation_validated": workflow.presentation_validated,
             },
         }
+        response["next_action"] = WorkflowViewBuilder._next_action(allowed, blockers, active_job)
+        return response
+
+    @staticmethod
+    def _next_action(
+        allowed_actions: list[str], blockers: list[dict[str, object]], active_job: dict[str, object] | None
+    ) -> dict[str, object]:
+        """Select the server-owned next step; the browser must not infer workflow order."""
+        if active_job:
+            return {
+                "action": "wait_for_active_job",
+                "message": "Wait for the active operation to finish before taking another workflow action.",
+            }
+        if blockers:
+            blocker = blockers[0]
+            actions = blocker.get("next_actions", [])
+            action = actions[0] if actions else "resolve_blocker"
+            return {
+                "action": action,
+                "message": blocker.get("message", "Resolve the workflow blocker before continuing."),
+                "blocker_code": blocker.get("code"),
+            }
+        if allowed_actions:
+            return {"action": allowed_actions[0]}
+        return {"action": "review_workflow"}
 
     @staticmethod
     def _blocker(

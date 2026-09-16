@@ -1,4 +1,5 @@
 from pathlib import Path
+from io import BytesIO
 from uuid import uuid4
 
 from pptx import Presentation as PowerPoint
@@ -27,11 +28,13 @@ class ExportPowerPointUseCase:
     def execute(
         self,
         presentation: Presentation,
-        output_dir: Path,
+        output_dir: Path | BytesIO,
         custom_template_path: Path | None = None,
         resources: list[Resource] | None = None,
-    ) -> Path:
+    ) -> Path | BytesIO:
+        from app.application.services.source_date_policy import SourceDatePolicy
         resources = resources if resources is not None else presentation.resources
+        SourceDatePolicy.require_all(resources)
         if not presentation.slides:
             raise ValueError("Generate presentation slides before exporting PowerPoint.")
         if not presentation.state.presentation_validated:
@@ -44,7 +47,8 @@ class ExportPowerPointUseCase:
             raise ValueError("A user-approved agenda is required before exporting PowerPoint.")
         EvidenceProvenanceValidator().validate_presentation(presentation.slides, resources)
 
-        output_dir.mkdir(parents=True, exist_ok=True)
+        if isinstance(output_dir, Path):
+            output_dir.mkdir(parents=True, exist_ok=True)
         deck = PowerPoint(custom_template_path) if custom_template_path else PowerPoint()
         if custom_template_path:
             self._remove_template_slides(deck)
@@ -58,7 +62,7 @@ class ExportPowerPointUseCase:
             self._add_content_slide(deck, slide, palette)
         self._add_resources_slide(deck, presentation, resources, palette)
 
-        path = output_dir / f"{presentation.id}-{uuid4().hex[:8]}.pptx"
+        path = output_dir / f"{presentation.id}-{uuid4().hex[:8]}.pptx" if isinstance(output_dir, Path) else output_dir
         deck.save(path)
         return path
 

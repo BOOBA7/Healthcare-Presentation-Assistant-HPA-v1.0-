@@ -1,3 +1,5 @@
+from app.application.services.presentation_context_policy import PresentationContextPolicy
+from app.application.services.prototype_policy import PrototypePolicy
 from app.ai.llm.llm import get_llm
 from app.ai.prompt_builders.blueprint_prompt_builder import BlueprintPromptBuilder
 from app.ai.schemas.blueprint_schema import BlueprintSchema
@@ -27,6 +29,10 @@ class BlueprintChain:
         Generate a blueprint from the presentation context.
         """
 
+        PrototypePolicy.presentation(presentation)
+        PresentationContextPolicy.require(presentation)
+        PrototypePolicy.screen(resources)
+        PrototypePolicy.screen(chunks)
         prompt = self.prompt_builder.build(presentation, resources, chunks)
 
         structured_llm = self.llm.with_structured_output(BlueprintSchema)

@@ -1,3 +1,5 @@
+from app.application.services.presentation_context_policy import PresentationContextPolicy
+from app.application.services.prototype_policy import PrototypePolicy
 from app.ai.llm.llm import get_llm
 from app.ai.prompt_builders.slide_prompt_builder import (
     SlidePromptBuilder,
@@ -32,6 +34,10 @@ class SlideChain:
         Generate a single slide from the blueprint.
         """
 
+        PrototypePolicy.presentation(presentation)
+        PresentationContextPolicy.require(presentation)
+        PrototypePolicy.screen(resources)
+        PrototypePolicy.screen(chunks)
         prompt = self.prompt_builder.build(
             presentation=presentation,
             outline=outline,

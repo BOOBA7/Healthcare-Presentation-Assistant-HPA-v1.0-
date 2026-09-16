@@ -13,6 +13,7 @@ from app.domain.models.resource_chunk import ResourceChunk
 from app.domain.models.slide_outline import SlideOutline
 from app.application.services.observability import record
 from app.domain.enums.evidence_context_mode import EvidenceContextMode
+from app.application.services.source_date_policy import SourceDatePolicy
 
 
 @dataclass(frozen=True)
@@ -380,6 +381,7 @@ class EvidenceContextBuilder:
     def _chunks_for_resources(
         self, resources: list[Resource], persisted_chunks: list[ResourceChunk] | None = None
     ) -> list[EvidenceChunk]:
+        SourceDatePolicy.require_all(resources)
         validated_resources = {resource.id for resource in resources if resource.is_validated}
         # An empty cache means this state has not been hydrated from SQLite
         # yet (for example an in-memory unit test or a freshly created state).

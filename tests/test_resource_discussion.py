@@ -1,3 +1,4 @@
+from app.tests.source_fixtures import dated_resource
 from langchain_core.messages import AIMessage
 import pytest
 
@@ -7,7 +8,7 @@ from app.domain.models.resource import Resource
 
 
 def _resource() -> Resource:
-    return Resource(
+    return dated_resource(
         id="pdf-1",
         filename="guideline.pdf",
         file_type=ResourceType.PDF,
@@ -29,7 +30,7 @@ def test_resource_discussion_accepts_a_verified_citation(monkeypatch):
     monkeypatch.setattr("app.application.use_cases.discuss_resources.get_llm", lambda: VerifiedModel())
 
     answer = DiscussResourcesUseCase().execute(
-        [_resource()], "What structured follow-up is recommended after treatment initiation?"
+        [_resource()], "What structured follow-up is recommended after treatment initiation?", prototype_declaration="synthetic"
     )
 
     assert "[[cite: pdf-1 | p. 1" in answer
@@ -44,5 +45,5 @@ def test_resource_discussion_rejects_an_unknown_resource_citation(monkeypatch):
 
     with pytest.raises(ValueError, match="unknown uploaded PDF resource"):
         DiscussResourcesUseCase().execute(
-            [_resource()], "What structured follow-up is recommended after treatment initiation?"
+            [_resource()], "What structured follow-up is recommended after treatment initiation?", prototype_declaration="synthetic"
         )
