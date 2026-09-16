@@ -1,8 +1,10 @@
 """Owner library, deletion fences and restartable internal-export cleanup."""
 
 import json
+import hashlib
 import re
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.application.services.source_invalidation import invalidate_source_dependents
@@ -60,14 +62,20 @@ class SourceLifecycleRepository:
     def _remember_source(self, connection, user, resource, *, check_only=False):
         if not connection.in_transaction:
             connection.execute("BEGIN IMMEDIATE")
+        self._verify_review_authority(connection, user, resource)
         SourceScreening.resource(resource, require_text=True)
-        if resource._original_content is not None:
-            SourceDocument.verify(resource, resource._original_content)
         self._assert_not_deleted(connection, user, "source", resource.id)
         previous = connection.execute(
-            "SELECT original_pdf FROM owner_resources WHERE user_id = ? AND resource_id = ?",
+            "SELECT original_pdf, resource_json FROM owner_resources WHERE user_id = ? AND resource_id = ?",
             (user, resource.id),
         ).fetchone()
+        unchanged = (previous is not None and previous[0] == resource._original_content
+                     and hashlib.sha256(resource._original_content or b"").hexdigest() == resource.metadata.original_sha256
+                     and Resource.model_validate_json(previous[1]).model_dump(mode="json") == resource.model_dump(mode="json"))
+        # Keeping an already accepted identical record is not a new acceptance.
+        # Deletion/recovery must not depend on a currently available OCR engine.
+        if resource._original_content is not None and not unchanged:
+            SourceDocument.verify(resource, resource._original_content)
         if previous is not None and previous[0] != resource._original_content:
             raise WorkflowError("SOURCE_ID_CONFLICT", "This library identifier belongs to another original. Import with a new identifier.")
         if previous is None and resource._original_content is None:
@@ -92,6 +100,78 @@ class SourceLifecycleRepository:
             (user, resource.id, resource.model_dump_json(), resource._original_content),
         )
 
+    @staticmethod
+    def _verify_review_authority(connection, user, resource):
+        """Client JSON and direct saves cannot manufacture human confirmations."""
+        from app.application.services.ocr_review import review_digest
+        row = connection.execute("SELECT resource_json FROM owner_resources WHERE user_id = ? AND resource_id = ?",
+                                 (user, resource.id)).fetchone()
+        authoritative = Resource.model_validate_json(row[0]) if row else None
+        expected = authoritative.metadata.ocr_reviews if authoritative else []
+        if resource.metadata.ocr_reviews != expected:
+            raise WorkflowError("OCR_REVIEW_UNVERIFIED", "Extraction reviews must use the authenticated review operation. Reload this source.")
+        if expected:
+            if authoritative.metadata.original_sha256 != resource.metadata.original_sha256:
+                raise WorkflowError("OCR_REVIEW_UNVERIFIED", "Review original does not match.")
+            resource._ocr_review_receipt = review_digest(resource)
+
+    def review_ocr(self, user, identifier, expected_revision, values, confirmed_regions):
+        from app.application.services.ocr_review import apply_reviews
+        from app.domain.models.source_metadata import OcrReview
+        from app.application.services.resource_library import resource_selection
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._assert_not_deleted(connection, user, "source", identifier)
+            row = connection.execute("SELECT resource_json, original_pdf FROM owner_resources WHERE user_id = ? AND resource_id = ?",
+                                     (user, identifier)).fetchone()
+            if row is None:
+                raise WorkflowError("RESOURCE_NOT_FOUND", "Source not found.")
+            resource = Resource.model_validate_json(row[0])
+            resource._original_content = row[1]
+            self._verify_review_authority(connection, user, resource)
+            SourceDocument.verify(resource, row[1])
+            regions = resource.metadata.ocr_regions
+            revision = max((review.batch for review in resource.metadata.ocr_reviews), default=0)
+            if expected_revision != revision:
+                raise WorkflowError("OCR_REVIEW_CONFLICT", "Extraction review changed. Reload before confirming.")
+            if (not regions or len(values) != len(regions)
+                    or sorted(confirmed_regions) != list(range(len(regions)))
+                    or any(not isinstance(value, str) or not value.strip() or len(value) > 10000 for value in values)):
+                raise WorkflowError("OCR_REVIEW_INCOMPLETE", "Explicitly confirm every extraction beside its original.")
+            now = datetime.now(timezone.utc)
+            reviews = [*resource.metadata.ocr_reviews, *[
+                OcrReview(batch=revision + 1, region_index=index, original_value=region.text,
+                          corrected_value=values[index].strip(), actor=user, confirmed_at=now,
+                          original_sha256=resource.metadata.original_sha256)
+                for index, region in enumerate(regions)
+            ]]
+            original = SourceDocument.read(resource.filename, row[1], resource.id)
+            original.uploaded_at = resource.uploaded_at
+            reviewed = apply_reviews(original, reviews)
+            SourceScreening.resource(reviewed, require_text=True)
+            connection.execute("UPDATE owner_resources SET resource_json = ? WHERE user_id = ? AND resource_id = ?",
+                               (reviewed.model_dump_json(), user, identifier))
+            for project, thread, payload, project_revision in connection.execute(
+                "SELECT project_id, thread_id, state_json, revision FROM project_sessions WHERE user_id = ?", (user,)
+            ).fetchall():
+                state = self._deserialize_state(json.loads(payload))
+                # Load current normalized originals without trusting the old review
+                # copy: this transaction is replacing it with the new authority.
+                state.resource_library = self._load_resources(connection, user, project)
+                if not any(item.id == identifier for item in state.resource_library):
+                    continue
+                state.project_revision = project_revision
+                state.resource_library = [reviewed.model_copy(deep=True) if item.id == identifier else item for item in state.resource_library]
+                if state.presentation:
+                    state.presentation.resources = [resource_selection(reviewed) if item.id == identifier else item for item in state.presentation.resources]
+                self._invalidate_project_storage(connection, user, project, state)
+                self._save_project_row(connection, user, project, thread, state, None)
+                self._insert_event(connection, user, project, "OCR_EXTRACTION_REVIEWED", user,
+                                   {"resource_id": identifier, "review_revision": revision + 1,
+                                    "region_count": len(regions), "provenance": "user_confirmed"})
+        self._cleanup_if_pending()
+        return {"resource_id": identifier, "review_revision": revision + 1}
+
     def list_library_resources(self, user):
         with self._connect() as connection:
             rows = connection.execute(
@@ -101,6 +181,9 @@ class SourceLifecycleRepository:
         for payload, content in rows:
             resource = Resource.model_validate_json(payload)
             resource._original_content = content
+            if resource.metadata.ocr_reviews:
+                from app.application.services.ocr_review import review_digest
+                resource._ocr_review_receipt = review_digest(resource)
             result.append(resource)
         return result
 

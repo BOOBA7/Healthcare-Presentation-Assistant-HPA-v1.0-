@@ -133,12 +133,14 @@
               <p class="muted" data-i18n="resourceWorkspaceHint">Upload, analyse and discuss this Project’s PDFs without changing the presentation workflow.</p>
             </div>
             <div class="resource-upload-grid">
-              <label class="dropzone resource-dropzone" for="pdf-file"><span>↑</span> <span data-i18n="uploadPdf">Upload a PDF</span><input id="pdf-file" type="file" accept="application/pdf" /></label>
+              <label class="dropzone resource-dropzone" for="pdf-file"><span>↑</span> <span data-i18n="uploadPdf">Upload a PDF</span><input id="pdf-file" type="file" accept="application/pdf,image/png,image/jpeg" /></label>
+              <p class="muted" data-i18n="rasterHint">Scans and images: clean monochrome English text only. Figures, photos and noisy scans are refused. Automated checks cannot guarantee anonymisation.</p>
               <p id="file-name" class="muted" data-i18n="maxSize">20 MB maximum</p>
               <button id="upload-resource" class="secondary" disabled data-i18n="addResource">Add resource</button>
               <button id="analyze-resources" class="outline-button" hidden data-i18n="analyzeResources">Analyze uploaded resources</button>
             </div>
             <div id="resource-list" class="resource-list resource-library-list"></div>
+            <section id="ocr-review-panel" hidden aria-live="polite"></section>
             <div id="resource-workflow-action" class="final-actions"></div>
           </section>
         </section>

@@ -8,6 +8,7 @@ from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 
 from app.application.services.prototype_policy import PrototypePolicy
+from app.application.services.ocr_evidence_gate import require_confirmed_ocr
 from app.ai.workflows.graph_state import GraphState
 from app.ai.prompt_builders.state_summary_builder import StateSummaryBuilder
 from app.domain.exceptions.workflow_error import WorkflowError
@@ -54,6 +55,7 @@ class PresentationGraph:
 
     def _agent_node(self, state: GraphState) -> dict[str, list]:
         PrototypePolicy.state(state)
+        require_confirmed_ocr(state.resource_library)
         prompt_inputs = {
             "messages": state.messages,
             "state_summary": self.state_summary_builder.build(state),

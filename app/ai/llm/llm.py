@@ -6,6 +6,8 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 
 from app.application.services.prototype_policy import PrototypePolicy
+from app.application.services.identifier_screening import IdentifierScreening
+from app.application.services.source_screening import SourceScreening
 from app.core.config import get_settings
 
 
@@ -19,10 +21,22 @@ class PrototypeProviderGuard(BaseCallbackHandler):
         PrototypePolicy.mode()
         for batch in messages:
             for message in batch:
-                # System messages contain the application's prohibition itself.
-                # State and retrieved context are screened at shared entry points.
-                if message.type != "system":
-                    PrototypePolicy.screen(message.content)
+                content = message.content
+                if isinstance(content, list):
+                    # OCR alone cannot clear images/faces; reject opaque blocks.
+                    if any(not isinstance(block, dict) or set(block) != {"type", "text"}
+                           or block["type"] != "text" or not isinstance(block["text"], str)
+                           for block in content):
+                        raise SourceScreening.incomplete()
+                    content = "\n".join(block["text"] for block in content)
+                if not isinstance(content, str):
+                    raise SourceScreening.incomplete()
+                # System prompts include our prohibition, but can still carry
+                # interpolated identifiers and must pass the identifier gate.
+                if message.type == "system":
+                    IdentifierScreening.screen(content)
+                else:
+                    PrototypePolicy.screen(content)
 
 
 def get_llm() -> BaseChatModel:

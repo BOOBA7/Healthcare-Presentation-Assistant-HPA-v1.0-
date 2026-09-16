@@ -818,7 +818,10 @@ class UserSessionRepository(SourceLifecycleRepository):
             if content is not None:
                 if previous is not None and content != previous._original_content:
                     raise WorkflowError("SOURCE_REPLACEMENT_REQUIRED", "Import a replacement under a new resource ID; an existing source original cannot be overwritten.")
-                originals[resource.id] = SourceDocument.verify(resource, content)
+                unchanged = (previous is not None and previous._original_content == content
+                             and resource.model_dump(mode="json") == previous.model_dump(mode="json")
+                             and hashlib.sha256(content).hexdigest() == resource.metadata.original_sha256)
+                originals[resource.id] = content if unchanged else SourceDocument.verify(resource, content)
                 resource._original_content = content
             elif previous is None or resource.model_dump(mode="json", exclude={"uploaded_at", "extracted_text"}) != previous.model_dump(mode="json", exclude={"uploaded_at", "extracted_text"}):
                 raise WorkflowError("SOURCE_ORIGINAL_REQUIRED", "The original PDF is missing. Replace this source by importing its dated original.")
@@ -913,6 +916,11 @@ class UserSessionRepository(SourceLifecycleRepository):
                 )
             )
             resources[-1]._original_content = original_pdf
+            if resources[-1].metadata.ocr_reviews:
+                try:
+                    SourceLifecycleRepository._verify_review_authority(connection, user_id, resources[-1])
+                except WorkflowError:
+                    pass  # Readable recovery state, never trusted for generation.
         return resources
 
     @staticmethod

@@ -87,10 +87,17 @@ class SourceDatePolicy:
         return (updates or publications)[0]
 
     @classmethod
-    def require(cls, resource):
+    def require(cls, resource, *, allow_unconfirmed=False):
         if resource._original_content is not None:
             from app.application.services.source_document import SourceDocument
             SourceDocument.verify(resource, resource._original_content)
+        if resource.metadata.origin == "raster_memory_import":
+            if resource._original_content is None or resource.metadata.scientific_date is None:
+                raise cls.missing()
+            from app.application.services.ocr_review import is_reviewed
+            if not allow_unconfirmed and not is_reviewed(resource):
+                raise WorkflowError("OCR_CONFIRMATION_REQUIRED", "OCR extraction is unconfirmed. Review every region against its original before model processing or generation.")
+            return resource.metadata.scientific_date
         # Legacy JSON metadata has no original to substantiate an XMP claim.
         evidence = cls.derive(resource.extracted_pages, resource.metadata.xml_metadata if resource._original_content is not None else None)
         if resource._original_content is None:

@@ -14,7 +14,7 @@ class AddProjectResourceUseCase:
     def execute(self, state: GraphState, resource: Resource) -> GraphState:
         PrototypePolicy.state(state)
         SourceScreening.resource(resource, require_text=True)
-        SourceDatePolicy.require(resource)
+        SourceDatePolicy.require(resource, allow_unconfirmed=True)
         if any(item.id == resource.id for item in state.resource_library):
             raise WorkflowError("RESOURCE_ALREADY_EXISTS", "This PDF is already in the Project library.")
         state.resource_library.append(resource)

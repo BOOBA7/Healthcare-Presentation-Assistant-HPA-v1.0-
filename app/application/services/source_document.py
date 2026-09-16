@@ -17,8 +17,14 @@ class SourceDocument:
     def read(filename: str, content: bytes, resource_id: str) -> Resource:
         if not content or len(content) > SourceScreening.MAX_BYTES:
             raise SourceScreening.incomplete()
+        if content.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8")):
+            from app.application.services.raster_document import RasterDocument
+            return RasterDocument.read(filename, content, resource_id)
         try:
             with fitz.open(stream=content, filetype="pdf") as document:
+                if any(page.get_images() for page in document):
+                    from app.application.services.raster_document import RasterDocument
+                    return RasterDocument.read(filename, content, resource_id)
                 pages, metadata = SourceScreening.pdf(document)
                 xml = document.get_xml_metadata() or None
         except WorkflowError:
@@ -58,6 +64,11 @@ class SourceDocument:
     @classmethod
     def verify(cls, resource, content):
         checked = cls.read(resource.filename, content, resource.id)
+        if resource.metadata.ocr_reviews:
+            from app.application.services.ocr_review import apply_reviews, is_reviewed
+            if not is_reviewed(resource):
+                raise WorkflowError("OCR_REVIEW_UNVERIFIED", "Review must be recorded through the authenticated extraction-review workflow.")
+            checked = apply_reviews(checked, resource.metadata.ocr_reviews)
         # Do not trust hashes, date flags, text, bibliography or locations supplied
         # by a caller; derive them again from the actual original.
         for field in ("file_type", "title", "source", "extracted_text", "extracted_pages", "metadata"):

@@ -20,6 +20,7 @@ python-dotenv==1.2.2
 python-pptx==1.0.2
 
 pymupdf==1.28.0
+Pillow==12.3.0
 
 tiktoken==0.13.0
 

@@ -426,3 +426,30 @@ The following are intentionally not claimed as implemented:
 
 These additions must preserve the existing evidence, provenance, workflow, and
 human-approval boundaries.
+
+## 2026-09-16 — Restricted local raster extraction and original-linked review
+
+The public/synthetic prototype adds an optional Apple Vision adapter for a
+bounded macOS, English, monochrome-text raster subset. It is built before input
+processing, receives bytes through stdin, and runs under an OS profile denying
+file writes and network access. Missing capability, face detections, identifiers,
+unrecognized pixels or metadata, and uncertain unsupported dates fail closed.
+No file-based OCR wrapper or external-provider fallback is used.
+
+Native face detection alone failed a schematic-face fixture. Acceptance therefore
+also requires no dark content outside bounded OCR regions and a conservative
+possible-name check. This deliberately refuses graphics, photographs, many noisy
+JPEGs and some headings. It is not a general anonymisation solution. Real
+professional/patient content remains forbidden. The earlier “OCR not implemented”
+non-decision is superseded only for this bounded subset, not general OCR support.
+
+Original bytes and line coordinates are immutable. Authenticated per-region
+review creates append-only actor/time/value provenance, while effective text and
+retrieval chunks use confirmed values. Owner-library authority, original
+reverification and stale revision checks prevent JSON flags from becoming human
+approval. Corrections atomically invalidate dependencies across Projects and
+reuse the existing resumable cleanup mechanism. Unchanged previously accepted
+records can be preserved during deletion even if OCR is temporarily unavailable.
+
+Evidence and limitations: [phase 04](docs/phases/04.3-extraction-review-evidence.md).
+Product-owner phase approval and browser verification remain pending.

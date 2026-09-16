@@ -11,11 +11,11 @@ from app.application.services.source_screening import SourceScreening
 async def read_pdf_upload(request: Request) -> tuple[str, str, bytes]:
     content_type = request.headers.get("content-type", "")
     if "\r" in content_type or "\n" in content_type or not content_type.lower().startswith("multipart/form-data;"):
-        raise HTTPException(422, "Expected a multipart PDF upload.")
+        raise HTTPException(422, "Expected a multipart source upload.")
     body = bytearray()
     async for chunk in request.stream():
         if len(body) + len(chunk) > SourceScreening.MAX_BYTES + 64 * 1024:
-            raise HTTPException(413, "PDF files are limited to 20 MB.")
+            raise HTTPException(413, "Source files are limited to 20 MB.")
         body.extend(chunk)
     try:
         message = BytesParser(policy=policy.default).parsebytes(
@@ -33,7 +33,7 @@ async def read_pdf_upload(request: Request) -> tuple[str, str, bytes]:
         if not isinstance(content, bytes) or part.defects:
             raise ValueError
     except Exception:
-        raise HTTPException(422, "Invalid multipart PDF upload.") from None
+        raise HTTPException(422, "Invalid multipart source upload.") from None
     if len(content) > SourceScreening.MAX_BYTES:
-        raise HTTPException(413, "PDF files are limited to 20 MB.")
+        raise HTTPException(413, "Source files are limited to 20 MB.")
     return part.get_filename(), part.get_content_type(), content

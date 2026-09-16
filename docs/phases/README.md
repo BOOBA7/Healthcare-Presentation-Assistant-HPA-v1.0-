@@ -14,7 +14,7 @@ Planning read the complete PRD, documentation index, project overview, CI and se
 | [01](01-prototype-boundary.md) | Public prototype boundary and local account | Approved with Node/browser reservations (2026-09-15); checks outstanding |
 | [02](02-project-resume.md) | Dashboard, context and recovery | Approved 2026-09-15; Node/browser checks remain unverified |
 | [03](03-source-lifecycle.md) | Preserved PDF sources, dates and deletion | Approved 2026-09-16; Node/browser checks remain unverified |
-| [04](04-ocr-privacy.md) | Scanned PDF, images and extraction review | Planned |
+| [04](04-ocr-privacy.md) | Scanned PDF, images and extraction review | Approved 2026-09-16 for restricted subset; browser/scope reservations remain |
 | [05](05-pptx-assets.md) | PowerPoint evidence and extracted visuals | Planned |
 | [06](06-claim-evidence.md) | Claim evidence, coverage and resource discussion | Planned |
 | [07](07-planning.md) | Agenda and Blueprint approval | Planned |
@@ -25,6 +25,11 @@ Planning read the complete PRD, documentation index, project overview, CI and se
 | [12](12-professional-mode.md) | Verified professional local execution | Planned |
 
 Phases 00–11 deliver and evaluate the public/synthetic prototype. Phase 12 is mandatory before real professional data; it is part of the PRD roadmap, not silently deferred scope. Schedule follows baseline findings and observed progress.
+
+Current-code verification update (2026-09-16): phase 04 actually ran and passed
+JavaScript syntax checking with bundled Node v22.18.0. Earlier historical Node
+reservations do not become past test successes. Browser execution remains
+unverified; phase 04's two browser scenarios are skipped on this Mac.
 
 ## Execution contract
 

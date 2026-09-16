@@ -8,7 +8,7 @@ from app.domain.models.resource import Resource
 
 
 class SourceScreening:
-    VERSION = "source-text-metadata-v1"
+    VERSION = "source-raster-metadata-v3"
     MAX_BYTES = 20 * 1024 * 1024
     MAX_PAGES = 1000
 
@@ -25,7 +25,17 @@ class SourceScreening:
         try:
             payload = resource.model_dump(mode="json")
             checked = Resource.model_validate(payload)
-            if checked.file_type.value != "pdf" or checked.metadata.assets or checked.path:
+            raster = checked.metadata.origin == "raster_memory_import"
+            if checked.metadata.assets or checked.path:
+                raise cls.incomplete()
+            if raster:
+                from app.application.services.local_image_screening import LocalImageScreening
+                if (checked.file_type.value not in ("pdf", "png", "jpeg")
+                        or checked.metadata.ocr_engine != LocalImageScreening.ENGINE
+                        or not checked.metadata.ocr_regions
+                        or checked.is_validated != bool(checked.metadata.ocr_reviews)):
+                    raise cls.incomplete()
+            elif checked.file_type.value != "pdf" or checked.metadata.ocr_engine or checked.metadata.ocr_regions or checked.metadata.ocr_reviews:
                 raise cls.incomplete()
             if len(json.dumps(payload).encode("utf-8")) > cls.MAX_BYTES:
                 raise cls.incomplete()

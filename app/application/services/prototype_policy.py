@@ -2,6 +2,7 @@
 
 import re
 
+from app.application.services.identifier_screening import IdentifierScreening
 from app.core.config import get_settings
 from app.domain.exceptions.workflow_error import WorkflowError
 
@@ -53,8 +54,10 @@ class PrototypePolicy:
         elif isinstance(value, (list, tuple)):
             for item in value:
                 cls.screen(item)
-        elif isinstance(value, str) and cls._restricted.search(value):
-            raise WorkflowError("PROTOTYPE_CONTENT_BLOCKED", "Possible patient-case or confidential professional content detected. Processing is blocked.")
+        elif isinstance(value, str):
+            if cls._restricted.search(value):
+                raise WorkflowError("PROTOTYPE_CONTENT_BLOCKED", "Possible patient-case or confidential professional content detected. Processing is blocked.")
+            IdentifierScreening.screen(value)
 
     @classmethod
     def state(cls, state):

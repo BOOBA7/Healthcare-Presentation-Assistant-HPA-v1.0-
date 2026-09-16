@@ -7,16 +7,19 @@ from pathlib import Path
 
 import httpx
 from fastapi import Request, Depends, FastAPI, Header, HTTPException
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 from app.interfaces.api.memory_upload import read_pdf_upload
 from app.application.services.source_screening import SourceScreening
 from app.application.services.source_date_policy import SourceDatePolicy
 from app.application.services.source_document import SourceDocument
+from app.domain.exceptions.workflow_error import WorkflowError
 from fastapi.responses import Response
 from urllib.parse import quote
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from langchain_core.messages import HumanMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from app.application.services.prototype_policy import PrototypePolicy
 from app.ai.agents.healthcare_presentation_agent import HealthcarePresentationAgent
@@ -81,6 +84,13 @@ app = FastAPI(
 )
 _exports_dir = Path("exports")
 _web_dir = Path(__file__).resolve().parent.parent / "web"
+
+
+@app.exception_handler(RequestValidationError)
+async def safe_ocr_validation_error(request, exc):
+    if request.url.path.endswith("/ocr-review"):
+        return JSONResponse(status_code=422, content={"detail": "Invalid extraction-review request."})
+    return await request_validation_exception_handler(request, exc)
 
 
 @app.middleware("http")
@@ -302,8 +312,10 @@ def _project_response(user_id: str, project_id: str, thread_id: str, state: Grap
 def _resource_response(resource) -> dict[str, object]:
     """Expose resource metadata only; extracted PDF text never leaves the API."""
     try:
-        date_evidence = SourceDatePolicy.require(resource).model_dump(mode="json")
-        date_blocker = None
+        date_evidence = SourceDatePolicy.require(resource, allow_unconfirmed=True).model_dump(mode="json")
+        from app.application.services.ocr_review import is_reviewed
+        date_blocker = ({"code": "OCR_CONFIRMATION_REQUIRED", "message": "Review every OCR region against its original before using this source."}
+                        if resource.metadata.ocr_engine and not is_reviewed(resource) else None)
     except DomainError as exc:
         date_evidence = None
         date_blocker = {"code": exc.code, "message": exc.user_message}
@@ -323,6 +335,9 @@ def _resource_response(resource) -> dict[str, object]:
         "original_available": resource._original_content is not None,
         "original_sha256": resource.metadata.original_sha256,
         "media_type": resource.metadata.media_type,
+        "ocr_pending": bool(resource.metadata.ocr_engine) and not bool(resource.metadata.ocr_reviews),
+        "ocr_reviewed": bool(resource.metadata.ocr_reviews),
+        "ocr_region_count": len(resource.metadata.ocr_regions),
         "author": resource.metadata.author,
         "publisher": resource.metadata.publisher,
         "rights": resource.metadata.rights,
@@ -713,9 +728,10 @@ def chat(request: ChatRequest, authenticated_user: str = Depends(_authenticated_
     }
 
 
+@app.post("/resources/{user_id}/{project_id}")
 @app.post("/resources/pdf/{user_id}/{project_id}")
 async def upload_pdf_resource(user_id: str, project_id: str, request: Request, authenticated_user: str = Depends(_authenticated_user)):
-    """Extract a PDF into the Project library; production selection is explicit."""
+    """Screen PDF/PNG/JPEG into the library; OCR remains pending review."""
     _assert_owner(user_id, authenticated_user)
     stored = get_repository().load(user_id, project_id)
     if stored is None:
@@ -727,8 +743,9 @@ async def upload_pdf_resource(user_id: str, project_id: str, request: Request, a
     # Some browsers/local proxies send application/octet-stream for a valid
     # PDF. The extension is accepted here; PyMuPDF below remains the actual
     # content validation boundary.
-    if media_type not in {"application/pdf", "application/x-pdf"} and not filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=415, detail="Only PDF uploads are accepted.")
+    if (media_type not in {"application/pdf", "application/x-pdf", "image/png", "image/jpeg"}
+            and not filename.lower().endswith((".pdf", ".png", ".jpg", ".jpeg"))):
+        raise HTTPException(status_code=415, detail="Only PDF, PNG and JPEG uploads are accepted.")
     try:
         resource = ExtractPdfResourceUseCase().execute(
             filename,
@@ -736,6 +753,9 @@ async def upload_pdf_resource(user_id: str, project_id: str, request: Request, a
             patient_case_mode=state.patient_case_mode,
             prototype_declaration=state.prototype_declaration,
         )
+        extensions = {"pdf": (".pdf",), "png": (".png",), "jpeg": (".jpg", ".jpeg")}
+        if not filename.lower().endswith(extensions[resource.file_type.value]):
+            raise WorkflowError("SOURCE_FORMAT_MISMATCH", "The filename does not match the detected source format.")
         ensure_resource_library(state)
         AddProjectResourceUseCase().execute(state, resource)
     except DomainError as exc:
@@ -752,7 +772,8 @@ async def upload_pdf_resource(user_id: str, project_id: str, request: Request, a
         actor="user",
         extra_audit={"resource_id": resource.id, "filename": resource.filename, "pages": len(resource.extracted_pages), "screening_policy": SourceScreening.VERSION,
                      "original_sha256": resource.metadata.original_sha256, "date_policy": SourceDatePolicy.VERSION,
-                     "scientific_date": resource.metadata.scientific_date.value, "date_origin": resource.metadata.scientific_date.origin},
+                     "scientific_date": resource.metadata.scientific_date.value, "date_origin": resource.metadata.scientific_date.origin,
+                     "ocr_engine": resource.metadata.ocr_engine, "ocr_pending": bool(resource.metadata.ocr_engine)},
     )
     return {"resource_id": resource.id, "filename": resource.filename, "characters_extracted": len(resource.extracted_text or "")}
 
@@ -800,10 +821,67 @@ def original_pdf(user_id: str, project_id: str, resource_id: str, authenticated_
         content = SourceDocument.verify(resource, resource._original_content)
     except DomainError as exc:
         raise _workflow_conflict(exc) from None
-    return Response(content, media_type="application/pdf", headers={
+    return Response(content, media_type=resource.metadata.media_type or "application/pdf", headers={
         "Content-Disposition": "attachment; filename*=UTF-8''" + quote(resource.filename, safe=""),
         "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
     })
+
+
+class OcrReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=0, strict=True)
+    values: list[str] = Field(min_length=1, max_length=10000)
+    confirmed_regions: list[int] = Field(min_length=1, max_length=10000)
+
+
+def _review_source(user_id, resource_id, authenticated_user):
+    _assert_owner(user_id, authenticated_user)
+    resource = get_repository().library_resource(user_id, resource_id)
+    if resource is None or not resource.metadata.ocr_regions:
+        raise HTTPException(404, "OCR source not found.")
+    try:
+        SourceDocument.verify(resource, resource._original_content)
+    except DomainError as exc:
+        raise _workflow_conflict(exc) from None
+    return resource
+
+
+@app.get("/users/{user_id}/resources/{resource_id}/ocr-review")
+def get_ocr_review(user_id: str, resource_id: str, authenticated_user: str = Depends(_authenticated_user)):
+    resource = _review_source(user_id, resource_id, authenticated_user)
+    history = resource.metadata.ocr_reviews
+    revision = max((review.batch for review in history), default=0)
+    latest = {review.region_index: review for review in history if review.batch == revision}
+    return JSONResponse({"resource_id": resource_id, "revision": revision,
+        "original_sha256": resource.metadata.original_sha256,
+        "regions": [{"index": index, "page": region.page, "box": region.box,
+                     "extracted_value": region.text, "confidence": region.confidence,
+                     "value": latest[index].corrected_value if index in latest else region.text,
+                     "review": latest[index].model_dump(mode="json") if index in latest else None}
+                    for index, region in enumerate(resource.metadata.ocr_regions)]},
+        headers={"Cache-Control": "no-store"})
+
+
+@app.get("/users/{user_id}/resources/{resource_id}/ocr-regions/{index}")
+def get_ocr_region(user_id: str, resource_id: str, index: int, authenticated_user: str = Depends(_authenticated_user)):
+    from app.application.services.ocr_region_preview import region_preview
+    resource = _review_source(user_id, resource_id, authenticated_user)
+    try:
+        content = region_preview(resource, index)
+    except DomainError as exc:
+        raise _workflow_conflict(exc) from None
+    return Response(content, media_type="image/png", headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@app.post("/users/{user_id}/resources/{resource_id}/ocr-review")
+def confirm_ocr_review(user_id: str, resource_id: str, request: OcrReviewRequest,
+                       authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
+    try:
+        return get_repository().review_ocr(authenticated_user, resource_id, request.expected_revision,
+                                           request.values, request.confirmed_regions)
+    except DomainError as exc:
+        raise _workflow_conflict(exc) from None
 
 
 @app.post("/projects/{user_id}/{project_id}/resources/summary")

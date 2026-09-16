@@ -98,4 +98,5 @@ def _find_resource(identifier: str, resources: dict[str, Resource]) -> Resource 
 
 
 def _display_title(resource: Resource) -> str:
-    return resource.title or resource.filename
+    title = resource.title or resource.filename
+    return title + " · user_confirmed" if resource.metadata.ocr_reviews else title

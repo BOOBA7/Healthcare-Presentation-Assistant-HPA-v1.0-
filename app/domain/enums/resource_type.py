@@ -8,6 +8,10 @@ class ResourceType(str, Enum):
 
     PDF = "pdf"
 
+    PNG = "png"
+
+    JPEG = "jpeg"
+
     DOCX = "docx"
 
     PPTX = "pptx"

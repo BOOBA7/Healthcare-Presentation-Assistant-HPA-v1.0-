@@ -24,6 +24,7 @@ class EvidenceChunk:
     position: int
     text: str
     terms: tuple[str, ...]
+    provenance: str = "document_extraction"
 
 
 @dataclass(frozen=True)
@@ -395,6 +396,7 @@ class EvidenceContextBuilder:
                     position=chunk.position,
                     text=chunk.text,
                     terms=tuple(self._terms(chunk.text)),
+                    provenance="user_confirmed" if any(r.id == chunk.resource_id and r.metadata.ocr_reviews for r in resources) else "document_extraction",
                 )
                 for chunk in persisted_chunks
                 if chunk.resource_id in validated_resources and self._terms(chunk.text)
@@ -418,6 +420,7 @@ class EvidenceContextBuilder:
                                 position=position,
                                 text=text,
                                 terms=terms,
+                                provenance="user_confirmed" if resource.metadata.ocr_reviews else "document_extraction",
                             )
                         )
         return chunks
@@ -446,7 +449,7 @@ class EvidenceContextBuilder:
     def _format_chunk(self, chunk: EvidenceChunk) -> str:
         return (
             "BEGIN UNTRUSTED SOURCE EXCERPT\n"
-            f"SOURCE ID: {chunk.resource_id} | TITLE: {chunk.title} | PAGE: {chunk.page}\n"
+            f"SOURCE ID: {chunk.resource_id} | TITLE: {chunk.title} | PAGE: {chunk.page} | PROVENANCE: {chunk.provenance}\n"
             f"{chunk.text}\n"
             "END UNTRUSTED SOURCE EXCERPT"
         )

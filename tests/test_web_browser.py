@@ -206,3 +206,49 @@ def test_hcp_can_upload_validate_analyze_and_generate_blueprint_in_browser(tmp_p
             expect(page.locator("#agenda-area")).to_contain_text("Evidence overview")
             expect(page.locator("#review-area")).to_contain_text("Clinical application")
         browser.close()
+
+
+def test_owner_reviews_ocr_beside_original_before_generation(tmp_path, monkeypatch):
+    """Real UI; synthetic OCR double. Screenshots are evidence only when executed."""
+    if platform.system() == 'Darwin' and platform.mac_ver()[0].startswith('10.'):
+        pytest.skip('Playwright Chromium requires macOS 12; OCR browser flow awaits supported CI.')
+    import json
+    from fastapi.testclient import TestClient
+    from app.application.services.local_image_screening import LocalImageScreening, ImageInspection
+    from app.application.services.source_document import SourceDocument
+    from app.tests.test_raster_sources import synthetic_image
+    repository = UserSessionRepository(tmp_path / 'ocr-browser.sqlite3')
+    monkeypatch.setattr(api, 'get_repository', lambda: repository)
+    monkeypatch.setattr(api, 'get_agent', lambda: pytest.fail('No external provider permitted'))
+    result = ImageInspection(lines=[
+        {'text': 'Synthetic teaching evidence', 'box': [0.1, 0.1, 0.9, 0.2], 'confidence': 0.99},
+        {'text': 'Publication date: 2024', 'box': [0.1, 0.3, 0.9, 0.4], 'confidence': 0.99},
+    ], faces=0)
+    monkeypatch.setattr(LocalImageScreening, 'inspect', lambda content: result.model_copy(deep=True))
+    token = TestClient(api.app).post('/auth/register', json={'user_id': 'ocr-owner', 'password': 'synthetic-password'}).json()['token']
+    resource = SourceDocument.read('synthetic.png', synthetic_image(), 'synthetic')
+    repository.save('ocr-owner', 'demo', 'thread', GraphState(prototype_declaration='synthetic', resource_library=[resource]))
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            with _serve_fastapi_app() as base_url:
+                page = browser.new_page()
+                page.add_init_script('sessionStorage.setItem("hpa_user_id", "ocr-owner"); sessionStorage.setItem("hpa_token", ' + json.dumps(token) + ');')
+                page.goto(base_url + '/app')
+                page.locator('.workspace-tab[data-workspace="resources"]').click()
+                page.locator('[data-resource-action="ocr-review"]').click()
+                expect(page.locator('[data-ocr-save]')).to_be_disabled()
+                page.wait_for_function('document.querySelector("[data-ocr-image]")?.naturalWidth > 0')
+                page.locator('[data-ocr-confirm="0"]').check()
+                page.locator('[data-ocr-confirm="1"]').check()
+                page.locator('[data-ocr-value="0"]').fill('Synthetic corrected teaching evidence')
+                expect(page.locator('[data-ocr-save]')).to_be_disabled()
+                page.locator('[data-ocr-confirm="0"]').check()
+                expect(page.locator('[data-ocr-save]')).to_be_enabled()
+                page.screenshot(path=str(tmp_path / 'ocr-review.png'), full_page=True)
+                page.locator('[data-ocr-save]').click()
+                expect(page.locator('#ocr-review-panel')).to_be_hidden()
+                expect(page.locator('#resource-list')).to_contain_text('user_confirmed')
+                assert repository.library_resource('ocr-owner', 'synthetic').metadata.ocr_reviews[0].actor == 'ocr-owner'
+        finally:
+            browser.close()
