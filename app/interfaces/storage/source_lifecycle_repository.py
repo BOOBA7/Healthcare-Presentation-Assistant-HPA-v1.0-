@@ -49,7 +49,15 @@ class SourceLifecycleRepository:
                     resources.setdefault(resource.id, resource)
             for resource in resources.values():
                 if (user, resource.id) not in existing_keys:
-                    self._remember_source(connection, user, resource)
+                    try:
+                        self._remember_source(connection, user, resource)
+                    except WorkflowError:
+                        # Legacy project rows can predate the current privacy and
+                        # integrity gates.  They must not be promoted into the
+                        # canonical owner library, but one rejected row must not
+                        # make repository construction (and therefore login)
+                        # unavailable for every user.
+                        continue
 
     @staticmethod
     def _assert_not_deleted(connection, user, kind, identifier):

@@ -276,6 +276,22 @@ def test_additive_library_migration_keeps_historical_text_and_missing_original(t
     assert restarted.library_resource("owner", "source") is not None
 
 
+def test_additive_library_migration_skips_legacy_source_rejected_by_current_screening(tmp_path):
+    repository = UserSessionRepository(tmp_path / "source.sqlite3")
+    populated(repository)
+    with repository._connect() as connection:
+        connection.execute("DELETE FROM owner_resources")
+        connection.execute(
+            "UPDATE project_resource_pages SET page_text = ? WHERE user_id = ? AND resource_id = ?",
+            ("Contact: author@example.invalid", "owner", "source"),
+        )
+
+    restarted = UserSessionRepository(repository.database_path)
+
+    assert restarted.list_library_resources("owner") == []
+    assert restarted.authenticate_user("missing-user", "irrelevant") is False
+
+
 def test_export_failure_after_render_does_not_write_internal_files(workspace, monkeypatch, tmp_path):
     from app.interfaces.api import main as api
     from app.domain.enums.workflow_status import WorkflowStatus
