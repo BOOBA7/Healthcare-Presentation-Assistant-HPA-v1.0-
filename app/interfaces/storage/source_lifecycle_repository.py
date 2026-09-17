@@ -350,15 +350,20 @@ class SourceLifecycleRepository:
                 ids = {r.id for r in state.resource_library}
                 if state.presentation:
                     ids.update(r.id for r in state.presentation.resources)
+                evidence_dependency = identifier in ids
+                if state.presentation and state.presentation.custom_template_id:
+                    ids.add(state.presentation.custom_template_id)
                 if identifier not in ids:
                     continue
                 state.project_revision = revision
                 state.resource_library = [r for r in state.resource_library if r.id != identifier]
                 if state.presentation:
                     state.presentation.resources = [r for r in state.presentation.resources if r.id != identifier]
-                self._invalidate_project_storage(connection, user, project, state)
+                if evidence_dependency:
+                    self._invalidate_project_storage(connection, user, project, state)
                 self._save_project_row(connection, user, project, thread, state, None)
                 self._insert_event(connection, user, project, "SOURCE_PERMANENTLY_DELETED", actor, {"resource_id": identifier})
+            connection.execute("DELETE FROM presentation_templates WHERE user_id = ? AND template_id = ?", (user, identifier))
             for table in ("project_resource_chunks", "project_resource_pages", "project_resources", "owner_resources"):
                 connection.execute(f"DELETE FROM {table} WHERE user_id = ? AND resource_id = ?", (user, identifier))
             connection.execute("INSERT OR IGNORE INTO source_deletion_audit(user_id, resource_id, actor) VALUES (?, ?, ?)", (user, identifier, actor))

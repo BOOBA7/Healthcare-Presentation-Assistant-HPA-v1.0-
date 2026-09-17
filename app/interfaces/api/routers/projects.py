@@ -1,9 +1,6 @@
 """Project, template and audit routes."""
 
 from app.application.services.prototype_policy import PrototypePolicy
-from xml.etree import ElementTree
-import io
-from zipfile import BadZipFile, ZipFile
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
@@ -60,19 +57,9 @@ async def upload_template(
     if not content or len(content) > 20 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="PowerPoint templates must be between 1 byte and 20 MB.")
     try:
-        with ZipFile(io.BytesIO(content)) as archive:
-            if "ppt/presentation.xml" not in archive.namelist():
-                raise BadZipFile("Not a PowerPoint file")
-            # Templates can contain slide text and speaker notes, not just styling.
-            for name in archive.namelist():
-                if name.endswith(".xml"):
-                    element = ElementTree.fromstring(archive.read(name))
-                    PrototypePolicy.screen(" ".join(element.itertext()))
+        return api.get_repository().save_presentation_template(user_id, file.filename or "template.pptx", content, prototype_declaration=prototype_declaration)
     except ValueError as exc:
         raise api._workflow_conflict(exc) from exc
-    except (BadZipFile, ElementTree.ParseError) as exc:
-        raise HTTPException(status_code=422, detail="The uploaded file is not a valid .pptx template.") from exc
-    return api.get_repository().save_presentation_template(user_id, file.filename or "template.pptx", content, prototype_declaration=prototype_declaration)
 
 
 @router.post("/projects")

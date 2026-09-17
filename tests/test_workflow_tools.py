@@ -533,10 +533,10 @@ def test_powerpoint_always_ends_with_user_validated_resources(tmp_path):
         }
     )
 
-    custom_template = tmp_path / "custom-template.pptx"
-    base_deck = PowerPoint()
-    base_deck.slides.add_slide(base_deck.slide_layouts[0])
-    base_deck.save(custom_template)
+    from app.tests.test_pptx_sources import deck as synthetic_deck
+    from app.application.services.source_document import SourceDocument
+    custom_template = SourceDocument.read("synthetic.pptx", synthetic_deck(), "synthetic-template")
+    presentation.custom_template_id = custom_template.id
 
     path = ExportPowerPointUseCase().execute(presentation, tmp_path, custom_template)
     deck = PowerPoint(path)

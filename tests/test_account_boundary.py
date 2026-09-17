@@ -1,8 +1,6 @@
 """Slice 01.2: local-account recovery, ownership and loopback defaults."""
 
-from io import BytesIO
 from pathlib import Path
-from zipfile import ZipFile
 
 import fitz
 import pytest
@@ -24,10 +22,8 @@ def _pdf_bytes() -> bytes:
 
 
 def _pptx_bytes() -> bytes:
-    archive = BytesIO()
-    with ZipFile(archive, "w") as file:
-        file.writestr("ppt/presentation.xml", "<presentation/>")
-    return archive.getvalue()
+    from app.tests.test_pptx_sources import deck
+    return deck()
 
 
 @pytest.fixture

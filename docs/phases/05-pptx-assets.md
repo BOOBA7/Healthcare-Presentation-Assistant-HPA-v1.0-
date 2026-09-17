@@ -2,7 +2,8 @@
 
 Status: 05.1 approved by the product owner on 2026-09-17. Phase 05 gate
 approval remains pending. 05.2 was explicitly approved by the product owner on
-2026-09-17 for its documented restricted subset. 05.3 has not started.
+2026-09-17 for its documented restricted subset. 05.3 is implemented;
+its product-owner acceptance and the complete phase 05 gate remain pending.
 
 ## Outcome and scope
 
@@ -31,10 +32,13 @@ One numbered slice per conversation. Include relevant domain, persistence, API/U
 
 ## Acceptance criteria
 
-- [ ] Synthetic source slides and assets resolve to original locations after restart.
-- [ ] All formats and derived assets obey privacy/date gates and permanent-deletion semantics.
-- [ ] Evidence import never silently changes style; missing bibliographic data is not fabricated.
-- [ ] DOCX, spreadsheets and DICOM remain rejected.
+Engineering evidence for the restricted subset is recorded in the handoffs;
+these checks do not constitute product-owner phase approval.
+
+- [x] Synthetic source slides and assets resolve to original locations after restart.
+- [x] All formats and derived assets obey privacy/date gates and permanent-deletion semantics.
+- [x] Evidence import never silently changes style; missing bibliographic data is not fabricated.
+- [x] DOCX, spreadsheets and DICOM remain rejected.
 
 ## Validation and phase gate
 
@@ -90,7 +94,7 @@ Present a reviewable diff and evidence against every criterion. Record product-o
 - Product-owner phase 05 gate approval: pending.
 
 
-## Current session handoff — 05.2 (2026-09-17)
+## Approved 05.2 handoff (2026-09-17, historical)
 
 - **05.2 implemented for the restricted subset described in
   [05.2 evidence](05.2-asset-review-evidence.md), explicitly approved by the
@@ -165,3 +169,71 @@ All commands below exited with status 0 after the final implementation changes:
 The final full suite includes the new asset-budget and safe-query-error tests.
 Subsequent edits only clarified browser labels/candidate display and documented
 results; JavaScript syntax and static checks were rerun afterwards.
+
+## Current session handoff — 05.3 (2026-09-17)
+
+- **05.3 implemented; product-owner acceptance of this slice and the complete
+  phase 05 gate remain pending.** Starting HEAD was `0a31246`; the working tree
+  was clean and no applicable `AGENTS.md` was found. Implementation initially
+  ended without commit/push; the owner subsequently authorised committing and
+  pushing 05.3. This does not grant slice or phase-gate acceptance.
+  Decisions, changed files, acceptance evidence, limitations and a manual
+  review checklist are in [05.3 evidence](05.3-role-separation-evidence.md).
+- Evidence import leaves theme/template selection unchanged. Reusing a Project
+  PPTX is now a separate authenticated gallery action after Blueprint approval,
+  with expected Project revision, active-job exclusion and atomic audit.
+  Direct saves/deserialized state cannot select or replace styles. Reuse retains
+  the original identity and changes no extraction/scientific approval. Existing
+  HPA rendering is reused; no phase 09 style engine was implemented.
+- The dedicated template-import route now shares the strict evidence reader.
+  Source/derivative bytes remain in existing private SQLite records, with only
+  an identifier used for graphics. No independent template copy is written.
+  An original imported solely for graphics does not become Project evidence
+  or model context. Old unchecked templates require screened reimport.
+- FR-18's exact warning is derived for PPTX evidence at citation, source,
+  retrieval, review, preview and export boundaries. It survives restart without
+  trusting caller/model flags. Candidate primary references remain unverified;
+  ambiguous or unattributable bibliographic text never suppresses the warning.
+  PPTX reference labels use original descriptors rather than model-invented
+  bibliography. No external source is retrieved or scientific validation claimed.
+- Style changes reopen slide/final approval and invalidate internal exports,
+  retaining evidence reviews and Blueprint approval. Evidence removal clears
+  its graphic link; permanent deletion includes graphics-only references and
+  registrations. Graphics-only deletion preserves unrelated scientific state.
+  Failed audits roll back imports, selection and deletion.
+- Verification: the first two focused regressions failed as expected, then
+  passed. Integration run: **66 passed, 6 warnings**. Dedicated final role run:
+  **19 passed, 6 warnings**. Earlier full runs exposed obsolete permissive
+  template fixtures and incomplete test setup; those were corrected without
+  bypassing gates. An intermediate full run reached **465 passed, 2 skipped,
+  6 warnings**. Final export-diff review also corrected reference-label spacing;
+  a structural non-overlap assertion was added. Final suite result follows.
+- Native command `venv/bin/python -m app.tests.evaluate_assets_native`: first
+  attempt failed closed inside the containing sandbox; explicitly authorised
+  rerun passed all five synthetic probes with the native no-write/no-network
+  sandbox preserved. These do not establish anonymisation, scientific validity,
+  detector accuracy or visual fidelity.
+- No dependency/tool installation, provider call, professional document,
+  patient data, Streamlit edit or human acceptance was used. The two browser
+  tests remain skipped on unsupported macOS 10.15. Browser flow, screenshots
+  and rendered PowerPoint readability remain **not verified**.
+- **Next exact action:** review the 05.3 evidence/manual checklist and explicitly
+  accept or reject 05.3 and the restricted phase 05 gate. Any compatible-browser
+  or local rendering check must be recorded as actually executed before being
+  called successful. Do not begin phase 06, commit or publish without separate
+  explicit authorisation. 05.1/05.2's recorded approvals remain unchanged.
+
+### 05.3 final verification record
+
+- Full required command: `venv/bin/python -m pytest -q app/tests tests -ra --tb=short`.
+  **465 passed, 2 skipped, 6 warnings, 109.44 seconds** (exit 0).
+  No final test failure remains; both skips are unsupported-browser tests.
+- `venv/bin/ruff check app tests streamlit_app.py main.py` — passed.
+- `venv/bin/python -m compileall -q app streamlit_app.py main.py` — passed.
+- `venv/bin/python -m pip check` — passed, no broken requirements; unavailable
+  user cache disabled, nothing installed.
+- `venv/lib/python3.12/site-packages/playwright/driver/node --check
+  app/interfaces/web/app.js` — passed, syntax only.
+- `git diff --check` — passed. Application/test diff and new source, tests and
+  evidence report reviewed, including final documentation changes. The three
+  new files also passed explicit trailing-whitespace/newline checks.

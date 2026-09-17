@@ -304,7 +304,7 @@ class UserSessionRepository(SourceLifecycleRepository):
                 (user_id,),
             ).fetchall()
             templates = connection.execute(
-                """SELECT template_id, filename FROM presentation_templates
+                """SELECT resource_id, json_extract(resource_json, '$.filename') FROM owner_resources
                    WHERE user_id = ?""",
                 (user_id,),
             ).fetchall()
@@ -454,42 +454,87 @@ class UserSessionRepository(SourceLifecycleRepository):
             (self.templates_path / row[0]).unlink(missing_ok=True)
 
     def save_presentation_template(self, user_id: str, filename: str, content: bytes, *, prototype_declaration: str | None = None) -> dict[str, str]:
+        """Explicit import into the owner library, with the same source gates.
+
+        Keep a reference to the canonical original, never a separate disk copy.
+        Import does not select a style or approve any extraction.
+        """
         PrototypePolicy.declaration(prototype_declaration)
         PrototypePolicy.screen(filename)
-        template_id = str(uuid4())
-        safe_filename = Path(filename).name
-        stored_filename = f"{template_id}.pptx"
-        (self.templates_path / stored_filename).write_bytes(content)
+        if not filename.lower().endswith(".pptx"):
+            raise SourceScreening.incomplete()
+        resource = SourceDocument.read(filename, content, str(uuid4()))
         with self._connect() as connection:
+            self._remember_source(connection, user_id, resource)
             connection.execute(
                 """INSERT INTO presentation_templates (template_id, user_id, filename, stored_filename, prototype_declaration)
                    VALUES (?, ?, ?, ?, ?)""",
-                (template_id, user_id, safe_filename, stored_filename, prototype_declaration),
+                (resource.id, user_id, resource.filename, "source:" + resource.id, prototype_declaration),
             )
-        return {"id": template_id, "filename": safe_filename}
+            self._insert_event(connection, user_id, "", "GRAPHIC_SOURCE_IMPORTED", user_id,
+                               {"resource_id": resource.id, "original_sha256": resource.metadata.original_sha256, "workflow_stage": "library_import"})
+        return {"id": resource.id, "filename": resource.filename}
 
     def list_presentation_templates(self, user_id: str) -> list[dict[str, str]]:
         with self._connect() as connection:
             rows = connection.execute(
-                """SELECT template_id, filename FROM presentation_templates
-                   WHERE user_id = ? ORDER BY created_at DESC""",
-                (user_id,),
+                """SELECT t.template_id, t.filename FROM presentation_templates t
+                   JOIN owner_resources r ON r.user_id = t.user_id AND r.resource_id = t.template_id
+                   WHERE t.user_id = ? AND t.stored_filename = 'source:' || t.template_id
+                   ORDER BY t.created_at DESC""", (user_id,),
             ).fetchall()
         return [{"id": row[0], "filename": row[1]} for row in rows]
 
-    def presentation_template_path(self, user_id: str, template_id: str) -> Path | None:
+    def presentation_template_source(self, user_id: str, template_id: str) -> Resource | None:
+        """Return the verified original for explicit graphic reuse."""
         with self._connect() as connection:
-            row = connection.execute(
-                """SELECT stored_filename, prototype_declaration FROM presentation_templates
-                   WHERE user_id = ? AND template_id = ?""",
-                (user_id, template_id),
-            ).fetchone()
-        if row is None:
+            registration = connection.execute("SELECT prototype_declaration FROM presentation_templates WHERE user_id = ? AND template_id = ?", (user_id, template_id)).fetchone()
+        if registration and registration[0] not in ("public", "synthetic"):
             return None
-        if row[1] not in ("public", "synthetic"):
+        resource = self.library_resource(user_id, template_id)
+        if resource is None or resource.file_type.value != "pptx" or resource._original_content is None:
             return None
-        path = self.templates_path / row[0]
-        return path if path.is_file() else None
+        SourceDocument.verify(resource, resource._original_content)
+        return resource
+
+    def select_presentation_style(self, user, project, expected_revision, *, template_id=None, theme=None):
+        """Authenticated API supplies the owner; state, invalidation and audit commit together."""
+        from app.application.services.source_date_policy import SourceDatePolicy
+        stored = self.load(user, project)
+        if stored is None:
+            raise WorkflowError("PROJECT_NOT_FOUND", "Project not found.")
+        thread, state = stored
+        PrototypePolicy.declaration(state.prototype_declaration)
+        if type(expected_revision) is not int or state.project_revision != expected_revision:
+            raise ConcurrentModificationError()
+        presentation = state.presentation
+        if presentation is None:
+            raise WorkflowError("PRESENTATION_REQUIRED", "Create a presentation before selecting a style.")
+        if template_id:
+            if not presentation.state.blueprint_validated:
+                raise WorkflowError("BLUEPRINT_APPROVAL_REQUIRED", "Approve the Blueprint before reusing a graphic template.")
+            source = self.presentation_template_source(user, template_id)
+            if source is None or source.file_type.value != "pptx" or source._original_content is None:
+                raise WorkflowError("TEMPLATE_UNAVAILABLE", "Select a screened PowerPoint from your local library.")
+            SourceDocument.verify(source, source._original_content)
+            SourceDatePolicy.require(source, allow_unconfirmed=True)
+            presentation.custom_template_id = source.id
+        elif theme is not None:
+            presentation.theme = theme
+            presentation.custom_template_id = None
+        else:
+            raise WorkflowError("STYLE_REQUIRED", "Select a built-in theme or a screened PowerPoint.")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute("SELECT 1 FROM project_jobs WHERE user_id = ? AND project_id = ? AND status IN ('queued', 'running')", (user, project)).fetchone():
+                raise ProjectJobRunningError()
+            self._save_project_row(connection, user, project, thread, state, None, style_action=True)
+            self._insert_event(connection, user, project, "PRESENTATION_THEME_SELECTED", user,
+                               {"template_resource_id": presentation.custom_template_id, "theme": presentation.theme.value,
+                                "workflow_status": presentation.state.workflow_status.value,
+                                "original_sha256": source.metadata.original_sha256 if template_id else None})
+        self._cleanup_if_pending()
+        return thread, state
 
     def record_event(
         self,
@@ -709,6 +754,7 @@ class UserSessionRepository(SourceLifecycleRepository):
         thread_id: str,
         state: GraphState,
         project_name: str | None,
+        *, style_action: bool = False,
     ) -> None:
         if not connection.in_transaction:
             connection.execute("BEGIN IMMEDIATE")
@@ -750,6 +796,36 @@ class UserSessionRepository(SourceLifecycleRepository):
             selected = {r.id for r in state.presentation.resources} if state.presentation else set()
             if removed or old_selected - selected:
                 self._invalidate_project_storage(connection, user_id, project_id, state)
+        old_presentation = previous.presentation if previous_row else None
+        presentation = state.presentation
+        if presentation:
+            old_template = old_presentation.custom_template_id if old_presentation else None
+            # Detaching the original removes its graphic use as well.
+            removed_template = old_template and (
+                (old_template in {r.id for r in old_resources} and old_template not in {r.id for r in state.resource_library})
+                or connection.execute("SELECT 1 FROM deletion_markers WHERE user_id = ? AND kind = 'source' AND object_id = ?", (user_id, old_template)).fetchone()
+            )
+            if removed_template and presentation.custom_template_id == old_template:
+                presentation.custom_template_id = None
+            changed_template = presentation.custom_template_id != old_template
+            changed_theme = old_presentation and presentation.theme != old_presentation.theme
+            automatic_clear = removed_template and presentation.custom_template_id is None and not changed_theme
+            if (changed_template or changed_theme) and not style_action and not automatic_clear:
+                raise WorkflowError("EXPLICIT_STYLE_ACTION_REQUIRED", "Use the explicit style-selection action.")
+            if presentation.custom_template_id:
+                self._assert_not_deleted(connection, user_id, "source", presentation.custom_template_id)
+                candidate = connection.execute("SELECT resource_json FROM owner_resources WHERE user_id = ? AND resource_id = ?", (user_id, presentation.custom_template_id)).fetchone()
+                if candidate is None or json.loads(candidate[0]).get("file_type") != "pptx":
+                    raise WorkflowError("TEMPLATE_UNAVAILABLE", "Select a screened PowerPoint from your local library.")
+            if changed_template or changed_theme:
+                self._queue_project_exports(connection, user_id, project_id, state)
+                presentation.state.presentation_validated = False
+                presentation.state.slides_validated = False
+                for slide in presentation.slides:
+                    slide.is_validated = False
+                if presentation.slides:
+                    from app.domain.enums.workflow_status import WorkflowStatus
+                    presentation.state.workflow_status = WorkflowStatus.AWAITING_SLIDE_APPROVAL
         self._sync_resources(connection, user_id, project_id, state.resource_library, _removal_token=self._resource_removal_token)
         for resource in old_resources:
             present = connection.execute("SELECT 1 FROM owner_resources WHERE user_id = ? AND resource_id = ?", (user_id, resource.id)).fetchone()

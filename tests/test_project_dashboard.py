@@ -85,7 +85,7 @@ def test_dashboard_returns_only_persisted_project_metadata_and_resume_data(tmp_p
     assert client.put(
         "/projects/professor/cardiology/theme",
         headers=headers,
-        json={"theme": "academic"},
+        json={"theme": "academic", "expected_revision": repository.load("professor", "cardiology")[1].project_revision},
     ).status_code == 200
 
     dashboard = client.get("/users/professor/dashboard", headers=headers)
@@ -121,12 +121,14 @@ def test_dashboard_returns_only_persisted_project_metadata_and_resume_data(tmp_p
     assert cardiology["last_successful_save"]
     assert "Synthetic public evidence" not in dashboard.text
 
+    from app.tests.test_pptx_sources import deck
     template = repository.save_presentation_template(
-        "professor", "public-template.pptx", b"synthetic template", prototype_declaration="synthetic"
+        "professor", "public-template.pptx", deck(), prototype_declaration="synthetic"
     )
     thread_id, state = repository.load("professor", "cardiology")
-    state.presentation.custom_template_id = template["id"]
-    repository.save_with_event("professor", "cardiology", thread_id, state, "TEMPLATE_SELECTED", "user")
+    state.presentation.state.blueprint_validated = True
+    repository.save("professor", "cardiology", thread_id, state)
+    repository.select_presentation_style("professor", "cardiology", state.project_revision, template_id=template["id"])
     styled = client.get("/users/professor/dashboard", headers=headers).json()
     styled_cardiology = next(project for project in styled["projects"] if project["id"] == "cardiology")
     assert styled_cardiology["custom_template_name"] == "public-template.pptx"

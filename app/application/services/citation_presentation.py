@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import re
 
 from app.domain.models.resource import Resource
+from app.application.services.pptx_roles import source_warning
 
 
 _CITATION_PATTERN = re.compile(
@@ -44,11 +45,11 @@ def format_citations_for_display(text: str, resources: list[Resource]) -> str:
         resource = _find_resource(resource_id, resource_map)
         if resource is None:
             return match.group(0)
-        return f"[{_display_title(resource)}, p. {pages}]"
+        return f"[{_display_title(resource)}, {_location_label(resource)} {pages}]"
 
     formatted = _VERIFIED_RESPONSE_CITATION_PATTERN.sub(
         lambda match: (
-            f"[{_display_title(resource)}, p. {match.group(2)}]"
+            f"[{_display_title(resource)}, {_location_label(resource)} {match.group(2)}]"
             if (resource := _find_resource(match.group(1), resource_map)) is not None
             else match.group(0)
         ),
@@ -99,4 +100,9 @@ def _find_resource(identifier: str, resources: dict[str, Resource]) -> Resource 
 
 def _display_title(resource: Resource) -> str:
     title = resource.title or resource.filename
-    return title + " · user_confirmed" if resource.metadata.ocr_reviews else title
+    title = title + " · user_confirmed" if resource.metadata.ocr_reviews else title
+    return title + " · " + source_warning(resource) if source_warning(resource) else title
+
+
+def _location_label(resource: Resource) -> str:
+    return "slide" if resource.file_type.value == "pptx" else "p."

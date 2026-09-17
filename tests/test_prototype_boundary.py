@@ -6,7 +6,6 @@ from zipfile import ZipFile
 import fitz
 import pytest
 from fastapi import HTTPException
-from pptx import Presentation as PptxPresentation
 from app.interfaces.api import job_runner
 from fastapi.testclient import TestClient
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
@@ -193,8 +192,8 @@ def test_template_ingestion_requires_declaration_and_screens_notes(workspace):
 
 def test_synthetic_template_declaration_survives_restart_and_legacy_is_unavailable(workspace):
     client, repository = workspace
-    buffer = BytesIO()
-    PptxPresentation().save(buffer)
+    from app.tests.test_pptx_sources import deck
+    buffer = BytesIO(deck())
     response = client.post(
         "/users/synthetic-owner/templates",
         files={"file": ("synthetic.pptx", buffer.getvalue(), "application/octet-stream")},
@@ -203,8 +202,8 @@ def test_synthetic_template_declaration_survives_restart_and_legacy_is_unavailab
     assert response.status_code == 200
     template_id = response.json()["id"]
     restored = UserSessionRepository(repository.database_path)
-    assert restored.presentation_template_path("synthetic-owner", template_id).read_bytes() == buffer.getvalue()
+    assert restored.presentation_template_source("synthetic-owner", template_id)._original_content == buffer.getvalue()
     # Simulate metadata from before declaration support; never auto-approve it.
     with restored._connect() as connection:
         connection.execute("UPDATE presentation_templates SET prototype_declaration = NULL WHERE template_id = ?", (template_id,))
-    assert restored.presentation_template_path("synthetic-owner", template_id) is None
+    assert restored.presentation_template_source("synthetic-owner", template_id) is None

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from math import log
 import re
 
+from app.application.services.pptx_roles import source_warning
 from app.domain.models.presentation import Presentation
 from app.domain.models.resource import Resource
 from app.domain.models.resource_chunk import ResourceChunk
@@ -26,6 +27,7 @@ class EvidenceChunk:
     terms: tuple[str, ...]
     provenance: str = "document_extraction"
     location_kind: str = "page"
+    source_warning: str | None = None
 
 
 @dataclass(frozen=True)
@@ -392,6 +394,7 @@ class EvidenceContextBuilder:
             return [
                 EvidenceChunk(
                     resource_id=chunk.resource_id,
+                    source_warning=source_warning(validated_resources[chunk.resource_id]),
                     location_kind="slide" if validated_resources[chunk.resource_id].file_type.value == "pptx" else "page",
                     page=chunk.page,
                     title=chunk.title,
@@ -417,6 +420,7 @@ class EvidenceContextBuilder:
                         chunks.append(
                             EvidenceChunk(
                                 resource_id=resource.id,
+                                source_warning=source_warning(resource),
                                 location_kind="slide" if resource.file_type.value == "pptx" else "page",
                                 page=page_number,
                                 title=resource.title or resource.filename,
@@ -453,6 +457,7 @@ class EvidenceContextBuilder:
         return (
             "BEGIN UNTRUSTED SOURCE EXCERPT\n"
             f"SOURCE ID: {chunk.resource_id} | TITLE: {chunk.title} | {chunk.location_kind.upper()}: {chunk.page} | PROVENANCE: {chunk.provenance}\n"
+            f"{chunk.source_warning or ''}\n"
             f"{chunk.text}\n"
             "END UNTRUSTED SOURCE EXCERPT"
         )

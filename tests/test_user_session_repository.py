@@ -102,16 +102,18 @@ def test_user_templates_are_scoped_and_deleted_with_the_user(tmp_path):
     repository = UserSessionRepository(tmp_path / "sessions.sqlite3")
     repository.register_user("anis", "old-safe-password")
 
-    template = repository.save_presentation_template("anis", "my-theme.pptx", b"template-content", prototype_declaration="synthetic")
+    from app.tests.test_pptx_sources import deck
+    content = deck()
+    template = repository.save_presentation_template("anis", "my-theme.pptx", content, prototype_declaration="synthetic")
 
     assert repository.authenticate_user("anis", "old-safe-password")
     assert not hasattr(repository, "reset_password_without_verification")
     assert repository.list_presentation_templates("anis") == [template]
-    assert repository.presentation_template_path("anis", template["id"]).read_bytes() == b"template-content"
+    assert repository.presentation_template_source("anis", template["id"])._original_content == content
 
     repository.delete_user("anis")
 
-    assert repository.presentation_template_path("anis", template["id"]) is None
+    assert repository.presentation_template_source("anis", template["id"]) is None
 
 
 def test_project_audit_events_are_scoped_and_removed_with_the_project(tmp_path):

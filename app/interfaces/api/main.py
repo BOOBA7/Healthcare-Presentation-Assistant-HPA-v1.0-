@@ -1,3 +1,4 @@
+from app.application.services.pptx_roles import source_warning, reference_warnings, label_pptx_reference
 from app.application.services.presentation_context_policy import PresentationContextPolicy
 from app.domain.models.professional_scope_declaration import ProfessionalScopeDeclaration
 from functools import lru_cache
@@ -171,6 +172,7 @@ class AgendaRequest(BaseModel):
 
 
 class ThemeRequest(BaseModel):
+    expected_revision: int = Field(ge=1, strict=True)
     theme: PresentationTheme | None = None
     custom_template_id: str | None = Field(default=None, min_length=1, max_length=128)
 
@@ -277,12 +279,22 @@ def _project_response(user_id: str, project_id: str, thread_id: str, state: Grap
     ensure_history(state)
     ensure_resource_library(state)
     presentation = state.presentation.model_dump(mode="json", exclude={"resources": {"__all__": {"metadata": {"assets": {"__all__": {"content_base64"}}}}}}) if state.presentation else None
+    if presentation:
+        by_id = {r.id: r for r in state.resource_library}
+        for slide in presentation["slides"]:
+            slide["source_warnings"] = reference_warnings(slide["reference_details"], state.resource_library)
+            for reference in slide["reference_details"]:
+                if resource := by_id.get(reference.get("resource_id")):
+                    label_pptx_reference(reference, resource)
+            if slide["source_warnings"]:
+                slide["references"] = [str(r.get("title") or "Source") for r in slide["reference_details"]]
     messages = [turn.model_dump(mode="json") for turn in state.conversation_history]
     resource_messages = [turn.model_dump(mode="json") for turn in state.resource_conversation_history]
     return {
         "user_id": user_id,
         "project_id": project_id,
         "thread_id": thread_id,
+        "project_revision": state.project_revision,
         "presentation": presentation,
         "resource_library": [_resource_response(resource) for resource in state.resource_library],
         "owner_library": [_resource_response(resource) for resource in get_repository().list_library_resources(user_id)],
@@ -334,6 +346,7 @@ def _resource_response(resource) -> dict[str, object]:
         "is_validated": resource.is_validated,
         "page_count": len(resource.extracted_pages),
         "location_kind": "slide" if resource.file_type.value == "pptx" else "page",
+        "primary_reference_warning": source_warning(resource),
         "asset_inventory": [
             {"id": asset.id, "kind": asset.kind, "media_type": asset.media_type,
              "location": asset.location.model_dump(mode="json"), "review_status": asset.review_status}
@@ -1300,16 +1313,14 @@ def update_theme(user_id: str, project_id: str, request: ThemeRequest, authentic
     thread_id, state = _get_project(user_id, project_id)
     if state.presentation is None:
         raise HTTPException(status_code=409, detail="Create a presentation before selecting a theme.")
-    if request.custom_template_id:
-        if get_repository().presentation_template_path(user_id, request.custom_template_id) is None:
-            raise HTTPException(status_code=404, detail="Custom template not found.")
-        state.presentation.custom_template_id = request.custom_template_id
-    elif request.theme is not None:
-        state.presentation.theme = request.theme
-        state.presentation.custom_template_id = None
-    else:
-        raise HTTPException(status_code=422, detail="Select a built-in or custom template.")
-    return _save_project(user_id, project_id, thread_id, state, event_type="PRESENTATION_THEME_SELECTED", actor="user")
+    try:
+        thread_id, state = get_repository().select_presentation_style(
+            user_id, project_id, request.expected_revision,
+            template_id=request.custom_template_id, theme=request.theme,
+        )
+    except ValueError as exc:
+        raise _workflow_conflict(exc) from exc
+    return _project_response(user_id, project_id, thread_id, state)
 
 
 @app.put("/projects/{user_id}/{project_id}/evidence-settings")
@@ -1458,7 +1469,7 @@ def export_powerpoint(user_id: str, project_id: str, authenticated_user: str = D
         raise _workflow_conflict(exc) from exc
     try:
         custom_template = (
-            get_repository().presentation_template_path(user_id, state.presentation.custom_template_id)
+            get_repository().presentation_template_source(user_id, state.presentation.custom_template_id)
             if state.presentation.custom_template_id
             else None
         )

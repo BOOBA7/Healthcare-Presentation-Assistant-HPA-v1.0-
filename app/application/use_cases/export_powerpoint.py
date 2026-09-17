@@ -1,3 +1,4 @@
+from app.application.services.pptx_roles import reference_warnings, source_warning
 from pathlib import Path
 from io import BytesIO
 from uuid import uuid4
@@ -29,7 +30,7 @@ class ExportPowerPointUseCase:
         self,
         presentation: Presentation,
         output_dir: Path | BytesIO,
-        custom_template_path: Path | None = None,
+        graphic_source: Resource | None = None,
         resources: list[Resource] | None = None,
     ) -> Path | BytesIO:
         from app.application.services.source_date_policy import SourceDatePolicy
@@ -49,8 +50,16 @@ class ExportPowerPointUseCase:
 
         if isinstance(output_dir, Path):
             output_dir.mkdir(parents=True, exist_ok=True)
-        deck = PowerPoint(custom_template_path) if custom_template_path else PowerPoint()
-        if custom_template_path:
+        if presentation.custom_template_id or graphic_source is not None:
+            from app.application.services.source_document import SourceDocument
+            if (not isinstance(graphic_source, Resource)
+                    or graphic_source.id != presentation.custom_template_id
+                    or graphic_source.file_type.value != "pptx"
+                    or graphic_source._original_content is None):
+                raise ValueError("Select a screened local PowerPoint through the explicit style action.")
+            SourceDocument.verify(graphic_source, graphic_source._original_content)
+        deck = PowerPoint(BytesIO(graphic_source._original_content)) if graphic_source else PowerPoint()
+        if graphic_source:
             self._remove_template_slides(deck)
         else:
             deck.slide_width, deck.slide_height = Inches(13.333), Inches(7.5)
@@ -60,6 +69,8 @@ class ExportPowerPointUseCase:
         self._add_agenda_slide(deck, presentation, palette)
         for slide in presentation.slides:
             self._add_content_slide(deck, slide, palette)
+            for warning in reference_warnings(slide.reference_details, resources):
+                self._textbox(deck.slides[-1], warning, 0.8, 6.82, 11.7, 0.25, size=9, color=palette["ink"])
         self._add_resources_slide(deck, presentation, resources, palette)
 
         path = output_dir / f"{presentation.id}-{uuid4().hex[:8]}.pptx" if isinstance(output_dir, Path) else output_dir
@@ -185,7 +196,8 @@ class ExportPowerPointUseCase:
             title = str(reference.get("title") or "Source")
             excerpt = " ".join(str(reference.get("evidence_excerpt") or "").split())
             paragraph = frame.paragraphs[0] if index == 0 else frame.add_paragraph()
-            paragraph.text = f"{title} — {reference.get('resource_id')}, p. {reference.get('page')}: « {excerpt} »"
+            location = "slide" if reference.get("location_kind") == "slide" else "p."
+            paragraph.text = f"{title} — {reference.get('resource_id')}, {location} {reference.get('page')}: « {excerpt} »"
             paragraph.font.size = Pt(7)
             paragraph.font.color.rgb = self._rgb(palette["ink"])
 
@@ -255,7 +267,8 @@ class ExportPowerPointUseCase:
 
             for index, resource in enumerate(batch):
                 resource_number = (batch_number - 1) * 4 + index + 1
-                item_top = top + index * 0.98
+                spacing = 1.10 if any(source_warning(item) for item in batch) else 0.98
+                item_top = top + index * spacing
                 self._textbox(
                     slide,
                     f"{resource_number}. {resource.title or resource.filename}",
@@ -267,6 +280,8 @@ class ExportPowerPointUseCase:
                     color=palette["ink"],
                     bold=True,
                 )
+                if source_warning(resource):
+                    self._textbox(slide, source_warning(resource), 1.18, item_top + 0.86, 11.1, 0.22, size=8, color=palette["ink"])
                 if resource.source:
                     self._textbox(
                         slide,

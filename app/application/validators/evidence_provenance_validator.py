@@ -1,6 +1,7 @@
 """Deterministic checks for evidence citations produced by the language model."""
 
 import unicodedata
+from app.application.services.pptx_roles import label_pptx_reference, source_warning
 
 from app.domain.models.resource import Resource
 from app.domain.models.slide import Slide
@@ -18,6 +19,8 @@ class EvidenceProvenanceValidator:
         for reference in slide.reference_details:
             self._validate_reference(slide.slide_number, reference, resources_by_id)
 
+        if any(source_warning(resources_by_id[r["resource_id"]]) for r in slide.reference_details):
+            slide.references = [str(r.get("title") or "Source") for r in slide.reference_details]
         slide.evidence_verified = True
 
     def validate_presentation(self, slides: list[Slide], resources: list[Resource]) -> None:
@@ -63,6 +66,8 @@ class EvidenceProvenanceValidator:
             raise ValidationError(
                 f"Slide {slide_number} evidence excerpt was not found on page {page_number} of resource {resource_id}."
             )
+
+        label_pptx_reference(reference, resource)
 
     @staticmethod
     def _normalize(text: str) -> str:
