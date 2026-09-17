@@ -96,14 +96,19 @@ class DeterministicBrowserOverview:
 def _write_pdf(path: Path) -> None:
     document = fitz.open()
     page = document.new_page()
-    page.insert_text(
-        (72, 72),
+    page.insert_textbox(
+        fitz.Rect(72, 72, page.rect.width - 72, page.rect.height - 72),
         "Vitamin D clinical update evidence provided by the HCP for general practitioners in primary care. "
         "This practical clinical PDF is the sole source for the workflow test.\n"
         "Publication date: 2024",
     )
     document.save(path)
     document.close()
+
+    # Coverage is computed from extracted text, so ensure the portable PDF
+    # fixture retains the terms required by that workflow gate.
+    with fitz.open(path) as saved_document:
+        assert "practical clinical" in saved_document[0].get_text()
 
 
 @contextmanager
