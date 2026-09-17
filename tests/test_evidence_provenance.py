@@ -49,7 +49,9 @@ def test_evidence_reference_is_verified_against_its_pdf_page():
 
     EvidenceProvenanceValidator().validate_slide(candidate, [resource()])
 
-    assert candidate.evidence_verified
+    assert not candidate.evidence_verified
+    assert candidate.evidence_review_required
+    assert candidate.legacy_references[0].review_required
 
 
 def test_arabic_evidence_excerpt_must_match_the_exact_pdf_page():

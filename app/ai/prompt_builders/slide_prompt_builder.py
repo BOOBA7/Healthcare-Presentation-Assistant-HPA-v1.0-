@@ -131,6 +131,8 @@ The slide must include:
 - Slide content written as concise presentation-ready bullet points
 - Detailed speaker notes
 - Scientific references actually used
+- A stable claim_id and exact claim_text for every reference; each reference must support exactly one claim
+- Exact resource ID, page/source slide and verbatim passage; section, DOI and URL only when present in the supplied passage
 - One or more recommended visuals
 
 Requirements:

@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Literal
 
 from pydantic import BaseModel, Field
 
@@ -27,7 +27,21 @@ class SlideReferenceSchema(BaseModel):
 
     page: int | None = Field(default=None, ge=1, description="Supporting PDF page number.")
 
+    location_kind: Literal["page", "slide"] = Field(
+        default="page", description="Use slide only for a supplied PowerPoint source."
+    )
+
     evidence_excerpt: str | None = Field(default=None, description="Short supporting excerpt from the source.")
+
+    claim_id: str = Field(description="Stable ID of exactly one claim supported by this passage.")
+
+    claim_text: str = Field(description="Exact claim text supported by this passage.")
+
+    section: str | None = Field(default=None, description="Source section, only when supplied.")
+
+    doi: str | None = Field(default=None, description="DOI, only when present in the supplied source.")
+
+    url: str | None = Field(default=None, description="Link, only when present in the supplied source.")
 
 
 class SlideSchema(BaseModel):

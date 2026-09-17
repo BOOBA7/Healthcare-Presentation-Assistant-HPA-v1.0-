@@ -21,6 +21,8 @@ from app.domain.exceptions.project_job_running_error import ProjectJobRunningErr
 from app.domain.models.resource import Resource
 from app.domain.models.resource_chunk import ResourceChunk
 from app.domain.models.user_profile import UserProfile
+from app.domain.models.claim_evidence import EvidenceLink, MedicalClaim
+from app.application.services.claim_evidence import ClaimEvidenceService
 
 
 from app.interfaces.storage.source_lifecycle_repository import SourceLifecycleRepository
@@ -28,6 +30,43 @@ from app.interfaces.storage.source_lifecycle_repository import SourceLifecycleRe
 
 class UserSessionRepository(SourceLifecycleRepository):
     """Small local SQLite store for workflow memory scoped by user and project."""
+
+    def review_claim_evidence(
+        self, user_id: str, project_id: str, expected_revision: int, slide_index: int,
+        claims: list[MedicalClaim], link: EvidenceLink, actor: str,
+    ) -> tuple[str, GraphState]:
+        """Atomically persist claim evidence and its privacy-safe audit event."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT thread_id, state_json, revision FROM project_sessions WHERE user_id = ? AND project_id = ?",
+                (user_id, project_id),
+            ).fetchone()
+            if row is None:
+                raise WorkflowError("PROJECT_NOT_FOUND", "Project not found.")
+            if type(expected_revision) is not int or row[2] != expected_revision:
+                raise ConcurrentModificationError()
+            state = self._deserialize_state(json.loads(row[1]))
+            state.resource_library = self._load_resources(connection, user_id, project_id)
+            state.project_revision = row[2]
+            if state.presentation is None or not 0 <= slide_index < len(state.presentation.slides):
+                raise WorkflowError("SLIDE_NOT_FOUND", "Slide not found.")
+            slide = state.presentation.slides[slide_index]
+            ClaimEvidenceService.set_claims(slide, claims)
+            ClaimEvidenceService.review_link(slide, link, state.resource_library, actor)
+            slide.is_validated = False
+            state.presentation.state.slides_validated = False
+            state.presentation.state.presentation_validated = False
+            self._save_project_row(connection, user_id, project_id, row[0], state, None, claim_action=True)
+            self._insert_event(connection, user_id, project_id, "CLAIM_EVIDENCE_REVIEWED", actor, {
+                "slide_index": slide_index, "claim_id": link.claim_id,
+                "claim_revision": link.claim_revision, "link_id": link.id,
+                "link_revision": link.revision, "resource_id": link.resource_id,
+                "location_kind": link.location_kind, "location_number": link.location_number,
+                "provenance_verified": link.provenance_verified,
+                "semantic_review": link.semantic_review,
+            })
+        return row[0], state
 
     def __init__(self, database_path: Path = Path("data/hpa.sqlite3")) -> None:
         self._resource_removal_token = object()
@@ -754,7 +793,7 @@ class UserSessionRepository(SourceLifecycleRepository):
         thread_id: str,
         state: GraphState,
         project_name: str | None,
-        *, style_action: bool = False,
+        *, style_action: bool = False, claim_action: bool = False,
     ) -> None:
         if not connection.in_transaction:
             connection.execute("BEGIN IMMEDIATE")
@@ -777,6 +816,18 @@ class UserSessionRepository(SourceLifecycleRepository):
                 elif not selected.extracted_pages:
                     raise WorkflowError("SOURCE_ORIGINAL_REQUIRED", "Select a verified library source before saving.")
         ensure_resource_library(state)
+        if state.presentation:
+            for slide in state.presentation.slides:
+                claims = {(claim.id, claim.revision) for claim in slide.claims}
+                for link in slide.evidence_links:
+                    if ((link.claim_id, link.claim_revision) not in claims
+                            and (link.provenance_verified or link.semantic_review != "pending")):
+                        raise WorkflowError("CLAIM_EVIDENCE_INVALID", "Evidence link targets an unknown claim revision.")
+                    if link.provenance_verified or link.semantic_review != "pending":
+                        ClaimEvidenceService.verify_provenance(link, state.resource_library)
+                    if link.semantic_review != "pending" and not link.semantic_reviewed_by:
+                        raise WorkflowError("CLAIM_EVIDENCE_INVALID", "Semantic review has no authenticated reviewer.")
+                ClaimEvidenceService._refresh(slide)
         existing = connection.execute(
             "SELECT revision FROM project_sessions WHERE user_id = ? AND project_id = ?",
             (user_id, project_id),
@@ -790,6 +841,19 @@ class UserSessionRepository(SourceLifecycleRepository):
         previous_row = connection.execute("SELECT state_json FROM project_sessions WHERE user_id = ? AND project_id = ?", (user_id, project_id)).fetchone()
         if previous_row:
             previous = self._deserialize_state(json.loads(previous_row[0]))
+            if not claim_action and state.presentation and previous.presentation:
+                old_approved = {
+                    (link.id, link.revision, link.claim_id, link.claim_revision)
+                    for slide in previous.presentation.slides for link in slide.evidence_links
+                    if link.semantic_review == "approved" and link.provenance_verified
+                }
+                new_approved = {
+                    (link.id, link.revision, link.claim_id, link.claim_revision)
+                    for slide in state.presentation.slides for link in slide.evidence_links
+                    if link.semantic_review == "approved" and link.provenance_verified
+                }
+                if new_approved - old_approved:
+                    raise WorkflowError("EXPLICIT_CLAIM_REVIEW_REQUIRED", "Use the authenticated claim-evidence review action.")
             old_resources = self._load_resources(connection, user_id, project_id) or previous.resource_library
             removed = {r.id for r in old_resources} - {r.id for r in state.resource_library}
             old_selected = {r.id for r in previous.presentation.resources} if previous.presentation else set()

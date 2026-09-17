@@ -461,6 +461,15 @@ class EditSlideUseCase:
         # not imply that they prove newly human-written statements.
         slide.evidence_verified = False
         slide.evidence_review_required = True
+        # Any content edit makes prior semantic approval obsolete. Retain the
+        # historical links for audit, but do not silently attach them to the
+        # new claim revision.
+        for claim in slide.claims:
+            claim.revision += 1
+        for link in slide.evidence_links:
+            link.provenance_verified = False
+            link.semantic_review = "pending"
+            link.semantic_reviewed_by = None
         state.presentation.state.slides_validated = False
         state.presentation.state.presentation_validated = False
         state.presentation.state.workflow_status = WorkflowStatus.AWAITING_SLIDE_APPROVAL

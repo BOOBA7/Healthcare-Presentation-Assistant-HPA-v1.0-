@@ -69,7 +69,8 @@ class ExportPowerPointUseCase:
         self._add_agenda_slide(deck, presentation, palette)
         for slide in presentation.slides:
             self._add_content_slide(deck, slide, palette)
-            for warning in reference_warnings(slide.reference_details, resources):
+            claim_references = [{"resource_id": link.resource_id} for link in slide.evidence_links]
+            for warning in reference_warnings(slide.reference_details + claim_references, resources):
                 self._textbox(deck.slides[-1], warning, 0.8, 6.82, 11.7, 0.25, size=9, color=palette["ink"])
         self._add_resources_slide(deck, presentation, resources, palette)
 
@@ -163,7 +164,13 @@ class ExportPowerPointUseCase:
             paragraph.font.color.rgb = self._rgb(palette["ink"])
             paragraph.space_after = Pt(13)
         if source_slide.content_origin == "ai_generated" and source_slide.evidence_verified:
-            self._add_evidence_box(slide, source_slide.reference_details, palette)
+            references = [{
+                "title": link.resource_title, "resource_id": link.resource_id,
+                "location_kind": link.location_kind, "page": link.location_number,
+                "evidence_excerpt": link.exact_passage,
+            } for link in source_slide.evidence_links
+                if link.provenance_verified and link.semantic_review == "approved"]
+            self._add_evidence_box(slide, references, palette)
         else:
             self._add_authorship_box(slide, source_slide, palette)
         self._footer(slide, palette, self._content_origin_label(source_slide))

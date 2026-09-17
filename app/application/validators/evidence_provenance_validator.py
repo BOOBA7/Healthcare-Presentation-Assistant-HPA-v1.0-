@@ -21,7 +21,10 @@ class EvidenceProvenanceValidator:
 
         if any(source_warning(resources_by_id[r["resource_id"]]) for r in slide.reference_details):
             slide.references = [str(r.get("title") or "Source") for r in slide.reference_details]
-        slide.evidence_verified = True
+        # Legacy slide-level references establish provenance only. They cannot
+        # establish which claim is supported or whether the passage is relevant.
+        slide.evidence_verified = False
+        slide.evidence_review_required = True
 
     def validate_presentation(self, slides: list[Slide], resources: list[Resource]) -> None:
         for slide in slides:

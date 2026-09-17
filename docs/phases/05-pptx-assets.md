@@ -1,9 +1,9 @@
 # Phase 05 — PowerPoint evidence and extracted visuals
 
-Status: 05.1 approved by the product owner on 2026-09-17. Phase 05 gate
-approval remains pending. 05.2 was explicitly approved by the product owner on
-2026-09-17 for its documented restricted subset. 05.3 is implemented;
-its product-owner acceptance and the complete phase 05 gate remain pending.
+Status: 05.1, 05.2, 05.3 and the complete phase 05 gate were explicitly
+approved by the product owner on 2026-09-17 for the documented restricted
+subset. Browser, visual-rendering and professional-use limitations remain;
+acceptance does not turn unperformed checks into passing results.
 
 ## Outcome and scope
 
@@ -49,7 +49,8 @@ Present a reviewable diff and evidence against every criterion. Record product-o
 ## Approved 05.1 handoff (historical)
 
 - Current slice: **05.1 implemented and explicitly approved by the product
-  owner on 2026-09-17.**
+  owner on 2026-09-17.** See the dedicated
+  [05.1 evidence report](05.1-pptx-import-evidence.md).
 - The restricted in-memory PPTX reader accepts native slide text and simple
   tables, preserves one-based presentation-order slide locations, inventories
   screened images/tables and retains the exact original, hash and minimal
@@ -172,11 +173,12 @@ results; JavaScript syntax and static checks were rerun afterwards.
 
 ## Current session handoff — 05.3 (2026-09-17)
 
-- **05.3 implemented; product-owner acceptance of this slice and the complete
-  phase 05 gate remain pending.** Starting HEAD was `0a31246`; the working tree
+- **05.3 and the complete phase 05 gate explicitly approved by the product
+  owner on 2026-09-17 for the documented restricted subset.** Starting HEAD was `0a31246`; the working tree
   was clean and no applicable `AGENTS.md` was found. Implementation initially
   ended without commit/push; the owner subsequently authorised committing and
-  pushing 05.3. This does not grant slice or phase-gate acceptance.
+  pushing 05.3. That publication authorisation was distinct from the later
+  explicit slice/phase acceptance recorded below.
   Decisions, changed files, acceptance evidence, limitations and a manual
   review checklist are in [05.3 evidence](05.3-role-separation-evidence.md).
 - Evidence import leaves theme/template selection unchanged. Reusing a Project
@@ -214,14 +216,21 @@ results; JavaScript syntax and static checks were rerun afterwards.
   sandbox preserved. These do not establish anonymisation, scientific validity,
   detector accuracy or visual fidelity.
 - No dependency/tool installation, provider call, professional document,
-  patient data, Streamlit edit or human acceptance was used. The two browser
+  patient data or Streamlit edit was used. Acceptance is recorded separately
+  below; it does not imply manual test execution. The two browser
   tests remain skipped on unsupported macOS 10.15. Browser flow, screenshots
   and rendered PowerPoint readability remain **not verified**.
-- **Next exact action:** review the 05.3 evidence/manual checklist and explicitly
-  accept or reject 05.3 and the restricted phase 05 gate. Any compatible-browser
-  or local rendering check must be recorded as actually executed before being
-  called successful. Do not begin phase 06, commit or publish without separate
-  explicit authorisation. 05.1/05.2's recorded approvals remain unchanged.
+- Product-owner decision: **05.3 and phase 05 approved on 2026-09-17**, after
+  implementation commit `41b5c7c` was published to `origin/main`. This later
+  explicit acceptance supersedes the pending gate recorded at implementation
+  handoff. It does not assert browser execution, visual fidelity, scientific
+  validation, anonymisation or permission to use professional data.
+- **Next exact action:** start a fresh implementation session for **06.1 only**
+  using [the prepared prompt](06.1-implementation-prompt.md). The present request
+  records acceptance and prepares that prompt; it does not execute phase 06.
+  Obtain separate implementation authorisation by submitting the prompt. The
+  outstanding manual/browser checks remain unverified. 05.1/05.2 approvals are
+  unchanged. No new commit or push was requested with this acceptance.
 
 ### 05.3 final verification record
 

@@ -1,6 +1,7 @@
 from app.application.services.pptx_roles import source_warning, reference_warnings, label_pptx_reference
 from app.application.services.presentation_context_policy import PresentationContextPolicy
 from app.domain.models.professional_scope_declaration import ProfessionalScopeDeclaration
+from app.domain.models.claim_evidence import EvidenceLink, MedicalClaim
 from functools import lru_cache
 import logging
 from io import BytesIO
@@ -166,6 +167,12 @@ class SlideEditRequest(BaseModel):
     content_origin: str = Field(pattern=r"^(user_edited|user_authored)$")
 
 
+class ClaimEvidenceReviewRequest(BaseModel):
+    expected_revision: int = Field(ge=1, strict=True)
+    claims: list[MedicalClaim] = Field(min_length=1, max_length=100)
+    link: EvidenceLink
+
+
 class AgendaRequest(BaseModel):
     items: list[str] = Field(min_length=1, max_length=12)
     comments: str = Field(default="", max_length=10_000)
@@ -282,7 +289,12 @@ def _project_response(user_id: str, project_id: str, thread_id: str, state: Grap
     if presentation:
         by_id = {r.id: r for r in state.resource_library}
         for slide in presentation["slides"]:
-            slide["source_warnings"] = reference_warnings(slide["reference_details"], state.resource_library)
+            claim_references = [
+                {"resource_id": link["resource_id"]} for link in slide.get("evidence_links", [])
+            ]
+            slide["source_warnings"] = reference_warnings(
+                slide["reference_details"] + claim_references, state.resource_library
+            )
             for reference in slide["reference_details"]:
                 if resource := by_id.get(reference.get("resource_id")):
                     label_pptx_reference(reference, resource)
@@ -1388,6 +1400,24 @@ def approve_slide(user_id: str, project_id: str, index: int, request: ReviewRequ
     except ValueError as exc:
         raise _workflow_conflict(exc) from exc
     return _save_project(user_id, project_id, thread_id, state, event_type="SLIDE_APPROVED", actor="user", extra_audit={"slide_index": index})
+
+
+@app.put("/projects/{user_id}/{project_id}/slides/{index}/claim-evidence")
+def review_claim_evidence(
+    user_id: str, project_id: str, index: int, request: ClaimEvidenceReviewRequest,
+    authenticated_user: str = Depends(_authenticated_user),
+):
+    """Verify provenance and record a distinct human relevance decision."""
+    _assert_owner(user_id, authenticated_user)
+    _require_prototype_input(request)
+    try:
+        thread_id, state = get_repository().review_claim_evidence(
+            user_id, project_id, request.expected_revision, index,
+            request.claims, request.link, authenticated_user,
+        )
+    except (DomainError, ValueError) as exc:
+        raise _workflow_conflict(exc) from exc
+    return _project_response(user_id, project_id, thread_id, state)
 
 
 @app.post("/projects/{user_id}/{project_id}/slides/{index}/reject")

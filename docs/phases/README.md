@@ -15,8 +15,8 @@ Planning read the complete PRD, documentation index, project overview, CI and se
 | [02](02-project-resume.md) | Dashboard, context and recovery | Approved 2026-09-15; Node/browser checks remain unverified |
 | [03](03-source-lifecycle.md) | Preserved PDF sources, dates and deletion | Approved 2026-09-16; Node/browser checks remain unverified |
 | [04](04-ocr-privacy.md) | Scanned PDF, images and extraction review | Approved 2026-09-16 for restricted subset; browser/scope reservations remain |
-| [05](05-pptx-assets.md) | PowerPoint evidence and extracted visuals | 05.1/05.2 approved; 05.3 implemented, slice/phase gate pending |
-| [06](06-claim-evidence.md) | Claim evidence, coverage and resource discussion | Planned |
+| [05](05-pptx-assets.md) | PowerPoint evidence and extracted visuals | Approved 2026-09-17 for documented restricted subset; browser/visual reservations remain |
+| [06](06-claim-evidence.md) | Claim evidence, coverage and resource discussion | 06.1 approved 2026-09-17; 06.2–06.3 not started; phase gate pending |
 | [07](07-planning.md) | Agenda and Blueprint approval | Planned |
 | [08](08-slide-review.md) | Supported generation, editing and speaker notes | Planned |
 | [09](09-visual-style.md) | Themes, layouts and supplied visuals | Planned |

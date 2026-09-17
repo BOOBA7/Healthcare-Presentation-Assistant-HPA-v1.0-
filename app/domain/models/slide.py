@@ -1,6 +1,11 @@
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+import hashlib
+import json
+
+from pydantic import BaseModel, Field, model_validator
+
+from app.domain.models.claim_evidence import EvidenceLink, LegacySlideReference, MedicalClaim
 
 
 class Slide(BaseModel):
@@ -49,6 +54,12 @@ class Slide(BaseModel):
         description="Evidence provenance: resource ID, page, excerpt and bibliographic reference.",
     )
 
+    claims: List[MedicalClaim] = Field(default_factory=list)
+
+    evidence_links: List[EvidenceLink] = Field(default_factory=list)
+
+    legacy_references: List[LegacySlideReference] = Field(default_factory=list)
+
     evidence_verified: bool = Field(
         default=False,
         description="Whether every citation was verified against an uploaded PDF page.",
@@ -83,3 +94,32 @@ class Slide(BaseModel):
         default=False,
         description="True when manual content changes mean evidence can no longer be attributed to the model output.",
     )
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_references(cls, value):
+        """Keep old slide citations losslessly, idempotently and unassigned.
+
+        A slide-level reference cannot be attributed to every claim.  Migration
+        therefore creates review items only; it grants no semantic approval.
+        """
+        if (not isinstance(value, dict) or value.get("legacy_references")
+                or value.get("claims") or value.get("evidence_links")):
+            return value
+        references = value.get("reference_details")
+        if not isinstance(references, list) or not references:
+            return value
+        migrated = dict(value)
+        legacy = []
+        for reference in references:
+            if not isinstance(reference, dict):
+                continue
+            canonical = json.dumps(reference, sort_keys=True, separators=(",", ":"), default=str)
+            legacy.append({
+                "migration_id": f"legacy-{hashlib.sha256(canonical.encode()).hexdigest()[:20]}",
+                "reference": reference,
+                "review_required": True,
+            })
+        migrated["legacy_references"] = legacy
+        migrated["evidence_review_required"] = True
+        migrated["evidence_verified"] = False
+        return migrated
