@@ -723,7 +723,7 @@ class UserSessionRepository(SourceLifecycleRepository):
         # PPTX selections are references to canonical owner-library evidence,
         # never an alternate place to persist caller-supplied asset descriptors.
         for selected in state.presentation.resources if state.presentation else []:
-            if selected.file_type.value == "pptx" or selected.metadata.origin == "pptx_memory_import":
+            if selected.file_type.value == "pptx" or selected.metadata.origin == "pptx_memory_import" or selected.metadata.assets:
                 canonical = next((source for source in state.resource_library if source.id == selected.id), None)
                 if canonical is not None:
                     if resource_selection(selected) != resource_selection(canonical):
@@ -926,7 +926,7 @@ class UserSessionRepository(SourceLifecycleRepository):
                 )
             )
             resources[-1]._original_content = original_pdf
-            if resources[-1].metadata.ocr_reviews:
+            if resources[-1].metadata.ocr_reviews or resources[-1].metadata.asset_reviews:
                 try:
                     SourceLifecycleRepository._verify_review_authority(connection, user_id, resources[-1])
                 except WorkflowError:

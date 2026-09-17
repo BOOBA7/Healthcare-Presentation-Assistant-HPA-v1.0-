@@ -88,7 +88,8 @@ _web_dir = Path(__file__).resolve().parent.parent / "web"
 
 @app.exception_handler(RequestValidationError)
 async def safe_ocr_validation_error(request, exc):
-    if request.url.path.endswith("/ocr-review"):
+    if (request.url.path.endswith("/ocr-review") or "/asset-review" in request.url.path
+            or "/assets/" in request.url.path or request.url.path.endswith("/asset-original")):
         return JSONResponse(status_code=422, content={"detail": "Invalid extraction-review request."})
     return await request_validation_exception_handler(request, exc)
 
@@ -275,7 +276,7 @@ def _project_response(user_id: str, project_id: str, thread_id: str, state: Grap
     """Return only JSON-safe state needed by the browser interface."""
     ensure_history(state)
     ensure_resource_library(state)
-    presentation = state.presentation.model_dump(mode="json") if state.presentation else None
+    presentation = state.presentation.model_dump(mode="json", exclude={"resources": {"__all__": {"metadata": {"assets": {"__all__": {"content_base64"}}}}}}) if state.presentation else None
     messages = [turn.model_dump(mode="json") for turn in state.conversation_history]
     resource_messages = [turn.model_dump(mode="json") for turn in state.resource_conversation_history]
     return {
@@ -316,6 +317,9 @@ def _resource_response(resource) -> dict[str, object]:
         from app.application.services.ocr_review import is_reviewed
         date_blocker = ({"code": "OCR_CONFIRMATION_REQUIRED", "message": "Review every OCR region against its original before using this source."}
                         if resource.metadata.ocr_engine and not is_reviewed(resource) else None)
+        from app.application.services.source_assets import is_reviewed as assets_reviewed
+        if date_blocker is None and resource.metadata.assets and not assets_reviewed(resource):
+            date_blocker = {"code": "ASSET_CONFIRMATION_REQUIRED", "message": "Review extracted images and tables against their original."}
     except DomainError as exc:
         date_evidence = None
         date_blocker = {"code": exc.code, "message": exc.user_message}
@@ -332,7 +336,7 @@ def _resource_response(resource) -> dict[str, object]:
         "location_kind": "slide" if resource.file_type.value == "pptx" else "page",
         "asset_inventory": [
             {"id": asset.id, "kind": asset.kind, "media_type": asset.media_type,
-             "location": asset.location.model_dump(mode="json")}
+             "location": asset.location.model_dump(mode="json"), "review_status": asset.review_status}
             for asset in resource.metadata.assets
         ],
         "characters_extracted": len(resource.extracted_text or ""),
@@ -832,6 +836,79 @@ def original_pdf(user_id: str, project_id: str, resource_id: str, authenticated_
         "Content-Disposition": "attachment; filename*=UTF-8''" + quote(resource.filename, safe=""),
         "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
     })
+
+
+class AssetReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=0, strict=True)
+    values: list[dict[str, str | None]] = Field(min_length=1, max_length=200)
+    confirmed_assets: list[str] = Field(min_length=1, max_length=200)
+
+
+def _asset_source(user_id, resource_id, authenticated_user):
+    _assert_owner(user_id, authenticated_user)
+    resource = get_repository().library_resource(user_id, resource_id)
+    if resource is None or not resource.metadata.assets:
+        raise HTTPException(404, "Extracted source items not found.")
+    try:
+        SourceDocument.verify(resource, resource._original_content)
+    except DomainError as exc:
+        raise _workflow_conflict(exc) from None
+    return resource
+
+
+@app.post("/users/{user_id}/resources/{resource_id}/asset-review/prepare")
+def prepare_asset_review(user_id: str, resource_id: str, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
+    try:
+        return get_repository().prepare_asset_review(authenticated_user, resource_id)
+    except DomainError as exc:
+        raise _workflow_conflict(exc) from None
+
+
+@app.get("/users/{user_id}/resources/{resource_id}/asset-review")
+def get_asset_review(user_id: str, resource_id: str, authenticated_user: str = Depends(_authenticated_user)):
+    from app.application.services.source_assets import FIELDS
+    resource = _asset_source(user_id, resource_id, authenticated_user)
+    return JSONResponse({"resource_id": resource_id, "original_sha256": resource.metadata.original_sha256,
+        "scientific_date": resource.metadata.scientific_date.model_dump(mode="json"),
+        "revision": max((row.revision for row in resource.metadata.asset_reviews), default=0),
+        "assets": [{**asset.model_dump(mode="json", exclude={"content_base64"}),
+                    "values": {name: getattr(asset, name) for name in FIELDS}}
+                   for asset in resource.metadata.assets],
+        "history": [row.model_dump(mode="json") for row in resource.metadata.asset_reviews]},
+        headers={"Cache-Control": "no-store"})
+
+
+@app.get("/users/{user_id}/resources/{resource_id}/assets/{asset_id}")
+def get_asset_content(user_id: str, resource_id: str, asset_id: str, original_region: bool = False,
+                      authenticated_user: str = Depends(_authenticated_user)):
+    from app.application.services.source_assets import asset_content
+    resource = _asset_source(user_id, resource_id, authenticated_user)
+    try:
+        content, media = asset_content(resource, asset_id, original_region=original_region)
+    except DomainError as exc:
+        raise _workflow_conflict(exc) from None
+    return Response(content, media_type=media, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@app.get("/users/{user_id}/resources/{resource_id}/asset-original")
+def get_asset_original(user_id: str, resource_id: str, authenticated_user: str = Depends(_authenticated_user)):
+    resource = _asset_source(user_id, resource_id, authenticated_user)
+    return Response(resource._original_content, media_type=resource.metadata.media_type,
+                    headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+                             "Content-Disposition": "attachment; filename*=UTF-8''" + quote(resource.filename, safe="")})
+
+
+@app.post("/users/{user_id}/resources/{resource_id}/asset-review")
+def confirm_asset_review(user_id: str, resource_id: str, request: AssetReviewRequest,
+                         authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
+    try:
+        return get_repository().review_assets(authenticated_user, resource_id, request.expected_revision,
+                                              request.values, request.confirmed_assets)
+    except DomainError as exc:
+        raise _workflow_conflict(exc) from None
 
 
 class OcrReviewRequest(BaseModel):

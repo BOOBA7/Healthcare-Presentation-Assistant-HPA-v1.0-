@@ -38,6 +38,8 @@ class SourceDocument:
                     return RasterDocument.read(filename, content, resource_id)
                 pages, metadata = SourceScreening.pdf(document)
                 xml = document.get_xml_metadata() or None
+                from app.application.services.source_assets import pdf_assets
+                assets = pdf_assets(content)
         except WorkflowError:
             raise
         except Exception:
@@ -58,7 +60,7 @@ class SourceDocument:
             extracted_pages=pages, extracted_text="\n".join(page["text"] for page in pages).strip(),
             is_validated=True, uploaded_at=datetime.now(timezone.utc),
             metadata=SourceMetadata(
-                origin="pdf_memory_import", media_type="application/pdf",
+                origin="pdf_memory_import", media_type="application/pdf", assets=assets,
                 author=metadata.get("author") or dc_text("creator"),
                 publisher=dc_text("publisher"), rights=dc_text("rights"),
                 provenance=dc_text("source"),
@@ -80,6 +82,11 @@ class SourceDocument:
             if not is_reviewed(resource):
                 raise WorkflowError("OCR_REVIEW_UNVERIFIED", "Review must be recorded through the authenticated extraction-review workflow.")
             checked = apply_reviews(checked, resource.metadata.ocr_reviews)
+        if resource.metadata.asset_reviews:
+            from app.application.services.source_assets import apply_reviews as apply_asset_reviews, is_reviewed as assets_reviewed
+            if not assets_reviewed(resource):
+                raise WorkflowError("ASSET_REVIEW_UNVERIFIED", "Review must be recorded through the authenticated asset-review workflow.")
+            checked = apply_asset_reviews(checked, resource.metadata.asset_reviews)
         # Do not trust hashes, date flags, text, bibliography or locations supplied
         # by a caller; derive them again from the actual original.
         for field in ("file_type", "title", "source", "extracted_text", "extracted_pages", "metadata"):

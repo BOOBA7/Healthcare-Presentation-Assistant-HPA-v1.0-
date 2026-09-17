@@ -107,6 +107,14 @@ class SourceLifecycleRepository:
         row = connection.execute("SELECT resource_json FROM owner_resources WHERE user_id = ? AND resource_id = ?",
                                  (user, resource.id)).fetchone()
         authoritative = Resource.model_validate_json(row[0]) if row else None
+        from app.application.services.source_assets import review_digest as asset_digest
+        expected_assets = authoritative.metadata.asset_reviews if authoritative else []
+        if resource.metadata.asset_reviews != expected_assets:
+            raise WorkflowError("ASSET_REVIEW_UNVERIFIED", "Asset reviews must use the authenticated review operation.")
+        if expected_assets:
+            if authoritative.metadata.assets != resource.metadata.assets or authoritative.metadata.original_sha256 != resource.metadata.original_sha256:
+                raise WorkflowError("ASSET_REVIEW_UNVERIFIED", "Asset review original does not match.")
+            resource._asset_review_receipt = asset_digest(resource)
         expected = authoritative.metadata.ocr_reviews if authoritative else []
         if resource.metadata.ocr_reviews != expected:
             raise WorkflowError("OCR_REVIEW_UNVERIFIED", "Extraction reviews must use the authenticated review operation. Reload this source.")
@@ -118,7 +126,6 @@ class SourceLifecycleRepository:
     def review_ocr(self, user, identifier, expected_revision, values, confirmed_regions):
         from app.application.services.ocr_review import apply_reviews
         from app.domain.models.source_metadata import OcrReview
-        from app.application.services.resource_library import resource_selection
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             self._assert_not_deleted(connection, user, "source", identifier)
@@ -148,27 +155,126 @@ class SourceLifecycleRepository:
             original = SourceDocument.read(resource.filename, row[1], resource.id)
             original.uploaded_at = resource.uploaded_at
             reviewed = apply_reviews(original, reviews)
+            if resource.metadata.asset_reviews:
+                from app.application.services.source_assets import apply_reviews as apply_asset_reviews
+                reviewed = apply_asset_reviews(reviewed, resource.metadata.asset_reviews)
             SourceScreening.resource(reviewed, require_text=True)
             connection.execute("UPDATE owner_resources SET resource_json = ? WHERE user_id = ? AND resource_id = ?",
                                (reviewed.model_dump_json(), user, identifier))
-            for project, thread, payload, project_revision in connection.execute(
-                "SELECT project_id, thread_id, state_json, revision FROM project_sessions WHERE user_id = ?", (user,)
-            ).fetchall():
-                state = self._deserialize_state(json.loads(payload))
-                # Load current normalized originals without trusting the old review
-                # copy: this transaction is replacing it with the new authority.
-                state.resource_library = self._load_resources(connection, user, project)
-                if not any(item.id == identifier for item in state.resource_library):
-                    continue
-                state.project_revision = project_revision
-                state.resource_library = [reviewed.model_copy(deep=True) if item.id == identifier else item for item in state.resource_library]
-                if state.presentation:
-                    state.presentation.resources = [resource_selection(reviewed) if item.id == identifier else item for item in state.presentation.resources]
-                self._invalidate_project_storage(connection, user, project, state)
-                self._save_project_row(connection, user, project, thread, state, None)
-                self._insert_event(connection, user, project, "OCR_EXTRACTION_REVIEWED", user,
-                                   {"resource_id": identifier, "review_revision": revision + 1,
-                                    "region_count": len(regions), "provenance": "user_confirmed"})
+            self._persist_source_review(connection, user, identifier, reviewed, "OCR_EXTRACTION_REVIEWED",
+                                        {"review_revision": revision + 1, "region_count": len(regions), "provenance": "user_confirmed"})
+        self._cleanup_if_pending()
+        return {"resource_id": identifier, "review_revision": revision + 1}
+
+    def _persist_source_review(self, connection, user, identifier, reviewed, event_type, detail):
+        from app.application.services.resource_library import resource_selection
+        for project, thread, payload, project_revision in connection.execute(
+            "SELECT project_id, thread_id, state_json, revision FROM project_sessions WHERE user_id = ?", (user,)
+        ).fetchall():
+            state = self._deserialize_state(json.loads(payload))
+            state.resource_library = self._load_resources(connection, user, project)
+            if not any(item.id == identifier for item in state.resource_library):
+                continue
+            state.project_revision = project_revision
+            state.resource_library = [reviewed.model_copy(deep=True) if item.id == identifier else item for item in state.resource_library]
+            if state.presentation:
+                state.presentation.resources = [resource_selection(reviewed) if item.id == identifier else item for item in state.presentation.resources]
+            self._invalidate_project_storage(connection, user, project, state)
+            self._save_project_row(connection, user, project, thread, state, None)
+            self._insert_event(connection, user, project, event_type, user, {"resource_id": identifier, **detail})
+
+    def prepare_asset_review(self, user, identifier):
+        """Explicit, atomic enrichment of pre-05.2 originals; never auto-confirm."""
+        from io import BytesIO
+        from pptx import Presentation
+        from app.domain.models.source_metadata import SourceAsset
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._assert_not_deleted(connection, user, "source", identifier)
+            row = connection.execute("SELECT resource_json, original_pdf FROM owner_resources WHERE user_id = ? AND resource_id = ?",
+                                     (user, identifier)).fetchone()
+            if row is None:
+                raise WorkflowError("RESOURCE_NOT_FOUND", "Source not found.")
+            resource = Resource.model_validate_json(row[0])
+            resource._original_content = row[1]
+            self._verify_review_authority(connection, user, resource)
+            if resource.metadata.assets and all(asset.content_base64 for asset in resource.metadata.assets):
+                SourceDocument.verify(resource, row[1])
+                return {"asset_count": len(resource.metadata.assets)}
+            if resource.metadata.asset_reviews or resource.file_type.value not in ('pdf', 'pptx'):
+                raise WorkflowError("ASSET_INTEGRITY_FAILED", "Replace this source with its verified original.")
+            fresh = SourceDocument.read(resource.filename, row[1], identifier)
+            if resource.file_type.value == 'pptx':
+                legacy = []
+                shapes = [shape for slide in Presentation(BytesIO(row[1])).slides for shape in slide.shapes
+                          if shape.has_table or shape.shape_type == 13]
+                if len(shapes) != len(fresh.metadata.assets):
+                    raise WorkflowError("ASSET_INTEGRITY_FAILED", "Original inventory does not match.")
+                for shape, asset in zip(shapes, fresh.metadata.assets):
+                    legacy.append(SourceAsset(id=f'slide-{asset.location.number}-shape-{shape.shape_id}', kind=asset.kind,
+                                              media_type=None if asset.kind == 'table' else asset.media_type,
+                                              location=asset.location))
+                if resource.metadata.assets != legacy:
+                    raise WorkflowError("ASSET_INTEGRITY_FAILED", "Original inventory does not match.")
+            elif resource.metadata.assets:
+                raise WorkflowError("ASSET_INTEGRITY_FAILED", "Original inventory does not match.")
+            candidate = resource.model_copy(deep=True)
+            candidate.metadata.assets = fresh.metadata.assets
+            # Re-derives every other field, including any authenticated OCR review.
+            SourceDocument.verify(candidate, row[1])
+            SourceScreening.resource(candidate, require_text=True)
+            if not fresh.metadata.assets:
+                return {"asset_count": 0}
+            connection.execute("UPDATE owner_resources SET resource_json = ? WHERE user_id = ? AND resource_id = ?",
+                               (candidate.model_dump_json(), user, identifier))
+            self._persist_source_review(connection, user, identifier, candidate, "SOURCE_ASSETS_RETAINED",
+                                        {"asset_count": len(candidate.metadata.assets)})
+        self._cleanup_if_pending()
+        return {"asset_count": len(candidate.metadata.assets)}
+
+    def review_assets(self, user, identifier, expected_revision, values, confirmed_assets):
+        from app.application.services.source_assets import FIELDS, apply_reviews
+        from app.application.services.ocr_review import apply_reviews as apply_ocr_reviews
+        from app.domain.models.source_metadata import AssetReview
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._assert_not_deleted(connection, user, "source", identifier)
+            row = connection.execute("SELECT resource_json, original_pdf FROM owner_resources WHERE user_id = ? AND resource_id = ?",
+                                     (user, identifier)).fetchone()
+            if row is None:
+                raise WorkflowError("RESOURCE_NOT_FOUND", "Source not found.")
+            resource = Resource.model_validate_json(row[0])
+            resource._original_content = row[1]
+            self._verify_review_authority(connection, user, resource)
+            SourceDocument.verify(resource, row[1])
+            assets = resource.metadata.assets
+            revision = max((review.revision for review in resource.metadata.asset_reviews), default=0)
+            if type(expected_revision) is not int or expected_revision != revision:
+                raise WorkflowError("ASSET_REVIEW_CONFLICT", "Asset review changed. Reload before confirming.")
+            if (not assets or len(values) != len(assets) or sorted(confirmed_assets) != sorted(a.id for a in assets)
+                    or any(not isinstance(value, dict) or set(value) != set(FIELDS)
+                           or any(item is not None and (not isinstance(item, str) or len(item) > 10000) for item in value.values())
+                           for value in values)):
+                raise WorkflowError("ASSET_REVIEW_INCOMPLETE", "Explicitly confirm every item beside its original.")
+            now = datetime.now(timezone.utc)
+            reviews = [*resource.metadata.asset_reviews, *[
+                AssetReview(revision=revision + 1, asset_id=asset.id, original_sha256=resource.metadata.original_sha256,
+                            asset_sha256=asset.sha256, initial={name: getattr(asset, name) for name in FIELDS},
+                            corrected=values[index], actor=user, confirmed_at=now)
+                for index, asset in enumerate(assets)
+            ]]
+            original = SourceDocument.read(resource.filename, row[1], resource.id)
+            original.uploaded_at = resource.uploaded_at
+            if resource.metadata.ocr_reviews:
+                original = apply_ocr_reviews(original, resource.metadata.ocr_reviews)
+            reviewed = apply_reviews(original, reviews)
+            SourceScreening.resource(reviewed, require_text=True)
+            connection.execute("UPDATE owner_resources SET resource_json = ? WHERE user_id = ? AND resource_id = ?",
+                               (reviewed.model_dump_json(), user, identifier))
+            self._persist_source_review(connection, user, identifier, reviewed, "SOURCE_ASSETS_REVIEWED",
+                                        {"review_revision": revision + 1, "asset_count": len(assets), "provenance": "user_confirmed"})
+            # The append-only review rows inside owner_resources are also the
+            # private audit when the source is no longer attached to any Project.
         self._cleanup_if_pending()
         return {"resource_id": identifier, "review_revision": revision + 1}
 
@@ -184,6 +290,9 @@ class SourceLifecycleRepository:
             if resource.metadata.ocr_reviews:
                 from app.application.services.ocr_review import review_digest
                 resource._ocr_review_receipt = review_digest(resource)
+            if resource.metadata.asset_reviews:
+                from app.application.services.source_assets import review_digest as asset_digest
+                resource._asset_review_receipt = asset_digest(resource)
             result.append(resource)
         return result
 

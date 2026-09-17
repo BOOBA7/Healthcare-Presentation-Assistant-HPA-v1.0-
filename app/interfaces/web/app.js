@@ -296,9 +296,9 @@ function sourceAssetInventory(resource) {
   const fr = state.profile.preferred_language === "fr";
   const items = resource.asset_inventory.map(asset => {
     const kind = asset.kind === "table" ? (fr ? "Tableau" : "Table") : "Image";
-    return `${kind} · ${fr ? "diapo." : "slide"} ${asset.location.number}`;
+    return `${kind} · ${asset.location.kind === "slide" ? (fr ? "diapo." : "slide") : "p."} ${asset.location.number}`;
   });
-  return `<details><summary>${escapeHtml(fr ? "Éléments repérés dans l’original" : "Items located in the original")}</summary><small>${escapeHtml(items.join(" · "))}</small><small>${escapeHtml(fr ? "Inventaire uniquement ; réemploi et revue graphique indisponibles." : "Inventory only; asset reuse and visual review are unavailable.")}</small></details>`;
+  return `<details><summary>${escapeHtml(fr ? "Éléments repérés dans l’original" : "Items located in the original")}</summary><small>${escapeHtml(items.join(" · "))}</small><small>${escapeHtml(fr ? "Les éléments extraits sont distincts des preuves textuelles ; une revue locale est requise." : "Extracted items are separate from textual evidence; local review is required.")}</small></details>`;
 }
 function renderResources(presentation) {
   const node = $("#resource-list"), project = state.project?.resource_library || [], library = state.project?.owner_library || state.ownerLibrary || project;
@@ -307,7 +307,7 @@ function renderResources(presentation) {
     const present = inProject.has(resource.id), used = selected.has(resource.id);
     const button = (action, label) => `<button class="small-button" data-resource-action="${action}" data-resource-id="${escapeHtml(resource.id)}">${escapeHtml(t(label))}</button>`;
     const production = present && presentation && (used || !resource.source_blocker) ? button(used ? "detach" : "attach", used ? "detachFromPresentation" : "useInPresentation") : "";
-    return `<div class="resource-item"><div><strong>${escapeHtml(resource.filename)}</strong><small>${escapeHtml(t(present ? "sourceInProject" : "sourceInLibrary"))}</small>${sourceDateDetails(resource)}${sourceAssetInventory(resource)}</div><div class="resource-actions">${resource.ocr_region_count ? `<button class="small-button" data-resource-action="ocr-review" data-resource-id="${escapeHtml(resource.id)}">${escapeHtml(state.profile.preferred_language === "fr" ? "Vérifier l’OCR" : "Review OCR")}</button>` : ""}${production}${present ? button("delete", "removeResource") : (state.project && !resource.source_blocker ? button("add", "addSourceToProject") : "")}${button("permanent", "deleteSourcePermanently")}</div></div>`;
+    return `<div class="resource-item"><div><strong>${escapeHtml(resource.filename)}</strong><small>${escapeHtml(t(present ? "sourceInProject" : "sourceInLibrary"))}</small>${sourceDateDetails(resource)}${sourceAssetInventory(resource)}</div><div class="resource-actions">${(resource.asset_inventory?.length || resource.file_type === "pdf") ? `<button class="small-button" data-resource-action="asset-review" data-resource-id="${escapeHtml(resource.id)}">${escapeHtml(state.profile.preferred_language === "fr" ? "Vérifier images et tableaux" : "Review images and tables")}</button>` : ""}${resource.ocr_region_count ? `<button class="small-button" data-resource-action="ocr-review" data-resource-id="${escapeHtml(resource.id)}">${escapeHtml(state.profile.preferred_language === "fr" ? "Vérifier l’OCR" : "Review OCR")}</button>` : ""}${production}${present ? button("delete", "removeResource") : (state.project && !resource.source_blocker ? button("add", "addSourceToProject") : "")}${button("permanent", "deleteSourcePermanently")}</div></div>`;
   }).join("");
 }
 function scopeDeclarationForm(blocker) { return `<div class="required-action workflow-blocker"><strong>${escapeHtml(t("scopeDeclaration"))}</strong><span>${escapeHtml(blocker.message || t("scopeDeclarationHint"))}</span><small>${escapeHtml(t("scopeDeclarationHint"))}</small><label>${escapeHtml(t("declaredRole"))}<input id="scope-declared-role" maxlength="200" /></label><label>${escapeHtml(t("deliveryPurpose"))}<textarea id="scope-delivery-purpose" maxlength="1000"></textarea></label><label class="setting-check"><input id="scope-confirmed" type="checkbox" /> <span>${escapeHtml(t("scopeConfirmation"))}</span></label><button class="primary" data-action="scope-clarification">${escapeHtml(t("confirmScope"))}</button></div>`; }
@@ -502,6 +502,7 @@ async function discussResources() {
 }
 let ocrReview = null;
 function closeOcrReview() {
+  closeAssetReview();
   if (ocrReview) ocrReview.urls.forEach(url => URL.revokeObjectURL(url));
   ocrReview = null;
   const panel = $("#ocr-review-panel"); panel.innerHTML = ""; panel.hidden = true;
@@ -546,6 +547,8 @@ $("#ocr-review-panel").addEventListener("click", async event => {
 });
 
 async function resourceAction(resourceId, action) {
+  if (action === "asset-review") return openAssetReview(resourceId);
+  if ((action === "delete" || action === "permanent") && assetReview?.resourceId === resourceId) closeAssetReview();
   if (action === "ocr-review") return openOcrReview(resourceId);
   if ((action === "delete" || action === "permanent") && !window.confirm(t(action === "permanent" ? "deleteSourceConfirm" : "removeResourceConfirm"))) return;
   if ((action === "delete" || action === "permanent") && ocrReview?.resourceId === resourceId) closeOcrReview();
@@ -608,3 +611,83 @@ $("#presentation-preview-area").addEventListener("click", event => { if (event.t
 $("#final-actions").addEventListener("click", event => { const action = event.target.dataset.action; if (action === "blueprint-generate") startGeneration("blueprint"); if (action === "slides-generate") startGeneration("slides"); if (action === "blueprint-approve") simpleAction("/blueprint/approve"); if (action === "slides-approve") simpleAction("/slides/approve"); if (action === "final-approve") simpleAction("/presentation/approve"); }); $("#review-area").addEventListener("click", event => { const button = event.target.closest("button"); if (!button) return; if (button.dataset.review) reviewAction(button); if (button.dataset.edit) saveUserEdit(button); if (button.dataset.action === "blueprint-regenerate") startRegeneration("blueprint"); });
 applyLanguage();
 (async () => { if (state.userId && state.token) { try { await startWorkspace(); } catch (error) { logout(); } } })();
+
+
+let assetReview = null;
+function closeAssetReview() {
+  if (assetReview) assetReview.urls.forEach(url => URL.revokeObjectURL(url));
+  assetReview = null;
+  const panel = $("#asset-review-panel"); panel.innerHTML = ""; panel.hidden = true;
+}
+async function openAssetReview(resourceId) {
+  closeOcrReview();
+  const fr = state.profile.preferred_language === "fr", user = state.userId;
+  const session = {resourceId, user, urls:[], path:`/users/${endpoint(user)}/resources/${endpoint(resourceId)}`};
+  assetReview = session;
+  try {
+    const prepared = await (await api(`${session.path}/asset-review/prepare`, {method:"POST"})).json();
+    if (assetReview !== session) return;
+    if (!prepared.asset_count) { closeAssetReview(); notify(fr ? "Aucun élément graphique pris en charge n’a été détecté." : "No supported visual item was detected."); return; }
+    const data = await (await api(`${session.path}/asset-review`)).json();
+    if (assetReview !== session) return;
+    session.data = data;
+    const panel = $("#asset-review-panel"); panel.hidden = false;
+    const labels = fr ? {caption:"Légende", rights:"Droits", author:"Auteur", organisation:"Organisation", provenance:"Provenance"} : {caption:"Caption", rights:"Rights", author:"Author", organisation:"Organisation", provenance:"Provenance"};
+    const statuses = fr ? {missing:"Absent", present:"Présent", ambiguous:"Ambigu", contradictory:"Contradictoire", not_attributable:"Non attribuable"} : {missing:"Missing", present:"Present", ambiguous:"Ambiguous", contradictory:"Contradictory", not_attributable:"Not attributable"};
+    panel.innerHTML = `<h3>${fr ? "Revue des images et tableaux" : "Image and table review"}</h3><p>${fr ? "Date de la ressource source (aucune date propre à l’élément)" : "Source scientific date (no separate item date)"}: ${escapeHtml(data.scientific_date.value)}</p><p>${fr ? "Comparez chaque élément à son original. Les métadonnées absentes restent absentes. Cette revue n’accorde ni droits de réemploi ni validation scientifique." : "Compare each item against its original. Missing metadata stays missing. Review grants neither reuse rights nor scientific validation."}</p><button data-asset-original>${fr ? "Télécharger l’original vérifié" : "Download verified original"}</button>` + data.assets.map((asset, index) => `<div class="ocr-review-row"><div><strong>${escapeHtml(asset.kind)} · ${escapeHtml(asset.location.kind)} ${asset.location.number}</strong><p>${fr ? "Coordonnées normalisées" : "Normalized coordinates"}: ${escapeHtml(JSON.stringify(asset.location.region))}</p><div data-asset-preview="${index}"></div><small>${fr ? "Région PDF originale ou contenu de la forme PPTX originale ; le rendu complet de la diapositive PPTX n’est pas reproduit." : "Original PDF region or original PPTX shape content; the full PPTX slide rendering is not reproduced."}</small></div><div><div data-asset-derived="${index}"></div>${Object.entries(asset.fields).map(([name, field]) => `<label>${escapeHtml(labels[name])} — ${escapeHtml(statuses[field.status])}<select data-asset-field="${name}" data-asset-index="${index}"><option value="">${fr ? "Non renseigné / retirer l’attribution" : "Unspecified / withdraw attribution"}</option>${["not_attributable", "ambiguous"].includes(field.status) ? "" : [...new Set(field.values)].map(value => `<option value="${escapeHtml(value)}" ${asset.values[name] === value ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}</select></label><small>${escapeHtml(field.values.join(" / "))}</small><small>${escapeHtml(field.origins.join(" · "))}</small>`).join("")}<label><input type="checkbox" data-asset-confirm="${index}" /> ${fr ? "J’ai comparé le contenu et les champs à l’original, y compris les informations manquantes ou incertaines" : "I compared content and fields against the original, including missing or uncertain information"}</label></div></div>`).join("") + `<details><summary>${fr ? "Historique des corrections" : "Correction history"}</summary><pre>${escapeHtml(JSON.stringify(data.history, null, 2))}</pre></details><button data-asset-save disabled>${fr ? "Enregistrer la revue" : "Save review"}</button> <button data-asset-close>${fr ? "Fermer" : "Close"}</button>`;
+    async function display(response, target) {
+      if (response.headers.get("content-type").includes("application/json")) {
+        const rows = await response.json();
+        if (assetReview !== session) return;
+        target.innerHTML = `<table>${rows.map(row => `<tr>${row.map(value => `<td>${escapeHtml(value ?? "")}</td>`).join("")}</tr>`).join("")}</table>`;
+      } else {
+        const blob = await response.blob();
+        if (assetReview !== session) return;
+        const url = URL.createObjectURL(blob); session.urls.push(url);
+        const img = document.createElement("img"); img.alt = fr ? "Élément source" : "Source item"; img.src = url;
+        target.appendChild(img);
+        await img.decode();
+      }
+    }
+    for (const [index, asset] of data.assets.entries()) {
+      const path = `${session.path}/assets/${endpoint(asset.id)}`;
+      const original = await api(`${path}?original_region=true`, {showLoading:false});
+      if (assetReview !== session) return;
+      await display(original, panel.querySelector(`[data-asset-preview="${index}"]`));
+      const derived = await api(path, {showLoading:false});
+      if (assetReview !== session) return;
+      await display(derived, panel.querySelector(`[data-asset-derived="${index}"]`));
+    }
+    if (assetReview !== session) return;
+    session.ready = true;
+    panel.querySelector("[data-asset-save]").disabled = ![...panel.querySelectorAll("[data-asset-confirm]")].every(box => box.checked);
+  } catch (error) { if (assetReview === session) closeAssetReview(); notify(error.message, true); }
+}
+$("#asset-review-panel").addEventListener("change", event => {
+  const panel = $("#asset-review-panel");
+  if (event.target.matches('[data-asset-field]')) panel.querySelector(`[data-asset-confirm="${event.target.dataset.assetIndex}"]`).checked = false;
+  const save = panel.querySelector('[data-asset-save]');
+  if (save) save.disabled = !assetReview?.ready || ![...panel.querySelectorAll('[data-asset-confirm]')].every(box => box.checked);
+});
+$("#asset-review-panel").addEventListener("click", async event => {
+  if (event.target.matches('[data-asset-close]')) return closeAssetReview();
+  const session = assetReview;
+  if (!session || session.user !== state.userId) return;
+  if (event.target.matches('[data-asset-original]')) {
+    try {
+      const response = await api(`${session.path}/asset-original`), blob = await response.blob();
+      if (assetReview !== session) return;
+      const url = URL.createObjectURL(blob); session.urls.push(url);
+      const link = document.createElement("a"); link.href = url; link.download = response.headers.get("content-type").includes("pdf") ? "verified-source.pdf" : "verified-source.pptx"; link.click();
+    } catch (error) { notify(error.message, true); }
+    return;
+  }
+  if (!event.target.matches('[data-asset-save]') || !session.ready) return;
+  const panel = $("#asset-review-panel"); event.target.disabled = true;
+  const values = session.data.assets.map((asset, index) => Object.fromEntries([...panel.querySelectorAll(`[data-asset-index="${index}"]`)].map(input => [input.dataset.assetField, input.value || null])));
+  const confirmed_assets = [...panel.querySelectorAll('[data-asset-confirm]')].filter(box => box.checked).map(box => session.data.assets[Number(box.dataset.assetConfirm)].id);
+  try {
+    await api(`${session.path}/asset-review`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({expected_revision:session.data.revision, values, confirmed_assets})});
+    closeAssetReview(); await loadProjects(); await refreshProject(); notify(t("validationSaved"));
+  } catch (error) { notify(error.message, true); if (assetReview === session) event.target.disabled = false; }
+});

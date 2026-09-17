@@ -13,6 +13,8 @@ class AddResourceUseCase:
 
     def execute(self, presentation: Presentation, resource: Resource) -> Presentation:
         SourceScreening.resource(resource, require_text=True)
+        from app.application.services.source_assets import require_reviewed
+        require_reviewed([resource])
         SourceDatePolicy.require(resource)
         presentation.resources.append(resource_selection(resource))
 

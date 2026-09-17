@@ -18,6 +18,7 @@ class Resource(BaseModel):
     metadata: SourceMetadata = Field(default_factory=SourceMetadata)
     # Never serialized into Project JSON, telemetry, API payloads or model prompts.
     _original_content: bytes | None = PrivateAttr(default=None)
+    _asset_review_receipt: str | None = PrivateAttr(default=None)
     _ocr_review_receipt: str | None = PrivateAttr(default=None)
 
     @model_validator(mode="before")

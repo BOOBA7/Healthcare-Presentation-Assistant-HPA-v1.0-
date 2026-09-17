@@ -155,6 +155,9 @@ class RasterDocument:
                     locations=[SourceLocation(kind='region', number=line.page, region=line.box) for line in regions],
                 ),
             )
+            if kind == "pdf":
+                from app.application.services.source_assets import pdf_assets
+                resource.metadata.assets = pdf_assets(content, raster=True)
             from app.application.services.source_screening import SourceScreening
             SourceScreening.resource(resource, require_text=True)
             resource._original_content = content

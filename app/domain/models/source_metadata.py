@@ -7,11 +7,20 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class SourceLocation(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     kind: Literal["page", "slide", "region"]
     number: int = Field(gt=0, strict=True)
     region: tuple[float, float, float, float] | None = None
+
+
+    @model_validator(mode="after")
+    def valid_region(self):
+        if self.region is not None:
+            x0, y0, x1, y1 = self.region
+            if not (0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1):
+                raise ValueError("Invalid original-region coordinates")
+        return self
 
 
 class OcrRegion(BaseModel):
@@ -50,6 +59,32 @@ class OcrReview(BaseModel):
         return self
 
 
+class AssetField(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["missing", "present", "ambiguous", "contradictory", "not_attributable"] = "missing"
+    values: list[str] = Field(default_factory=list)
+    origins: list[str] = Field(default_factory=list)
+
+
+class AssetReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision: int = Field(gt=0, strict=True)
+    asset_id: str
+    original_sha256: str
+    asset_sha256: str
+    initial: dict[str, str | None]
+    corrected: dict[str, str | None]
+    actor: str
+    confirmed_at: datetime
+    provenance: Literal["user_confirmed_against_original"] = "user_confirmed_against_original"
+
+    @model_validator(mode="after")
+    def aware(self):
+        if self.confirmed_at.tzinfo is None:
+            raise ValueError("Review timestamp must be timezone-aware")
+        return self
+
+
 class SourceAsset(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -60,6 +95,15 @@ class SourceAsset(BaseModel):
     caption: str | None = None
     provenance: str | None = None
     rights: str | None = None
+    author: str | None = None
+    organisation: str | None = None
+    original_sha256: str | None = None
+    sha256: str | None = None
+    content_base64: str | None = None
+    fields: dict[str, AssetField] = Field(default_factory=dict)
+    review_status: Literal["pending", "confirmed"] = "pending"
+    # Retention/review is not a licence or scientific-evidence approval.
+    evidence_eligible: Literal[False] = False
 
 
 class SourceDateEvidence(BaseModel):
@@ -98,3 +142,4 @@ class SourceMetadata(BaseModel):
     ocr_regions: list[OcrRegion] = Field(default_factory=list)
     image_metadata: dict[str, str] = Field(default_factory=dict)
     ocr_reviews: list[OcrReview] = Field(default_factory=list)
+    asset_reviews: list[AssetReview] = Field(default_factory=list)

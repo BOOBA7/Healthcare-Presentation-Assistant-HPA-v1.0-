@@ -27,7 +27,7 @@ class SourceScreening:
             checked = Resource.model_validate(payload)
             raster = checked.metadata.origin == "raster_memory_import"
             pptx = checked.metadata.origin == "pptx_memory_import"
-            if (checked.metadata.assets and not pptx) or checked.path:
+            if (checked.metadata.assets and checked.file_type.value not in ("pptx", "pdf")) or checked.path:
                 raise cls.incomplete()
             if raster:
                 from app.application.services.local_image_screening import LocalImageScreening

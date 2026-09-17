@@ -358,12 +358,22 @@ def test_image_screening_unavailable_never_accepts_pptx(workspace, monkeypatch):
     assert lifecycle.snapshot(repository) == before
 
 
-def test_positive_presentation_selection_preserves_style_and_model_context_labels_slides():
+def test_positive_presentation_selection_preserves_style_and_model_context_labels_slides(tmp_path):
     from app.application.use_cases.add_resource import AddResourceUseCase
     from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuilder
     source = SourceDocument.read('synthetic.pptx', deck(), 'source')
     presentation = lifecycle.presentation([])
     presentation.custom_template_id = 'existing-explicit-template'
+    from app.ai.workflows.graph_state import GraphState
+    from app.domain.exceptions.workflow_error import WorkflowError
+    with pytest.raises(WorkflowError, match='Review extracted'):
+        AddResourceUseCase().execute(presentation, source)
+    repository = UserSessionRepository(tmp_path / 'review.sqlite3')
+    repository.save('owner', 'demo', 'thread', GraphState(resource_library=[source]))
+    repository.review_assets('owner', 'source', 0,
+                             [{name: getattr(asset, name) for name in asset.fields} for asset in source.metadata.assets],
+                             [asset.id for asset in source.metadata.assets])
+    source = repository.library_resource('owner', 'source')
     theme = presentation.theme
     AddResourceUseCase().execute(presentation, source)
     assert presentation.theme == theme

@@ -108,5 +108,7 @@ class SourceDatePolicy:
 
     @classmethod
     def require_all(cls, resources):
+        from app.application.services.source_assets import require_reviewed
+        require_reviewed(resources)
         for resource in resources:
             cls.require(resource)

@@ -2,7 +2,8 @@
 
 This is not a renderer, template importer, or a general privacy certification.
 Opaque parts and unknown XML vocabulary fail closed. Asset descriptors point to
-original slide shapes; no reusable image/table files or OCR evidence are made.
+original slide shapes; derivatives stay in the private source record and OCR
+image text is never promoted automatically into evidence.
 """
 from datetime import datetime, timezone
 import hashlib
@@ -474,6 +475,8 @@ class PptxDocument:
                     raise cls.incomplete()
                 screen_raster_text(value)
                 pages.append({'page': number, 'text': value})
+            from app.application.services.source_assets import pptx_assets
+            assets = pptx_assets(content)
             evidence = cls._date(pages, roots)
             # Technical created/modified dates are screened but never scientific dates.
             core = roots.get('docProps/core.xml')
