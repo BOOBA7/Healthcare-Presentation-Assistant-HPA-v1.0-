@@ -23,6 +23,7 @@ from app.domain.models.resource_chunk import ResourceChunk
 from app.domain.models.user_profile import UserProfile
 from app.domain.models.claim_evidence import EvidenceLink, MedicalClaim
 from app.application.services.claim_evidence import ClaimEvidenceService
+from app.application.services.evidence_coverage import EvidenceCoverageService
 
 
 from app.interfaces.storage.source_lifecycle_repository import SourceLifecycleRepository
@@ -226,24 +227,27 @@ class UserSessionRepository(SourceLifecycleRepository):
         if selected_ids == ():
             return []
         with self._connect() as connection:
-            parameters: list[object] = [user_id, project_id]
-            resource_filter = ""
-            if selected_ids is not None:
-                placeholders = ", ".join("?" for _ in selected_ids)
-                resource_filter = f" AND chunks.resource_id IN ({placeholders})"
-                parameters.extend(selected_ids)
-            rows = connection.execute(
-                f"""SELECT chunks.resource_id, chunks.page_number, chunks.chunk_position,
-                           chunks.chunk_text, resources.metadata_json
-                    FROM project_resource_chunks AS chunks
-                    JOIN project_resources AS resources
-                      ON resources.user_id = chunks.user_id
-                     AND resources.project_id = chunks.project_id
-                     AND resources.resource_id = chunks.resource_id
-                    WHERE chunks.user_id = ? AND chunks.project_id = ?{resource_filter}
-                    ORDER BY chunks.resource_id, chunks.page_number, chunks.chunk_position""",
-                parameters,
-            ).fetchall()
+            return self._load_resource_chunks_connection(connection, user_id, project_id, selected_ids)
+
+    def _load_resource_chunks_connection(self, connection, user_id, project_id, selected_ids=None):
+        parameters: list[object] = [user_id, project_id]
+        resource_filter = ""
+        if selected_ids is not None:
+            placeholders = ", ".join("?" for _ in selected_ids)
+            resource_filter = f" AND chunks.resource_id IN ({placeholders})"
+            parameters.extend(selected_ids)
+        rows = connection.execute(
+            f"""SELECT chunks.resource_id, chunks.page_number, chunks.chunk_position,
+                       chunks.chunk_text, resources.metadata_json
+                FROM project_resource_chunks AS chunks
+                JOIN project_resources AS resources
+                  ON resources.user_id = chunks.user_id
+                 AND resources.project_id = chunks.project_id
+                 AND resources.resource_id = chunks.resource_id
+                WHERE chunks.user_id = ? AND chunks.project_id = ?{resource_filter}
+                ORDER BY chunks.resource_id, chunks.page_number, chunks.chunk_position""",
+            parameters,
+        ).fetchall()
         chunks: list[ResourceChunk] = []
         for row in rows:
             try:
@@ -793,7 +797,7 @@ class UserSessionRepository(SourceLifecycleRepository):
         thread_id: str,
         state: GraphState,
         project_name: str | None,
-        *, style_action: bool = False, claim_action: bool = False,
+        *, style_action: bool = False, claim_action: bool = False, coverage_action: bool = False,
     ) -> None:
         if not connection.in_transaction:
             connection.execute("BEGIN IMMEDIATE")
@@ -863,6 +867,16 @@ class UserSessionRepository(SourceLifecycleRepository):
         old_presentation = previous.presentation if previous_row else None
         presentation = state.presentation
         if presentation:
+            old_coverage = old_presentation.evidence_coverage if old_presentation else None
+            if not coverage_action and presentation.evidence_coverage != old_coverage:
+                raise WorkflowError("EXPLICIT_COVERAGE_ASSESSMENT_REQUIRED", "Use the authenticated evidence-coverage assessment action.")
+            if not coverage_action and presentation.evidence_coverage is not None:
+                selected_resources = [r for r in state.resource_library if r.id in {s.id for s in presentation.resources}]
+                current_chunks = self._load_resource_chunks_connection(connection, user_id, project_id)
+                if not EvidenceCoverageService().is_current(
+                    presentation.evidence_coverage, presentation, selected_resources, current_chunks
+                ):
+                    presentation.evidence_coverage = None
             old_template = old_presentation.custom_template_id if old_presentation else None
             # Detaching the original removes its graphic use as well.
             removed_template = old_template and (
@@ -1092,3 +1106,37 @@ class UserSessionRepository(SourceLifecycleRepository):
                 json.dumps(payload or {}, default=str),
             ),
         )
+
+    def assess_evidence_coverage(
+        self, user_id: str, project_id: str, expected_revision: int, actor: str
+    ) -> tuple[str, GraphState]:
+        """Atomically calculate, persist and audit the server-owned FR-09 decision."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT thread_id, state_json, revision FROM project_sessions WHERE user_id = ? AND project_id = ?",
+                (user_id, project_id),
+            ).fetchone()
+            if row is None:
+                raise WorkflowError("PROJECT_NOT_FOUND", "Project not found.")
+            if type(expected_revision) is not int or row[2] != expected_revision:
+                raise ConcurrentModificationError()
+            state = self._deserialize_state(json.loads(row[1]))
+            state.resource_library = self._load_resources(connection, user_id, project_id)
+            state.resource_chunks = self._load_resource_chunks_connection(connection, user_id, project_id)
+            state.project_revision = row[2]
+            if state.presentation is None:
+                raise WorkflowError("PRESENTATION_NOT_CREATED", "Create a presentation before assessing evidence coverage.")
+            if not state.presentation.state.resources_validated:
+                raise WorkflowError("RESOURCES_NOT_VALIDATED", "Validate the selected resources before assessing coverage.")
+            resources = [r for r in state.resource_library if r.id in {s.id for s in state.presentation.resources}]
+            assessment = EvidenceCoverageService().assess(state.presentation, resources, state.resource_chunks)
+            state.presentation.evidence_coverage = assessment
+            self._save_project_row(connection, user_id, project_id, row[0], state, None, coverage_action=True)
+            self._insert_event(connection, user_id, project_id, "EVIDENCE_COVERAGE_ASSESSED", actor, {
+                "coverage_version": assessment.version,
+                "sufficient": assessment.sufficient,
+                "dimensions": [{"dimension": r.dimension, "sufficient": r.sufficient,
+                                "passage_count": len(r.passages)} for r in assessment.results],
+            })
+        return row[0], state

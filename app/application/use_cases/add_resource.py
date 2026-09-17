@@ -21,6 +21,7 @@ class AddResourceUseCase:
         # A new source changes the evidence set. Existing generated content is
         # retained nowhere as "current" until the full source set is reviewed.
         presentation.agenda = None
+        presentation.evidence_coverage = None
         presentation.resource_analysis = None
         presentation.blueprint = None
         presentation.slides = []

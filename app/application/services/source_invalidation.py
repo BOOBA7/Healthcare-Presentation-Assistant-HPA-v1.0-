@@ -19,6 +19,7 @@ def invalidate_source_dependents(state):
     if presentation is None:
         return
     presentation.agenda = None
+    presentation.evidence_coverage = None
     presentation.blueprint = None
     presentation.slides = []
     presentation.resource_analysis = None

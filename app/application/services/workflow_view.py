@@ -8,6 +8,7 @@ from app.application.services.resource_library import resolve_presentation_resou
 from app.domain.exceptions.domain_error import DomainError
 from app.ai.workflows.graph_state import GraphState
 from app.domain.enums.workflow_status import WorkflowStatus
+from app.application.services.evidence_coverage import EvidenceCoverageService
 
 
 class WorkflowViewBuilder:
@@ -74,7 +75,21 @@ class WorkflowViewBuilder:
         elif status == WorkflowStatus.AWAITING_RESOURCE_VALIDATION:
             allowed.append("validate_resources")
         elif status == WorkflowStatus.BLUEPRINT_GENERATION:
-            allowed.append("generate_blueprint")
+            coverage = presentation.evidence_coverage
+            if coverage is None or not EvidenceCoverageService().is_current(
+                coverage, presentation, resolve_presentation_resources(state), state.resource_chunks
+            ):
+                allowed.append("assess_evidence_coverage")
+            elif not coverage.sufficient:
+                blockers.append(WorkflowViewBuilder._blocker(
+                    "EVIDENCE_COVERAGE_INSUFFICIENT", "evidence_coverage",
+                    "Resolve every missing evidence area before creating the Agenda.",
+                    ["add_resource", "change_context", "reassess_evidence_coverage"],
+                    diagnostic={"dimensions": [result.model_dump(mode="json") for result in coverage.results]},
+                ))
+                allowed.append("assess_evidence_coverage")
+            else:
+                allowed.append("generate_blueprint")
         elif status == WorkflowStatus.AWAITING_SCOPE_CLARIFICATION:
             blockers.append(
                 WorkflowViewBuilder._blocker(
@@ -137,6 +152,7 @@ class WorkflowViewBuilder:
             "progress": {
                 "resources_selected": len(presentation.resources),
                 "resources_validated": workflow.resources_validated,
+                "evidence_coverage_sufficient": bool(presentation.evidence_coverage and presentation.evidence_coverage.sufficient),
                 "blueprint_generated": presentation.blueprint is not None,
                 "agenda_validated": bool(presentation.agenda and presentation.agenda.is_validated),
                 "blueprint_validated": workflow.blueprint_validated,

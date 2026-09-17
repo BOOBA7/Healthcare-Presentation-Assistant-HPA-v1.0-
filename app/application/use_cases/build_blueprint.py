@@ -10,6 +10,7 @@ from app.application.services.generation_metadata import append_generation_recor
 from app.domain.exceptions.workflow_error import WorkflowError
 from app.domain.models.resource import Resource
 from app.domain.models.resource_chunk import ResourceChunk
+from app.application.services.evidence_coverage import EvidenceCoverageService
 
 
 class BuildBlueprintUseCase:
@@ -43,6 +44,7 @@ class BuildBlueprintUseCase:
         Presentation
         """
 
+        EvidenceCoverageService().require_current(presentation, resources or presentation.resources, chunks or [])
         evidence_error = ProductionEvidenceGate.generation_error(
             presentation,
             EvidenceContextBuilder.presentation_query(presentation),

@@ -1,7 +1,7 @@
 # Phase 06 — Claim evidence, coverage and resource discussion
 
-Status: 06.1 explicitly approved by the product owner on 2026-09-17. The
-complete phase 06 gate remains pending; 06.2 and 06.3 have not started.
+Status: 06.1 and 06.2 explicitly approved by the product owner on 2026-09-17.
+The complete phase 06 gate remains pending; 06.3 has not started.
 
 ## Outcome and scope
 
@@ -102,4 +102,64 @@ Present a reviewable diff and evidence against every criterion. Record product-o
   of the delivered 06.1 scope because 06.2 and 06.3 do not yet exist.
 - Next exact action: stop after publishing the approved state. Do not begin
   06.2 without separate implementation authorisation.
+- Complete phase-06 product-owner gate approval: pending.
+
+### 06.2 handoff — evidence coverage before Agenda
+
+- **Delivered and explicitly approved by the product owner (2026-09-17):** a persisted
+  `EvidenceCoverageAssessment` evaluates the topic, every semicolon/newline-
+  separated learning objective, target audience, requested depth and target
+  slide count before any Agenda/Blueprint generation. The API and `/app`
+  display each decision, its reason, matched resource/location identities and
+  an appropriate resource request for every gap.
+- **Explicit rule boundary:** an available passage is a chunk of at least 40
+  normalized characters from a selected, parsed resource after human resource
+  validation. A deterministic dimension match requires up to three meaningful
+  terms to occur together in one passage; matches are never pooled. Workflow
+  sufficiency requires every dimension to pass. Slide capacity is the explicit
+  technical rule `3 fixed slides + at most 3 content slides per distinct usable
+  passage`. These rules only control workflow. Every result retains
+  `human_review_required=true`; no result claims scientific relevance or
+  validity, and no opaque scientific score is exposed.
+- The assessment stores context, selected-resource and passage-set SHA-256
+  digests. Context/objective, validation, source selection/content/passage,
+  removal or deletion changes make it obsolete or clear it. Both the queued
+  API job gate and the direct `BuildBlueprintUseCase` gate require a current,
+  sufficient assessment. Generic saves, reconstructed objects and model state
+  cannot create or alter the server-owned decision.
+- The authenticated assessment action enforces owner isolation and optimistic
+  Project revision, and writes state plus a content-free audit summary in one
+  SQLite transaction. Audit failure rolls back the assessment. The stored
+  artifact survives repository/application restart; audit and operational
+  errors contain no source passage text.
+- Files added: `app/domain/models/evidence_coverage.py`,
+  `app/application/services/evidence_coverage.py`,
+  `tests/test_evidence_coverage.py`. Updated: Presentation/invalidation and
+  Blueprint gates, SQLite repository, API/job router, server workflow view,
+  `/app`, phase handoff, and the two synthetic end-to-end/date-gate fixtures.
+- Behavioural coverage includes all five dimensions, multiple objectives,
+  complementary passages, partial/non-pooled and short passages, unrealistic
+  slide count, missing/stale assessment, context/passage invalidation, direct
+  use-case bypass, generic-save fabrication, persistence/restart, owner
+  isolation, stale revision, audit rollback, API/UI workflow gating, and
+  deletion/removal regressions in the complete suite.
+- Verification: `venv/bin/python -m pytest -q app/tests tests -ra
+  --tb=short` — **487 passed, 2 skipped, 6 warnings in 112.76 seconds**. The
+  two Playwright scenarios remain skipped because the current macOS version is
+  unsupported. `venv/bin/ruff check app tests streamlit_app.py main.py`, Python
+  compilation, `venv/bin/python -m pip check`, bundled-Node JavaScript syntax,
+  and `git diff --check` passed. Pip disabled its unwritable user cache and
+  reported no broken requirements. No native asset evaluation was run because
+  06.2 changes no asset extraction or screening behavior.
+- Not performed: supported real-browser execution/screenshots, visual review,
+  real-provider calls, professional/patient data, human scientific/relevance
+  assessment, anonymisation validation, or external review. Streamlit and
+  patient mode remain unchanged/disabled.
+- Product-owner decision: **06.2 approved on 2026-09-17** for the documented
+  deterministic coverage and pre-Agenda gate scope. This is not approval of
+  scientific validity, browser rendering, professional use or complete phase
+  06.
+- **Next exact action:** stop after publishing this approved state. Do not
+  start 06.3, Agenda editing, Blueprint work or phase 07 without separate
+  authorisation.
 - Complete phase-06 product-owner gate approval: pending.

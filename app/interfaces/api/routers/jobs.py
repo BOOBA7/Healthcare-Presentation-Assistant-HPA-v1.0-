@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.application.services.observability import record as record_observability
 from app.application.services.resource_library import resolve_presentation_resources
+from app.application.services.evidence_coverage import EvidenceCoverageService
 from app.application.services.workflow_policy import WorkflowPolicy
 from app.application.use_cases.workflow_steps import (
     BuildBlueprintWorkflowUseCase,
@@ -72,6 +73,10 @@ def _require_generation_ready(state, *, action: str) -> None:
             "RESOURCES_NOT_VALIDATED",
             "Validate the selected PDF resources before generating the blueprint.",
         )
+    if action == "blueprint":
+        EvidenceCoverageService().require_current(
+            presentation, resolve_presentation_resources(state), state.resource_chunks
+        )
     if action == "slides" and not presentation.state.blueprint_validated:
         raise WorkflowError(
             "BLUEPRINT_NOT_VALIDATED",
@@ -127,7 +132,7 @@ def _queue_generation_job(user_id: str, project_id: str, authenticated_user: str
     thread_id, state = _load_workflow_state(repository, user_id, project_id)
     try:
         _require_generation_ready(state, action=action)
-    except WorkflowError as exc:
+    except (WorkflowError, ValueError) as exc:
         # Scope clarification changes the durable workflow state and must be
         # visible even though no generation job was permitted.
         if state.presentation and state.presentation.state.workflow_status == WorkflowStatus.AWAITING_SCOPE_CLARIFICATION:

@@ -181,9 +181,12 @@ def _pdf_bytes() -> bytes:
     page.insert_text(
         (72, 72),
         "Vitamin D status should be assessed using the supplied clinical evidence. "
-        "This source is provided by the user for the presentation workflow.",
+        "Vitamin D clinical update uses supplied clinical evidence for practical primary care. "
+        "This source is written for the general practitioner presentation workflow.",
     )
     document[0].insert_text((72, 40), "Publication date: 2024")
+    document.new_page().insert_text((72, 72), "Vitamin D clinical evidence supports practical primary care assessment for general practitioners using documented laboratory and follow-up methods.")
+    document.new_page().insert_text((72, 72), "The supplied clinical evidence provides a practical review for general practitioner education, monitoring, and shared clinical decisions.")
     content = document.tobytes()
     document.close()
     return content
@@ -301,6 +304,13 @@ def test_end_to_end_human_controlled_workflow_without_live_model(tmp_path, monke
     )
     assert validated_resources.status_code == 200
     assert validated_resources.json()["presentation"]["state"]["workflow_status"] == "blueprint_generation"
+
+    coverage = client.post(
+        "/projects/hcp-e2e/vitamin-d/evidence-coverage", headers=headers,
+        json={"expected_revision": validated_resources.json()["project_revision"]},
+    )
+    assert coverage.status_code == 200
+    assert coverage.json()["presentation"]["evidence_coverage"]["sufficient"] is True
 
     blueprint_job = client.post(
         "/api/v1/projects/hcp-e2e/vitamin-d/blueprint/jobs",

@@ -16,6 +16,7 @@ from app.domain.models.resource_analysis import ResourceAnalysis
 from app.domain.models.professional_scope_declaration import ProfessionalScopeDeclaration
 from app.domain.value_objects.presentation_context import PresentationContext
 from app.domain.enums.evidence_context_mode import EvidenceContextMode
+from app.domain.models.evidence_coverage import EvidenceCoverageAssessment
 
 
 class Presentation(BaseModel):
@@ -68,6 +69,11 @@ class Presentation(BaseModel):
     resource_analysis: ResourceAnalysis | None = Field(
         default=None,
         description="Optional AI overview of the uploaded resource set, shown before slide production.",
+    )
+
+    evidence_coverage: EvidenceCoverageAssessment | None = Field(
+        default=None,
+        description="Current deterministic pre-Agenda evidence-coverage assessment.",
     )
 
     blueprint: Optional[Blueprint] = Field(

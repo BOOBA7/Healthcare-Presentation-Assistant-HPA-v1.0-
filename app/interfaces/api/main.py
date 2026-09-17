@@ -145,6 +145,10 @@ class ReviewRequest(BaseModel):
     comments: str = Field(default="", max_length=10_000)
 
 
+class EvidenceCoverageRequest(BaseModel):
+    expected_revision: int = Field(ge=1, strict=True)
+
+
 class BlueprintRegenerationRequest(BaseModel):
     """Reviewer feedback to persist before an asynchronous blueprint revision."""
 
@@ -1125,6 +1129,20 @@ def approve_resources(user_id: str, project_id: str, authenticated_user: str = D
         raise _workflow_conflict(exc) from exc
     state.execution = ExecutionContext()
     return _save_project(user_id, project_id, thread_id, state, event_type="RESOURCES_VALIDATED", actor="user")
+
+
+@app.post("/projects/{user_id}/{project_id}/evidence-coverage")
+def assess_evidence_coverage(user_id: str, project_id: str, request: EvidenceCoverageRequest,
+                             authenticated_user: str = Depends(_authenticated_user)):
+    """Create the server-owned, persisted pre-Agenda coverage decision."""
+    _assert_owner(user_id, authenticated_user)
+    try:
+        thread_id, state = get_repository().assess_evidence_coverage(
+            user_id, project_id, request.expected_revision, authenticated_user
+        )
+    except DomainError as exc:
+        raise _workflow_conflict(exc) from exc
+    return _project_response(user_id, project_id, thread_id, state)
 
 
 @app.delete("/projects/{user_id}/{project_id}/resources/{resource_id}")

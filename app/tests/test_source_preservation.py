@@ -271,10 +271,19 @@ def test_legacy_date_gate_cannot_be_bypassed_by_approvals_or_queued_jobs(workspa
         "target_slide_count": 5, "special_instructions": "None", "professional_scope": "Teaching within my specialty",
         "is_multidisciplinary": False, "confirmed_within_scope": True,
     }).status_code == 200
-    resource_id = upload(client, pdf()).json()["resource_id"]
+    resource_id = upload(client, pdf(
+        "Publication date: 2024-02-29\n"
+        "Synthetic guideline evidence supports practical clinical review.\n"
+        "General practitioner primary care education is addressed.\n"
+        "Monitoring and shared decisions provide sufficient detail."
+    )).json()["resource_id"]
     base = "/projects/synthetic-owner/demo"
     assert client.post(base + f"/resources/{resource_id}/attach").status_code == 200
     assert client.post(base + "/resources/validate").status_code == 200
+    project = client.get(base).json()
+    coverage = client.post(base + "/evidence-coverage", json={"expected_revision": project["project_revision"]})
+    assert coverage.status_code == 200
+    assert coverage.json()["presentation"]["evidence_coverage"]["sufficient"] is True, coverage.json()["presentation"]["evidence_coverage"]["results"]
     work = []
     monkeypatch.setattr(jobs, "submit_job", lambda repository, user, job, domain, task: work.append(task))
     queue = "/api/v1/projects/synthetic-owner/demo/blueprint/jobs"
