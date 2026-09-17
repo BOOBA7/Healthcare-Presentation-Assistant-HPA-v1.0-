@@ -18,11 +18,15 @@ class BuildBlueprintUseCase:
     Generates the scientific blueprint of the presentation.
     """
 
-    def __init__(self) -> None:
-
-        self.chain = BlueprintChain()
-
-        self.mapper = BlueprintMapper()
+    def __init__(
+        self,
+        chain: BlueprintChain | None = None,
+        mapper: BlueprintMapper | None = None,
+    ) -> None:
+        # Construct the LLM-backed chain only after deterministic workflow
+        # guards pass. This keeps invalid calls local and credential-free.
+        self.chain = chain
+        self.mapper = mapper or BlueprintMapper()
 
     def execute(
         self,
@@ -54,7 +58,8 @@ class BuildBlueprintUseCase:
         if evidence_error:
             raise WorkflowError("INSUFFICIENT_EVIDENCE", evidence_error)
 
-        blueprint_schema = self.chain.invoke(
+        chain = self.chain or BlueprintChain()
+        blueprint_schema = chain.invoke(
             presentation,
             resources,
             chunks,

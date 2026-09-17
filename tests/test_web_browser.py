@@ -98,7 +98,8 @@ def _write_pdf(path: Path) -> None:
     page = document.new_page()
     page.insert_text(
         (72, 72),
-        "Vitamin D evidence supplied by the HCP. This PDF is the sole source for the workflow test.\n"
+        "Vitamin D clinical update evidence provided by the HCP for general practitioners in primary care. "
+        "This practical clinical PDF is the sole source for the workflow test.\n"
         "Publication date: 2024",
     )
     document.save(path)
@@ -172,7 +173,7 @@ def test_hcp_can_upload_validate_analyze_and_generate_blueprint_in_browser(tmp_p
             expect(page.locator("#evidence-context-mode")).to_have_count(0)
             page.locator("#setup-topic").fill("Vitamin D clinical update")
             page.locator("#setup-objective").fill("Review only the evidence provided by the HCP.")
-            page.locator("#setup-slides").fill("10")
+            page.locator("#setup-slides").fill("6")
             page.locator("#setup-instructions").fill("None")
             page.locator("#setup-scope").fill("Teaching public evidence within my specialty")
             page.locator("#setup-multidisciplinary").select_option("true")
@@ -194,8 +195,10 @@ def test_hcp_can_upload_validate_analyze_and_generate_blueprint_in_browser(tmp_p
             page.locator("#resource-workflow-action [data-action='validate-resources']").click()
             expect(page.locator("#resource-workflow-action")).to_contain_text("validated")
             # The Resources workspace is a complete entry point for the
-            # controlled production flow; the HCP does not need to discover
-            # a second, hidden command in another workspace.
+            # controlled production flow, including the mandatory coverage
+            # assessment before Agenda creation.
+            expect(page.locator("#resource-workflow-action [data-action='assess-coverage']")).to_be_visible()
+            page.locator("#resource-workflow-action [data-action='assess-coverage']").click()
             expect(page.locator("#resource-workflow-action [data-action='resource-generate-blueprint']")).to_be_visible()
 
             page.locator("#analyze-resources").click()
