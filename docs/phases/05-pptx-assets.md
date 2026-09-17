@@ -1,6 +1,7 @@
 # Phase 05 — PowerPoint evidence and extracted visuals
 
-Status: Planned. Implementation and product-owner gate approval: pending.
+Status: 05.1 implemented and awaiting product-owner review. Phase gate approval:
+pending; 05.2 and 05.3 have not started.
 
 ## Outcome and scope
 
@@ -42,9 +43,42 @@ Present a reviewable diff and evidence against every criterion. Record product-o
 
 ## Session handoff
 
-- Current slice: 05.1, not started.
-- Changes and implementation commits: none.
-- Checks/results: not run for this phase.
-- Decisions/blockers: inspect current implementation; no technology choice is preapproved by this plan.
-- Next action: verify prerequisites and execute the authorised slice.
+- Current slice: **05.1 implemented on 2026-09-17; manual validation pending.**
+- The restricted in-memory PPTX reader accepts native slide text and simple
+  tables, preserves one-based presentation-order slide locations, inventories
+  screened images/tables and retains the exact original, hash and minimal
+  descriptors across restart. Evidence import does not select or change a
+  presentation template. No extracted asset copy or visual-review workflow from
+  05.2 was implemented.
+- The complete OOXML package is bounded and screened before acceptance: notes,
+  core/extended/custom properties, shape names and alternate text, filenames,
+  relationships and reachable XML parts. External/dangling/unknown relations,
+  opaque or orphaned parts, encrypted/malformed/ambiguous ZIP/XML, unsupported
+  drawings/objects, unsafe metadata, conflicting or missing scientific dates,
+  limits and format disguises fail closed without a durable raw write.
+- Existing source verification now covers PPTX at service, presentation,
+  repository, API, restart, owner-isolation, model and permanent-deletion
+  boundaries. DOCX, spreadsheet and DICOM names remain refused. Audit payloads
+  contain only descriptors, not notes or extracted text.
+- Existing `python-pptx` 1.0.2 (MIT), lxml 6.1.1 (BSD-3-Clause) and Pillow
+  12.3.0 (MIT-CMU) were reused in memory; no dependency or system tool was
+  installed. The native image subprocess retains its no-write/no-network macOS
+  sandbox and fail-closed behaviour.
+- Focused verification: `venv/bin/python -m pytest -q
+  app/tests/test_pptx_sources.py app/tests/test_ocr_review.py
+  tests/test_evidence_provenance.py --tb=short` — **107 passed, 6 warnings**.
+  Final provider-free suite: `venv/bin/python -m pytest -q app/tests tests
+  -ra --tb=short` — **409 passed, 2 skipped, 6 warnings**. Ruff, Python
+  compilation, dependency consistency, bundled-Node JavaScript syntax and diff
+  whitespace checks also passed.
+  Real native synthetic PPTX evaluation accepted one clean text image at slide
+  2 and refused a possible name and schematic face; this tiny constructed set
+  is not an anonymisation or detector-accuracy claim.
+- Browser execution remains unavailable on macOS 10.15 and must not be counted
+  as verified. No external provider, professional document, patient data,
+  Streamlit edit or human validation was used.
+- Implementation commit present locally during handoff: `f699481`; final
+  documentation/correction commit and publication are recorded by Git history.
+- Next exact action: product-owner manual review of 05.1. After explicit
+  approval and separate authorisation, the next implementation slice is 05.2.
 - Product-owner gate approval: pending; record date, scope and explicit decision.

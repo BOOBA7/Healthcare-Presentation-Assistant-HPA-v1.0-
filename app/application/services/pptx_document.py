@@ -217,7 +217,7 @@ class PptxDocument:
             f'{{{P}}}presentation': [f'{{{P}}}{tag}' for tag in ('sldIdLst', 'sldMasterIdLst', 'sldSz')],
             f'{{{P}}}cSld': [f'{{{P}}}spTree'],
             f'{{{P}}}spTree': [f'{{{P}}}nvGrpSpPr', f'{{{P}}}grpSpPr'],
-            f'{{{P}}}sp': [f'{{{P}}}{tag}' for tag in ('nvSpPr', 'spPr', 'txBody')],
+            f'{{{P}}}sp': [f'{{{P}}}{tag}' for tag in ('nvSpPr', 'spPr')],
             f'{{{P}}}pic': [f'{{{P}}}{tag}' for tag in ('nvPicPr', 'blipFill', 'spPr')],
             f'{{{P}}}graphicFrame': [f'{{{P}}}nvGraphicFramePr', f'{{{P}}}xfrm', f'{{{A}}}graphic'],
             f'{{{A}}}graphic': [f'{{{A}}}graphicData'],
@@ -235,6 +235,8 @@ class PptxDocument:
                 allowed = {f'{{{P}}}{tag}' for tag in ('nvGrpSpPr', 'grpSpPr', 'sp', 'pic', 'graphicFrame')}
                 if any(child.tag not in allowed for child in node):
                     raise cls.incomplete()
+            if node.tag == f'{{{P}}}sp' and len(node.findall(f'{{{P}}}txBody')) > 1:
+                raise cls.incomplete()
             if node.tag == f'{{{A}}}tbl':
                 columns = node.find(f'{{{A}}}tblGrid')
                 rows = node.findall(f'{{{A}}}tr')
