@@ -46,8 +46,9 @@ Present a reviewable diff and evidence against every criterion. Record product-o
 ## Session handoff
 
 - Current slice: **06.1 implemented and explicitly approved by the product
-  owner on 2026-09-17.** Commit/publication are authorised by the owner's
-  subsequent instruction and are to be recorded after completion below.
+  owner on 2026-09-17.** Implementation, approval and the historical 05.1
+  evidence report were committed as `445bc50`; publication was explicitly
+  authorised by the owner.
 - Stable, revisioned `MedicalClaim` and `EvidenceLink` records now distinguish
   deterministic source identity/location/passage verification from explicit
   human semantic review. Values, units and uncertainty are retained as
@@ -99,7 +100,6 @@ Present a reviewable diff and evidence against every criterion. Record product-o
   complete phase 06, scientific validity, browser rendering or professional
   use. The phrase “phase 6” in the owner's instruction is recorded as approval
   of the delivered 06.1 scope because 06.2 and 06.3 do not yet exist.
-- Next exact action: commit and publish the approved state as explicitly
-  authorised, then stop. Do not begin 06.2 without separate implementation
-  authorisation.
+- Next exact action: stop after publishing the approved state. Do not begin
+  06.2 without separate implementation authorisation.
 - Complete phase-06 product-owner gate approval: pending.
