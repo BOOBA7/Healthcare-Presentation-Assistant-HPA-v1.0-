@@ -1,7 +1,7 @@
 # Phase 05 — PowerPoint evidence and extracted visuals
 
-Status: 05.1 implemented and awaiting product-owner review. Phase gate approval:
-pending; 05.2 and 05.3 have not started.
+Status: 05.1 approved by the product owner on 2026-09-17. Phase 05 gate
+approval remains pending; 05.2 and 05.3 have not started.
 
 ## Outcome and scope
 
@@ -43,7 +43,8 @@ Present a reviewable diff and evidence against every criterion. Record product-o
 
 ## Session handoff
 
-- Current slice: **05.1 implemented on 2026-09-17; manual validation pending.**
+- Current slice: **05.1 implemented and explicitly approved by the product
+  owner on 2026-09-17.**
 - The restricted in-memory PPTX reader accepts native slide text and simple
   tables, preserves one-based presentation-order slide locations, inventories
   screened images/tables and retains the exact original, hash and minimal
@@ -79,6 +80,10 @@ Present a reviewable diff and evidence against every criterion. Record product-o
   Streamlit edit or human validation was used.
 - Implementation commit present locally during handoff: `f699481`; final
   documentation/correction commit and publication are recorded by Git history.
-- Next exact action: product-owner manual review of 05.1. After explicit
-  approval and separate authorisation, the next implementation slice is 05.2.
-- Product-owner gate approval: pending; record date, scope and explicit decision.
+- Product-owner decision: **05.1 approved on 2026-09-17.** This approves the
+  documented restricted slice only; it is not full phase 05 approval, scientific
+  validation, an anonymisation guarantee or approval for professional data.
+- Next exact action: execute 05.2 only after separate authorisation. Retain
+  PDF/PPTX extracted images and tables with original locations, dates,
+  rights/provenance and uncertainty review. Do not begin 05.3.
+- Product-owner phase 05 gate approval: pending.
