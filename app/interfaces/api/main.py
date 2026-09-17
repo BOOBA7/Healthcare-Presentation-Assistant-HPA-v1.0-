@@ -47,6 +47,7 @@ from app.application.use_cases.manage_project_resources import (
 from app.application.services.workflow_policy import WorkflowPolicy
 from app.application.services.workflow_view import WorkflowViewBuilder
 from app.application.services.conversation_history import add_resource_turn, add_turn, ensure_history
+from app.application.services.discussion_transfer import DiscussionTransferService
 from app.application.services.resource_library import ensure_resource_library, resolve_presentation_resources
 from app.core.config import get_settings
 from app.core.versioning import HARNESS_VERSION, RETRIEVAL_VERSION, WORKFLOW_VERSION
@@ -147,6 +148,14 @@ class ReviewRequest(BaseModel):
 
 class EvidenceCoverageRequest(BaseModel):
     expected_revision: int = Field(ge=1, strict=True)
+
+
+class DiscussionTransferRequest(BaseModel):
+    expected_revision: int = Field(ge=1, strict=True)
+    destination: str = Field(pattern=r"^(agenda|blueprint)$")
+    content: str = Field(min_length=1, max_length=20_000)
+    retained_position_ids: list[str] = Field(min_length=1, max_length=100)
+    uncertainties: list[str] = Field(default_factory=list, max_length=100)
 
 
 class BlueprintRegenerationRequest(BaseModel):
@@ -306,6 +315,10 @@ def _project_response(user_id: str, project_id: str, thread_id: str, state: Grap
                 slide["references"] = [str(r.get("title") or "Source") for r in slide["reference_details"]]
     messages = [turn.model_dump(mode="json") for turn in state.conversation_history]
     resource_messages = [turn.model_dump(mode="json") for turn in state.resource_conversation_history]
+    selected = ({r.id for r in state.presentation.resources} if state.presentation else {r.id for r in state.resource_library})
+    comparison_resources = [r for r in state.resource_library if r.id in selected and r.is_validated]
+    comparisons = DiscussionTransferService().comparisons(state.resource_conversation_history, comparison_resources)
+    transfer_context = DiscussionTransferService().planning_context(state)
     return {
         "user_id": user_id,
         "project_id": project_id,
@@ -317,6 +330,9 @@ def _project_response(user_id: str, project_id: str, thread_id: str, state: Grap
         "resource_analysis": state.resource_analysis.model_dump(mode="json") if state.resource_analysis else None,
         "messages": messages,
         "resource_messages": resource_messages,
+        "resource_comparisons": [item.model_dump(mode="json") for item in comparisons],
+        "planning_transfer": state.planning_transfer.model_dump(mode="json") if state.planning_transfer else None,
+        "validated_planning_transfer": transfer_context,
         "conversation_context": state.conversation_context.model_dump(mode="json"),
         "evidence_context_mode": state.evidence_context_mode.value,
         "prototype_declaration": state.prototype_declaration,
@@ -1141,6 +1157,23 @@ def assess_evidence_coverage(user_id: str, project_id: str, request: EvidenceCov
             user_id, project_id, request.expected_revision, authenticated_user
         )
     except DomainError as exc:
+        raise _workflow_conflict(exc) from exc
+    return _project_response(user_id, project_id, thread_id, state)
+
+
+@app.post("/projects/{user_id}/{project_id}/discussion-transfer")
+def approve_discussion_transfer(
+    user_id: str, project_id: str, request: DiscussionTransferRequest,
+    authenticated_user: str = Depends(_authenticated_user),
+):
+    """Approve planning input without creating or editing Agenda/Blueprint."""
+    _assert_owner(user_id, authenticated_user)
+    try:
+        thread_id, state = get_repository().approve_discussion_transfer(
+            user_id, project_id, request.expected_revision, request.destination,
+            request.content, request.retained_position_ids, request.uncertainties, authenticated_user,
+        )
+    except (DomainError, ValueError) as exc:
         raise _workflow_conflict(exc) from exc
     return _project_response(user_id, project_id, thread_id, state)
 

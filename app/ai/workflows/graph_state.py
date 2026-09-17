@@ -12,6 +12,7 @@ from app.domain.models.conversation_turn import ConversationTurn
 from app.domain.models.resource import Resource
 from app.domain.models.resource_chunk import ResourceChunk
 from app.domain.models.resource_analysis import ResourceAnalysis
+from app.domain.models.discussion_transfer import PlanningTransfer
 from app.domain.value_objects.presentation_context import PresentationContext
 from app.domain.enums.conversation_mode import ConversationMode
 from app.domain.enums.evidence_context_mode import EvidenceContextMode
@@ -52,6 +53,9 @@ class GraphState(BaseModel):
     # deliberately excluded from the durable workflow JSON snapshot.
     resource_chunks: list[ResourceChunk] = Field(default_factory=list)
     resource_analysis: ResourceAnalysis | None = None
+    # Explicit human-approved input for future planning. It never edits an
+    # Agenda or Blueprint and is revalidated before exposure to planning.
+    planning_transfer: PlanningTransfer | None = None
     conversation_context: ConversationContext = Field(default_factory=ConversationContext)
     presentation_context: PresentationContext | None = None
     presentation: Presentation | None = None

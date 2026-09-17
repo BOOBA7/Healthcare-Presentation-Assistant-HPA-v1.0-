@@ -13,6 +13,7 @@ def invalidate_source_dependents(state):
     state.resource_conversation_history = []
     state.conversation_memory_summary = ""
     state.resource_analysis = None
+    state.planning_transfer = None
     state.resource_chunks = []
     state.execution = ExecutionContext()
     presentation = state.presentation
