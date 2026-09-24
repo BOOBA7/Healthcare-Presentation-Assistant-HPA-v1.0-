@@ -6,6 +6,7 @@ import json
 from pydantic import BaseModel, Field, model_validator
 
 from app.domain.models.claim_evidence import EvidenceLink, LegacySlideReference, MedicalClaim
+from app.domain.value_objects.speaker_note import SpeakerNote
 
 
 class Slide(BaseModel):
@@ -42,6 +43,11 @@ class Slide(BaseModel):
     speaker_notes: Optional[str] = Field(
         default=None,
         description="Speaker notes associated with the slide.",
+    )
+
+    speaker_note: SpeakerNote | None = Field(
+        default=None,
+        description="Speaker notes and their evidence, separate from visible slide content.",
     )
 
     references: List[str] = Field(

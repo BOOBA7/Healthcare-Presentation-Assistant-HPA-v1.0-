@@ -834,6 +834,22 @@ class UserSessionRepository(SourceLifecycleRepository):
                     if link.semantic_review != "pending" and not link.semantic_reviewed_by:
                         raise WorkflowError("CLAIM_EVIDENCE_INVALID", "Semantic review has no authenticated reviewer.")
                 ClaimEvidenceService._refresh(slide)
+                note = slide.speaker_note
+                if note is not None:
+                    note_claims = {(claim.id, claim.revision) for claim in note.claims}
+                    for link in note.evidence_links:
+                        if (link.claim_id, link.claim_revision) not in note_claims:
+                            raise WorkflowError(
+                                "SPEAKER_NOTE_EVIDENCE_INVALID",
+                                "Speaker-note evidence targets an unknown claim revision.",
+                            )
+                        if link.provenance_verified or link.semantic_review != "pending":
+                            ClaimEvidenceService.verify_provenance(link, state.resource_library)
+                    if note.is_approved or note.approved_by:
+                        raise WorkflowError(
+                            "EXPLICIT_SPEAKER_NOTE_REVIEW_REQUIRED",
+                            "Use the authenticated speaker-note review action.",
+                        )
         existing = connection.execute(
             "SELECT revision FROM project_sessions WHERE user_id = ? AND project_id = ?",
             (user_id, project_id),

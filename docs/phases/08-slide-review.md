@@ -42,9 +42,9 @@ Present a reviewable diff and evidence against every criterion. Record product-o
 
 ## Session handoff
 
-- Current slice: 08.1, not started.
-- Changes and implementation commits: none.
-- Checks/results: not run for this phase.
-- Decisions/blockers: inspect current implementation; no technology choice is preapproved by this plan.
-- Next action: verify prerequisites and execute the authorised slice.
+- Current slice: 08.1 completed locally; review pending. No commit.
+- Result/files: supported slide and separate speaker-note claim provenance, deterministic missing-value/conflict refusal, local blockers, restart-safe provider recovery, API bypass guard and visible review details in `app/ai`, `app/application`, `app/domain`, `app/interfaces`; provider-free evidence in `tests/test_supported_slide_generation.py`.
+- Checks/results: affected regression set 64 passed; final focused set 15 passed; Ruff passed on modified Python files; `compileall app`, bundled Node `--check app/interfaces/web/app.js`, and `git diff --check` passed.
+- Decisions/reservations: provenance verification is not scientific approval; speaker-note approval remains deliberately pending. No browser screenshot or live-provider call was performed. Existing legacy slide citations remain readable/exportable but new generation requires claim-level evidence.
+- Next action (08.2 only after explicit authorisation): direct edits/reformulation/deletion/comments in any order, explicit source-missing medical drafts, and authenticated separate content/note review actions.
 - Product-owner gate approval: pending; record date, scope and explicit decision.

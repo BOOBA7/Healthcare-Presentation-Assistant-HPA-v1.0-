@@ -43,6 +43,18 @@ class SlideReferenceSchema(BaseModel):
 
     url: str | None = Field(default=None, description="Link, only when present in the supplied source.")
 
+    claim_value: str | None = Field(default=None, description="Exact supplied value, or null when absent.")
+
+    claim_unit: str | None = Field(default=None, description="Exact supplied unit, or null when absent.")
+
+    claim_uncertainty: str | None = Field(default=None, description="Missingness or uncertainty stated by the source.")
+
+    missing_value: bool = Field(default=False, description="True only when the source does not provide a value.")
+
+    conflict_group_id: str | None = Field(default=None, description="Shared ID for source positions that conflict.")
+
+    source_position: str | None = Field(default=None, description="Neutral label for this source position.")
+
 
 class SlideSchema(BaseModel):
     """
@@ -79,6 +91,11 @@ class SlideSchema(BaseModel):
     speaker_notes: str = Field(
         ...,
         description="Detailed presenter notes not displayed on the slide.",
+    )
+
+    speaker_note_references: List[SlideReferenceSchema] = Field(
+        default_factory=list,
+        description="Evidence supporting claims made only in the speaker notes.",
     )
 
     references: List[SlideReferenceSchema] = Field(

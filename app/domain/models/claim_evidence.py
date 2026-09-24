@@ -16,6 +16,9 @@ class MedicalClaim(BaseModel):
     value: str | None = Field(default=None, max_length=500)
     unit: str | None = Field(default=None, max_length=100)
     uncertainty: str | None = Field(default=None, max_length=1_000)
+    missing_value: bool = False
+    conflict_group_id: str | None = Field(default=None, max_length=128)
+    source_position: str | None = Field(default=None, max_length=2_000)
 
 
 class EvidenceLink(BaseModel):
@@ -42,4 +45,3 @@ class LegacySlideReference(BaseModel):
     migration_id: str
     reference: dict[str, object]
     review_required: bool = True
-

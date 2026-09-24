@@ -51,6 +51,7 @@ class GenerateSlidesUseCase:
                 existing = existing_by_number.get(outline.slide_number)
                 if existing is not None and existing.content_origin == "user_authored":
                     generated_slides.append(existing)
+                    presentation.slides = sorted(generated_slides, key=lambda item: item.slide_number)
                     continue
                 # Deterministic transfer of human-authored blueprint content;
                 # this branch must never initialise or call an LLM chain.
@@ -64,6 +65,7 @@ class GenerateSlidesUseCase:
                         content_origin="user_authored",
                     )
                 )
+                presentation.slides = sorted(generated_slides, key=lambda item: item.slide_number)
                 continue
 
             existing = existing_by_number.get(outline.slide_number)
@@ -71,6 +73,7 @@ class GenerateSlidesUseCase:
                 # A retry after another slide was resolved must not spend an
                 # additional model call or overwrite approved work.
                 generated_slides.append(existing)
+                presentation.slides = sorted(generated_slides, key=lambda item: item.slide_number)
                 continue
 
             query = EvidenceContextBuilder.slide_query(presentation, outline)
@@ -102,7 +105,11 @@ class GenerateSlidesUseCase:
                     chunks=chunks,
                 )
                 slide = self.mapper.to_domain(schema)
-                self.evidence_validator.validate_slide(slide, resolved_resources)
+                self.evidence_validator.validate_slide(
+                    slide,
+                    resolved_resources,
+                    require_claims=True,
+                )
             except ValidationError as exc:
                 blockers.append(
                     SlideGenerationBlocker(
@@ -116,6 +123,10 @@ class GenerateSlidesUseCase:
 
             invoked_model = True
             generated_slides.append(slide)
+            # Persistable aggregate progress is updated after every slide. If
+            # the next provider call fails, the job failure handler can save
+            # completed work and a retry will resume without regenerating it.
+            presentation.slides = sorted(generated_slides, key=lambda item: item.slide_number)
 
         presentation.slides = sorted(generated_slides, key=lambda slide: slide.slide_number)
         presentation.state.total_slides = len(presentation.blueprint.slides)
