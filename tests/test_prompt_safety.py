@@ -66,6 +66,9 @@ def test_generation_prompt_receives_the_persisted_professional_profile():
 
     assert "Role:\nveterinarian" in prompt
     assert "Generate the blueprint in the presentation language" in prompt
+    assert "supporting_source_ids" in prompt
+    assert "Never invent a resource ID" in prompt
+    assert "planned_visual" in prompt
 
 
 def test_prompt_hierarchy_explicitly_treats_document_text_as_untrusted():

@@ -1,5 +1,3 @@
-from typing import List
-
 from pydantic import BaseModel, Field
 
 
@@ -29,9 +27,15 @@ class SlideOutline(BaseModel):
         description="Main message the audience should remember.",
     )
 
-    key_message: str = Field(
+    supporting_source_ids: list[str] = Field(
         ...,
-        description="Main message the audience should remember.",
+        min_length=1,
+        description="Identifiers of validated Project resources planned to support the slide.",
+    )
+
+    planned_visual: str = Field(
+        ...,
+        description="Specific visual planned for the slide, or an explicit statement that none is needed.",
     )
 
 
@@ -51,7 +55,7 @@ class BlueprintSchema(BaseModel):
         description="Scientific storytelling strategy.",
     )
 
-    learning_objectives: List[str] = Field(
+    learning_objectives: list[str] = Field(
         ...,
         description="Main learning objectives.",
     )
@@ -61,7 +65,7 @@ class BlueprintSchema(BaseModel):
         description="Estimated presentation duration in minutes.",
     )
 
-    slides: List[SlideOutline] = Field(
+    slides: list[SlideOutline] = Field(
         ...,
         description="Ordered presentation slides.",
     )

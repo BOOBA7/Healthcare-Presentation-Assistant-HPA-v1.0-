@@ -68,6 +68,7 @@ class BuildBlueprintUseCase:
 
         presentation.blueprint = self.mapper.to_domain(
             blueprint_schema,
+            {resource.id for resource in (resources or presentation.resources) if resource.is_validated},
         )
         presentation.state.current_step = WorkflowStep.BLUEPRINT_VALIDATION
         presentation.state.workflow_status = WorkflowStatus.AWAITING_BLUEPRINT_APPROVAL

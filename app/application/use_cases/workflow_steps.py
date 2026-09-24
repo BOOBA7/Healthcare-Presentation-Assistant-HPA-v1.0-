@@ -297,10 +297,12 @@ class EditBlueprintItemUseCase:
         title: str,
         objective: str,
         key_message: str,
+        supporting_source_ids: list[str],
+        planned_visual: str,
         content_origin: str,
     ) -> GraphState:
         if state.patient_case_mode:
-            PatientCasePrivacyGuard().ensure_texts_safe((title, objective, key_message))
+            PatientCasePrivacyGuard().ensure_texts_safe((title, objective, key_message, planned_visual))
         if state.presentation is None or state.presentation.blueprint is None:
             raise ValueError("Generate a blueprint before editing it.")
         WorkflowPolicy.require_status(
@@ -315,9 +317,20 @@ class EditBlueprintItemUseCase:
         )
         if not 0 <= index < len(state.presentation.blueprint.slides):
             raise ValueError("Blueprint item index is invalid.")
-        values = {"title": title.strip(), "objective": objective.strip(), "key_message": key_message.strip()}
+        values = {
+            "title": title.strip(),
+            "objective": objective.strip(),
+            "key_message": key_message.strip(),
+            "planned_visual": planned_visual.strip(),
+        }
         if not all(values.values()):
-            raise ValueError("Title, objective and key message are required.")
+            raise ValueError("Title, objective, key message and planned visual are required.")
+        normalized_source_ids = list(dict.fromkeys(source_id.strip() for source_id in supporting_source_ids if source_id.strip()))
+        available_source_ids = {resource.id for resource in state.presentation.resources if resource.is_validated}
+        if not normalized_source_ids:
+            raise ValueError("At least one planned supporting source is required.")
+        if not set(normalized_source_ids) <= available_source_ids:
+            raise ValueError("Every planned supporting source must be a validated Project resource.")
         if content_origin not in self._origins:
             raise ValueError("Choose whether the item was edited from AI content or written by the user.")
 
@@ -329,10 +342,14 @@ class EditBlueprintItemUseCase:
                 "title": item.title,
                 "objective": item.objective,
                 "key_message": item.key_message,
+                "supporting_source_ids": item.supporting_source_ids,
+                "planned_visual": item.planned_visual,
             }
         item.title = values["title"]
         item.objective = values["objective"]
         item.key_message = values["key_message"]
+        item.supporting_source_ids = normalized_source_ids
+        item.planned_visual = values["planned_visual"]
         item.content_origin = content_origin
         item.is_validated = False
         presentation.blueprint.is_validated = False

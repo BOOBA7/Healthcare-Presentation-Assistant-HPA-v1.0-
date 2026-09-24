@@ -33,6 +33,16 @@ class SlideOutline(BaseModel):
         description="Main message the audience should remember.",
     )
 
+    supporting_source_ids: list[str] = Field(
+        default_factory=list,
+        description="Validated Project resource identifiers planned to support this slide.",
+    )
+
+    planned_visual: str = Field(
+        default="No visual planned",
+        description="Human-reviewable description of the visual planned for this slide.",
+    )
+
     is_validated: bool = Field(default=False)
 
     reviewer_comments: str | None = Field(default=None)

@@ -410,6 +410,7 @@ def test_user_blueprint_edit_is_traced_and_invalidates_dependent_workflow_steps(
     presentation.state.slides_validated = True
     presentation.state.presentation_validated = True
     presentation.state.workflow_status = WorkflowStatus.AWAITING_BLUEPRINT_APPROVAL
+    presentation.resources = [dated_resource(id="source-1", filename="source.pdf", is_validated=True)]
 
     EditBlueprintItemUseCase().execute(
         state,
@@ -417,12 +418,16 @@ def test_user_blueprint_edit_is_traced_and_invalidates_dependent_workflow_steps(
         title="User title",
         objective="User objective",
         key_message="User message",
+        supporting_source_ids=["source-1"],
+        planned_visual="A simple evidence pathway diagram",
         content_origin="user_authored",
     )
 
     item = presentation.blueprint.slides[0]
     assert item.content_origin == "user_authored"
     assert item.original_ai_snapshot["title"] == "AI title"
+    assert item.supporting_source_ids == ["source-1"]
+    assert item.planned_visual == "A simple evidence pathway diagram"
     assert not item.is_validated
     assert not presentation.agenda.is_validated
     assert presentation.agenda.items == ["User title"]

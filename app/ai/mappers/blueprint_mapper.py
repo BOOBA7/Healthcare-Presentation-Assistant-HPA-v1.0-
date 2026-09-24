@@ -13,10 +13,24 @@ class BlueprintMapper:
     def to_domain(
         self,
         schema: BlueprintSchema,
+        allowed_source_ids: set[str] | None = None,
     ) -> Blueprint:
         """
         Convert BlueprintSchema to Blueprint.
         """
+
+        allowed = allowed_source_ids or set()
+        unknown = {
+            source_id
+            for slide in schema.slides
+            for source_id in slide.supporting_source_ids
+            if source_id not in allowed
+        }
+        if unknown:
+            raise ValueError(
+                "Blueprint contains unknown supporting resource identifiers: "
+                + ", ".join(sorted(unknown))
+            )
 
         slides = [
             SlideOutline(
@@ -24,6 +38,8 @@ class BlueprintMapper:
                 title=PresentationDeidentification.text(slide.title),
                 objective=PresentationDeidentification.text(slide.objective),
                 key_message=PresentationDeidentification.text(slide.key_message),
+                supporting_source_ids=list(dict.fromkeys(slide.supporting_source_ids)),
+                planned_visual=PresentationDeidentification.text(slide.planned_visual),
             )
             for slide in schema.slides
         ]
