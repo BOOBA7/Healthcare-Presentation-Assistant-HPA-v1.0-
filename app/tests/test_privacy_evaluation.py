@@ -46,9 +46,6 @@ def test_identifier_findings_are_advisory_and_raw_values_are_not_logged(tmp_path
     from app.interfaces.storage.user_session_repository import UserSessionRepository
     from app.ai.workflows.graph_state import GraphState
     repository = UserSessionRepository(tmp_path / 'privacy.sqlite3')
-    with repository._connect() as connection:
-        before = '\n'.join(connection.iterdump())
-    files = set(tmp_path.rglob('*'))
     raw = 'alice@example.invalid'
     with fitz.open() as doc:
         page = doc.new_page()

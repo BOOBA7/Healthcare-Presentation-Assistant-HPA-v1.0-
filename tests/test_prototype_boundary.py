@@ -84,7 +84,6 @@ def test_forbidden_declaration_creates_no_project(workspace, declaration):
 def test_direct_chat_is_blocked_but_uploaded_resource_findings_are_advisory(workspace, text):
     client, repository = workspace
     assert declare(client).status_code == 200
-    before = repository.load("synthetic-owner", "demo")[1].model_dump()
     response = client.post("/chat", json={"user_id": "synthetic-owner", "project_id": "demo", "message": text})
     assert response.status_code == 409
     response = client.post("/resources/pdf/synthetic-owner/demo", files={"file": ("source.pdf", pdf(text), "application/pdf")})
