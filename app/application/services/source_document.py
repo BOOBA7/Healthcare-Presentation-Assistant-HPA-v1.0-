@@ -14,7 +14,8 @@ from app.domain.models.source_metadata import SourceLocation, SourceMetadata
 
 class SourceDocument:
     @staticmethod
-    def read(filename: str, content: bytes, resource_id: str) -> Resource:
+    def read(filename: str, content: bytes, resource_id: str, *, resource_declaration=None,
+             institutional_contacts_confirmed: bool = False) -> Resource:
         if not content or len(content) > SourceScreening.MAX_BYTES:
             raise SourceScreening.incomplete()
         suffix = filename.rsplit('.', 1)[-1].lower()
@@ -36,7 +37,10 @@ class SourceDocument:
                 if any(page.get_images() for page in document):
                     from app.application.services.raster_document import RasterDocument
                     return RasterDocument.read(filename, content, resource_id)
-                pages, metadata = SourceScreening.pdf(document)
+                pages, metadata, privacy = SourceScreening.pdf(
+                    document, source_name=filename, resource_declaration=resource_declaration,
+                    institutional_contacts_confirmed=institutional_contacts_confirmed,
+                )
                 xml = document.get_xml_metadata() or None
                 from app.application.services.source_assets import pdf_assets
                 assets = pdf_assets(content)
@@ -68,6 +72,15 @@ class SourceDocument:
                 pdf_metadata={key: str(value) for key, value in metadata.items() if value is not None},
                 xml_metadata=xml, scientific_date=scientific_date,
                 original_sha256=hashlib.sha256(content).hexdigest(), original_size=len(content),
+                extensions=(
+                    {"institutional_contacts_confirmed": "true"}
+                    if institutional_contacts_confirmed else {}
+                ),
+                privacy_decision=privacy.decision.value,
+                privacy_declaration=privacy.declaration.value if privacy.declaration else None,
+                privacy_finding_categories=privacy.report.finding_categories,
+                screening_policy_version=privacy.report.screening_policy_version,
+                privacy_policy_version=privacy.privacy_policy_version,
             ),
         )
         SourceScreening.resource(resource, require_text=True)
@@ -76,7 +89,15 @@ class SourceDocument:
 
     @classmethod
     def verify(cls, resource, content):
-        checked = cls.read(resource.filename, content, resource.id)
+        checked = cls.read(
+            resource.filename,
+            content,
+            resource.id,
+            institutional_contacts_confirmed=(
+                resource.metadata.extensions.get("institutional_contacts_confirmed") == "true"
+            ),
+            resource_declaration=resource.metadata.privacy_declaration,
+        )
         if resource.metadata.ocr_reviews:
             from app.application.services.ocr_review import apply_reviews, is_reviewed
             if not is_reviewed(resource):

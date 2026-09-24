@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from app.ai.workflows.graph_state import GraphState
 from app.application.services.prototype_policy import PrototypePolicy
 from app.application.services.source_screening import SourceScreening
+from app.application.services.source_document import SourceDocument
 from app.application.use_cases.extract_pdf_resource import ExtractPdfResourceUseCase
 from app.application.use_cases.create_presentation import CreatePresentationUseCase
 from app.domain.enums.resource_type import ResourceType
@@ -89,7 +90,35 @@ def test_memory_import_restart_and_audit_with_atomic_original_bytes(workspace, m
     assert source._original_content.startswith(b"%PDF")
 
 
-@pytest.mark.parametrize("kind", ["metadata", "xml", "annotation", "attachment", "blank_page", "drawing", "image", "invalid"])
+def test_empty_separator_page_is_ignored_but_an_entirely_blank_pdf_is_refused(workspace):
+    client, repository = workspace
+    response = upload(client, pdf("blank_page"))
+    assert response.status_code == 200, response.text
+    resource = repository.load("synthetic-owner", "demo")[1].resource_library[0]
+    assert resource.extracted_pages == [{
+        "page": 1, "text": "Synthetic teaching evidence.\nPublication date: 2024",
+    }]
+
+    with fitz.open() as document:
+        document.new_page()
+        entirely_blank = document.tobytes()
+    rejected = upload(client, entirely_blank)
+    assert rejected.status_code == 422
+    assert rejected.json()["detail"]["code"] == "SOURCE_SCREENING_INCOMPLETE"
+
+
+def test_explicit_french_month_validation_date_is_scientific_date_evidence():
+    with fitz.open() as document:
+        page = document.new_page()
+        page.insert_text((72, 40), "Date de validation par le collège : Janvier 2013")
+        page.insert_text((72, 72), "Public scientific guideline")
+        source = SourceDocument.read("guideline.pdf", document.tobytes(), "dated-guideline")
+    assert source.metadata.scientific_date.value == "2013-01"
+    assert source.metadata.scientific_date.precision == "month"
+    assert source.metadata.scientific_date.excerpt == "Date de validation par le collège : Janvier 2013"
+
+
+@pytest.mark.parametrize("kind", ["annotation", "attachment", "image", "invalid"])
 def test_api_refusal_changes_no_database_rows_or_files(workspace, kind):
     client, repository = workspace
     before = snapshot(repository)
@@ -98,6 +127,16 @@ def test_api_refusal_changes_no_database_rows_or_files(workspace, kind):
     assert response.status_code == 422, response.text
     assert snapshot(repository) == before
     assert set(repository.database_path.parent.rglob("*")) == files
+
+
+@pytest.mark.parametrize("kind", ["metadata", "xml"])
+def test_privacy_findings_in_metadata_are_advisory(workspace, kind):
+    client, repository = workspace
+    response = upload(client, pdf(kind))
+    assert response.status_code == 200
+    resource = repository.load("synthetic-owner", "demo")[1].resource_library[0]
+    assert resource.metadata.privacy_decision == "authorized"
+    assert resource.metadata.privacy_finding_categories
 
 
 def test_screening_exception_is_safe_and_leaves_no_write(workspace, monkeypatch):
@@ -160,7 +199,7 @@ def test_repository_screening_failure_is_closed(tmp_path, monkeypatch):
     def unavailable(*args):
         raise RuntimeError("Unavailable")
 
-    monkeypatch.setattr(PrototypePolicy, "screen", unavailable)
+    monkeypatch.setattr(PrototypePolicy, "screen_public_source", unavailable)
     with pytest.raises(WorkflowError, match="screening could not complete"):
         repository.save("owner", "demo", "thread", state)
     assert snapshot(repository) == before
@@ -215,16 +254,14 @@ def presentation(sources):
     return result
 
 
-def test_selection_payload_cannot_hide_behind_safe_library_copy(tmp_path):
+def test_selection_privacy_finding_is_advisory(tmp_path):
     repository = UserSessionRepository(tmp_path / "source.sqlite3")
     safe = resource()
     altered = safe.model_copy(deep=True)
     altered.extracted_pages[0]["text"] = "Confidential professional document"
     state = GraphState(resource_library=[safe], presentation=presentation([altered]))
-    before = snapshot(repository)
-    with pytest.raises(WorkflowError):
-        repository.save("owner", "demo", "thread", state)
-    assert snapshot(repository) == before
+    repository.save("owner", "demo", "thread", state)
+    assert repository.load("owner", "demo") is not None
 
 
 def test_embedded_legacy_snapshot_migrates_and_preserves_selection(tmp_path):

@@ -132,6 +132,14 @@ class SourceMetadata(BaseModel):
     locations: list[SourceLocation] = Field(default_factory=list)
     assets: list[SourceAsset] = Field(default_factory=list)
     extensions: dict[str, str] = Field(default_factory=dict)
+    privacy_decision: Literal["authorized", "local_only"] | None = None
+    privacy_declaration: Literal[
+        "public_no_identifiable_patient_data", "public_anonymized_case_material",
+        "may_contain_identifiable_patient_data", "unsure",
+    ] | None = None
+    privacy_finding_categories: list[str] = Field(default_factory=list)
+    screening_policy_version: str | None = None
+    privacy_policy_version: str | None = None
     original_sha256: str | None = None
     original_size: int | None = Field(default=None, ge=0)
     pdf_metadata: dict[str, str] = Field(default_factory=dict)

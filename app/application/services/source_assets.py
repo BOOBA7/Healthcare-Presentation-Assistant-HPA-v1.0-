@@ -185,7 +185,18 @@ def pdf_assets(content, *, raster=False):
                     from app.application.services.local_image_screening import LocalImageScreening
                     if page.rect.width * page.rect.height * 4 > LocalImageScreening.MAX_PIXELS:
                         raise failure()
-                    inspected = LocalImageScreening.inspect(page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False).tobytes('png'))
+                    try:
+                        inspected = LocalImageScreening.inspect(
+                            page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False).tobytes('png')
+                        )
+                    except WorkflowError as exc:
+                        if exc.code != 'SOURCE_SCREENING_INCOMPLETE':
+                            raise
+                        # Native-text ingestion is already screened separately.
+                        # If optional visual qualification is unavailable, omit
+                        # this derived table asset instead of admitting an
+                        # unreviewable graphic or rejecting the text resource.
+                        continue
                     if inspected.faces or not inspected.lines:
                         raise failure()
                     screen_raster_text('\n'.join(line.text for line in inspected.lines))

@@ -3,6 +3,7 @@ from app.application.services.presentation_context_policy import PresentationCon
 from app.domain.models.professional_scope_declaration import ProfessionalScopeDeclaration
 from app.domain.models.claim_evidence import EvidenceLink, MedicalClaim
 from functools import lru_cache
+import hashlib
 import logging
 from io import BytesIO
 from pathlib import Path
@@ -364,6 +365,11 @@ def _resource_response(resource) -> dict[str, object]:
         from app.application.services.source_assets import is_reviewed as assets_reviewed
         if date_blocker is None and resource.metadata.assets and not assets_reviewed(resource):
             date_blocker = {"code": "ASSET_CONFIRMATION_REQUIRED", "message": "Review extracted images and tables against their original."}
+        if date_blocker is None and resource._original_content is None:
+            date_blocker = {
+                "code": "SOURCE_ORIGINAL_REQUIRED",
+                "message": "The original file is unavailable. Remove this legacy source and import the original again.",
+            }
     except DomainError as exc:
         date_evidence = None
         date_blocker = {"code": exc.code, "message": exc.user_message}
@@ -387,6 +393,9 @@ def _resource_response(resource) -> dict[str, object]:
         "characters_extracted": len(resource.extracted_text or ""),
         "scientific_date": date_evidence,
         "source_blocker": date_blocker,
+        "privacy_decision": resource.metadata.privacy_decision,
+        "privacy_declaration": resource.metadata.privacy_declaration,
+        "privacy_findings": resource.metadata.privacy_finding_categories,
         "original_available": resource._original_content is not None,
         "original_sha256": resource.metadata.original_sha256,
         "media_type": resource.metadata.media_type,
@@ -581,7 +590,11 @@ def setup_presentation(
     """Create a presentation from explicit human input, without an LLM decision."""
     _assert_owner(user_id, authenticated_user)
     _require_prototype_input(request)
-    thread_id, state = _get_project(user_id, project_id, require_context=False)
+    stored = get_repository().load(user_id, project_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    thread_id, state = stored
+    _require_prototype(state)
     existing = state.presentation
     if existing is not None:
         # This slice completes legacy context only; substantive editing/invalidation is deferred.
@@ -792,8 +805,20 @@ async def upload_pdf_resource(user_id: str, project_id: str, request: Request, a
     if stored is None:
         raise HTTPException(status_code=404, detail="Project not found.")
     thread_id, state = stored
-    _require_prototype(state)
-    original_filename, media_type, content = await read_pdf_upload(request)
+    try:
+        PrototypePolicy.state(state)
+    except DomainError as exc:
+        if exc.code in {"INSTITUTIONAL_CONTACT_REVIEW_REQUIRED", "RESOURCE_USER_CONTEXT_REQUIRED"}:
+            raise HTTPException(status_code=409, detail={
+                "code": "LEGACY_SOURCE_REIMPORT_REQUIRED",
+                "message": "Remove the legacy source whose original is unavailable, then import the original file again to review its institutional contact details.",
+                "retryable": False,
+            }) from None
+        raise _workflow_conflict(exc) from None
+    original_filename, media_type, content, upload_fields = await read_pdf_upload(request)
+    resource_declaration = upload_fields.get("resource_declaration")
+    # Transitional compatibility only; new clients send a typed multipart declaration.
+    institutional_contacts_confirmed = request.headers.get("x-institutional-contacts-confirmed", "").lower() == "true"
     filename = Path(original_filename).name
     # The shared reader checks the package and filename independently of MIME.
     if (media_type not in {"application/pdf", "application/x-pdf", "image/png", "image/jpeg", "application/vnd.openxmlformats-officedocument.presentationml.presentation"}
@@ -808,14 +833,42 @@ async def upload_pdf_resource(user_id: str, project_id: str, request: Request, a
             content,
             patient_case_mode=state.patient_case_mode,
             prototype_declaration=state.prototype_declaration,
+            resource_declaration=resource_declaration,
+            institutional_contacts_confirmed=institutional_contacts_confirmed,
         )
         extensions = {"pdf": (".pdf",), "png": (".png",), "jpeg": (".jpg", ".jpeg"), "pptx": (".pptx",)}
         if not filename.lower().endswith(extensions[resource.file_type.value]):
             raise WorkflowError("SOURCE_FORMAT_MISMATCH", "The filename does not match the detected source format.")
         ensure_resource_library(state)
+        existing = next((item for item in state.resource_library
+                         if item.metadata.original_sha256 == resource.metadata.original_sha256), None)
+        if existing is not None:
+            return {"resource_id": existing.id, "filename": existing.filename,
+                    "screening_decision": existing.metadata.privacy_decision or "authorized",
+                    "characters_extracted": len(existing.extracted_text or "")}
         AddProjectResourceUseCase().execute(state, resource)
     except DomainError as exc:
-        raise HTTPException(status_code=422, detail={"code": exc.code, "message": exc.user_message}) from None
+        logger.warning(
+            "resource_upload_rejected code=%s retryable=%s",
+            exc.code,
+            exc.retryable,
+        )
+        if exc.code == "RESOURCE_USER_CONTEXT_REQUIRED":
+            get_repository().record_event(
+                user_id, project_id, "RESOURCE_USER_CONTEXT_REQUESTED", authenticated_user,
+                {"original_sha256": hashlib.sha256(content).hexdigest(),
+                 "decision": "needs_user_context", "finding_categories": ["contextual_identifier"],
+                 "screening_policy": SourceScreening.VERSION},
+            )
+            raise HTTPException(status_code=409, detail={
+                "code": exc.code, "decision": "needs_user_context", "message": exc.user_message,
+                "allowed_declarations": [
+                    "public_no_identifiable_patient_data", "public_anonymized_case_material",
+                    "may_contain_identifiable_patient_data", "unsure",
+                ],
+            }) from None
+        status = 409 if exc.code == "RESOURCE_DECLARATION_CONFLICT" else 422
+        raise HTTPException(status_code=status, detail={"code": exc.code, "message": exc.user_message}) from None
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     state.execution = ExecutionContext()
@@ -828,10 +881,17 @@ async def upload_pdf_resource(user_id: str, project_id: str, request: Request, a
         actor="user",
         extra_audit={"resource_id": resource.id, "filename": resource.filename, "pages": len(resource.extracted_pages), "screening_policy": SourceScreening.VERSION,
                      "original_sha256": resource.metadata.original_sha256, "date_policy": SourceDatePolicy.VERSION,
+                     "institutional_contacts_confirmed": institutional_contacts_confirmed,
+                     "privacy_declaration": resource.metadata.privacy_declaration,
+                     "privacy_decision": resource.metadata.privacy_decision,
+                     "privacy_findings": resource.metadata.privacy_finding_categories,
+                     "privacy_policy": resource.metadata.privacy_policy_version,
                      "scientific_date": resource.metadata.scientific_date.value, "date_origin": resource.metadata.scientific_date.origin,
                      "ocr_engine": resource.metadata.ocr_engine, "ocr_pending": bool(resource.metadata.ocr_engine)},
     )
-    return {"resource_id": resource.id, "filename": resource.filename, "characters_extracted": len(resource.extracted_text or "")}
+    return {"resource_id": resource.id, "filename": resource.filename,
+            "screening_decision": resource.metadata.privacy_decision or "authorized",
+            "characters_extracted": len(resource.extracted_text or "")}
 
 
 @app.get("/users/{user_id}/resources")
@@ -1187,7 +1247,11 @@ def delete_resource(
 ):
     """Remove a PDF and safely reset content that could depend on it."""
     _assert_owner(user_id, authenticated_user)
-    thread_id, state = _get_project(user_id, project_id, require_context=False)
+    stored = get_repository().load(user_id, project_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    thread_id, state = stored
+    _require_prototype_input({"prototype_declaration": state.prototype_declaration})
     try:
         ensure_resource_library(state)
         RemoveProjectResourceUseCase().execute(state, resource_id)

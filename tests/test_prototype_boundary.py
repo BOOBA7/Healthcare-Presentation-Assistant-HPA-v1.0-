@@ -76,16 +76,22 @@ def test_forbidden_declaration_creates_no_project(workspace, declaration):
     assert repository.load("synthetic-owner", "demo") is None
 
 
-@pytest.mark.parametrize("text", ["Patient case: synthetic narrative.", "Cas clinique : exemple.", "Confidential professional document."])
-def test_direct_chat_and_pdf_refused_before_storage(workspace, text):
+@pytest.mark.parametrize("text", [
+    "Patient case: synthetic narrative.",
+    "Cas clinique : exemple.",
+    "Confidential professional document.",
+])
+def test_direct_chat_is_blocked_but_uploaded_resource_findings_are_advisory(workspace, text):
     client, repository = workspace
     assert declare(client).status_code == 200
     before = repository.load("synthetic-owner", "demo")[1].model_dump()
     response = client.post("/chat", json={"user_id": "synthetic-owner", "project_id": "demo", "message": text})
     assert response.status_code == 409
     response = client.post("/resources/pdf/synthetic-owner/demo", files={"file": ("source.pdf", pdf(text), "application/pdf")})
-    assert response.status_code == 422
-    assert repository.load("synthetic-owner", "demo")[1].model_dump() == before
+    assert response.status_code == 200
+    resource = repository.load("synthetic-owner", "demo")[1].resource_library[0]
+    assert resource.metadata.privacy_decision == "authorized"
+    assert resource.metadata.privacy_finding_categories
 
 
 @pytest.mark.parametrize("acknowledged", [False, True])

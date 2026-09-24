@@ -151,6 +151,109 @@ def test_authenticated_project_resource_lifecycle_is_durable_and_hides_pdf_text(
     assert {event["event_type"] for event in events} >= {"PROJECT_CREATED", "RESOURCE_UPLOADED", "RESOURCE_REMOVED_FROM_PROJECT"}
 
 
+def test_public_source_attestation_is_audited_and_retry_is_deduplicated(tmp_path, monkeypatch):
+    repository = UserSessionRepository(tmp_path / "hpa.sqlite3")
+    monkeypatch.setattr(api, "get_repository", lambda: repository)
+    client = TestClient(app)
+    token = client.post(
+        "/auth/register", json={"user_id": "publisher-review", "password": "safe-local-password"}
+    ).json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    assert client.post(
+        "/projects", headers=headers,
+        json={"prototype_declaration": "public", "external_processing_acknowledged": True,
+              "user_id": "publisher-review", "project_id": "public-source"},
+    ).status_code == 200
+
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_text((72, 40), "Publication date: 2024")
+    page.insert_text((72, 72), "Public health authority\nTelephone: +33 1 55 93 70 00")
+    content = document.tobytes()
+    document.close()
+    files = {"file": ("public-guideline.pdf", content, "application/pdf")}
+
+    review = client.post("/resources/publisher-review/public-source", headers=headers, files=files)
+    assert review.status_code == 200
+
+    confirmed = client.post(
+        "/resources/publisher-review/public-source",
+        headers=headers,
+        data={"resource_declaration": "public_no_identifiable_patient_data"},
+        files=files,
+    )
+    assert confirmed.status_code == 200
+    assert confirmed.json()["resource_id"] == review.json()["resource_id"]
+    resource = repository.load("publisher-review", "public-source")[1].resource_library[0]
+    assert resource.metadata.privacy_declaration is None
+    assert resource.metadata.privacy_decision == "authorized"
+    assert resource.metadata.privacy_finding_categories == ["public_contact"]
+
+    patient_document = fitz.open()
+    patient_page = patient_document.new_page()
+    patient_page.insert_text((72, 40), "Publication date: 2024")
+    patient_page.insert_text((72, 72), "Record number: PATIENT-12345")
+    patient_content = patient_document.tobytes()
+    patient_document.close()
+    attested_patient = client.post(
+        "/resources/publisher-review/public-source",
+        headers=headers,
+        data={"resource_declaration": "public_no_identifiable_patient_data"},
+        files={"file": ("patient.pdf", patient_content, "application/pdf")},
+    )
+    assert attested_patient.status_code == 200
+    patient_resource = next(item for item in repository.load("publisher-review", "public-source")[1].resource_library
+                            if item.id == attested_patient.json()["resource_id"])
+    assert patient_resource.metadata.privacy_decision == "authorized"
+    assert "possible_patient_identifier" in patient_resource.metadata.privacy_finding_categories
+
+    retried = client.post(
+        "/resources/publisher-review/public-source", headers=headers,
+        data={"resource_declaration": "public_no_identifiable_patient_data"},
+        files=files,
+    )
+    assert retried.status_code == 200
+    assert retried.json()["resource_id"] == confirmed.json()["resource_id"]
+    assert len(repository.load("publisher-review", "public-source")[1].resource_library) == 2
+
+
+def test_patient_related_findings_are_advisory_and_resource_is_chunked(tmp_path, monkeypatch):
+    repository = UserSessionRepository(tmp_path / "hpa.sqlite3")
+    monkeypatch.setattr(api, "get_repository", lambda: repository)
+    client = TestClient(app)
+    token = client.post(
+        "/auth/register", json={"user_id": "local-only", "password": "safe-local-password"}
+    ).json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    assert client.post("/projects", headers=headers, json={
+        "prototype_declaration": "public", "external_processing_acknowledged": True,
+        "user_id": "local-only", "project_id": "patient-source",
+    }).status_code == 200
+    with fitz.open() as document:
+        page = document.new_page()
+        page.insert_text((72, 40), "Publication date: 2024")
+        page.insert_text((72, 72), "Patient case: anonymised teaching narrative.")
+        content = document.tobytes()
+
+    initial = client.post(
+        "/resources/local-only/patient-source", headers=headers,
+        files={"file": ("case.pdf", content, "application/pdf")},
+    )
+    assert initial.status_code == 200
+
+    imported = client.post(
+        "/resources/local-only/patient-source", headers=headers,
+        data={"resource_declaration": "public_anonymized_case_material"},
+        files={"file": ("case.pdf", content, "application/pdf")},
+    )
+    assert imported.status_code == 200
+    assert imported.json()["screening_decision"] == "authorized"
+    resource = repository.load("local-only", "patient-source")[1].resource_library[0]
+    assert resource.metadata.privacy_decision == "authorized"
+    assert "patient_context" in resource.metadata.privacy_finding_categories
+    assert repository.load_resource_chunks("local-only", "patient-source")
+
+
 def test_resource_discussion_has_its_own_history_and_does_not_pollute_presentation_chat(tmp_path, monkeypatch):
     repository = UserSessionRepository(tmp_path / "hpa.sqlite3")
     monkeypatch.setattr(api, "get_repository", lambda: repository)

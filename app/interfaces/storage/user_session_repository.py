@@ -1053,13 +1053,14 @@ class UserSessionRepository(SourceLifecycleRepository):
                    (user_id, project_id, resource_id, page_number, page_text) VALUES (?, ?, ?, ?, ?)""",
                 [(user_id, project_id, resource.id, int(page["page"]), str(page["text"])) for page in pages],
             )
+            chunks = self._chunks_for_pages(pages)
             connection.executemany(
                 """INSERT INTO project_resource_chunks
                    (user_id, project_id, resource_id, page_number, chunk_position, chunk_text)
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 [
                     (user_id, project_id, resource.id, page, position, text)
-                    for page, position, text in self._chunks_for_pages(pages)
+                    for page, position, text in chunks
                 ],
             )
 

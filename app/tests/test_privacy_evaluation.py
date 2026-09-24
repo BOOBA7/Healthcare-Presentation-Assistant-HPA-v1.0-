@@ -40,7 +40,7 @@ def test_evaluation_counts_misses_without_claiming_ocr():
 
 
 @pytest.mark.parametrize('surface', ['text', 'metadata', 'xml', 'filename'])
-def test_refused_identifiers_leave_no_raw_storage_or_logs(tmp_path, caplog, surface):
+def test_identifier_findings_are_advisory_and_raw_values_are_not_logged(tmp_path, caplog, surface):
     import fitz
     from app.application.services.source_document import SourceDocument
     from app.interfaces.storage.user_session_repository import UserSessionRepository
@@ -58,13 +58,11 @@ def test_refused_identifiers_leave_no_raw_storage_or_logs(tmp_path, caplog, surf
         if surface == 'xml':
             doc.set_xml_metadata('<metadata>' + raw + '</metadata>')
         content = doc.tobytes()
-    with pytest.raises(WorkflowError) as error:
-        resource = SourceDocument.read(raw if surface == 'filename' else 'synthetic.pdf', content, 'synthetic')
-        repository.save('owner', 'demo', 'thread', GraphState(resource_library=[resource]))
-    assert raw not in str(error.value) and raw not in caplog.text
-    with repository._connect() as connection:
-        assert '\n'.join(connection.iterdump()) == before
-    assert set(tmp_path.rglob('*')) == files
+    resource = SourceDocument.read((raw + '.pdf') if surface == 'filename' else 'synthetic.pdf', content, 'synthetic')
+    repository.save('owner', 'demo', 'thread', GraphState(resource_library=[resource]))
+    assert resource.metadata.privacy_decision == 'authorized'
+    assert resource.metadata.privacy_finding_categories
+    assert raw not in caplog.text
 
 
 @pytest.mark.parametrize('failure', [RuntimeError, TimeoutError, InterruptedError])
@@ -106,3 +104,51 @@ def test_new_identifier_direct_repository_bypass(tmp_path, entry):
                 repository._remember_source(connection, 'owner', resource)
         assert connection.total_changes == 0
         assert '\n'.join(connection.iterdump()) == before
+
+
+def test_resource_privacy_policy_keeps_automation_and_declaration_separate():
+    from app.application.services.resource_privacy_policy import (
+        ResourceDeclaration, ResourcePrivacyDecision, ResourcePrivacyPolicy,
+    )
+
+    institutional = ResourcePrivacyPolicy.analyze(
+        "Haute Autorité de santé\n10 avenue Example\nTelephone: +33 1 55 93 70 00\nFax: +33 1 55 93 70 01"
+    )
+    assert institutional.finding_categories == ["public_contact"]
+    assert ResourcePrivacyPolicy.decide(institutional, None).decision == ResourcePrivacyDecision.AUTHORIZED
+    assert ResourcePrivacyPolicy.decide(
+        institutional, ResourceDeclaration.PUBLIC_NO_IDENTIFIABLE_PATIENT_DATA
+    ).decision == ResourcePrivacyDecision.AUTHORIZED
+
+    patient = ResourcePrivacyPolicy.analyze(
+        "Name: Alice Example\nDate of birth: 1990-01-02\nClinical diagnosis: pneumonia"
+    )
+    attested = ResourcePrivacyPolicy.decide(
+        patient, ResourceDeclaration.PUBLIC_NO_IDENTIFIABLE_PATIENT_DATA
+    )
+    assert attested.decision == ResourcePrivacyDecision.AUTHORIZED
+    assert attested.reason_code == "RESOURCE_AUTHORIZED_WITH_ADVISORY_FINDINGS"
+    assert "possible_patient_identifier" in attested.report.finding_categories
+
+
+@pytest.mark.parametrize("declaration", [
+    "public_anonymized_case_material", "may_contain_identifiable_patient_data", "unsure",
+])
+def test_patient_or_uncertain_declarations_are_advisory(declaration):
+    from app.application.services.resource_privacy_policy import (
+        ResourceDeclaration, ResourcePrivacyDecision, ResourcePrivacyPolicy,
+    )
+    result = ResourcePrivacyPolicy.decide(
+        ResourcePrivacyPolicy.analyze("Public medical publication"), ResourceDeclaration(declaration)
+    )
+    assert result.decision == ResourcePrivacyDecision.AUTHORIZED
+
+
+@pytest.mark.parametrize("text", [
+    "Author: Alice Example. Journal of Medicine. DOI 10.1000/example",
+    "Bibliographic reference — Name: Alice Example — Journal 2024",
+])
+def test_author_and_bibliographic_names_are_not_automatically_patient_identity(text):
+    from app.application.services.resource_privacy_policy import ResourcePrivacyPolicy
+    report = ResourcePrivacyPolicy.analyze(text)
+    assert "possible_patient_identifier" not in report.finding_categories

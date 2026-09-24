@@ -77,7 +77,10 @@ def create_or_open_project(
             if not request.external_processing_acknowledged:
                 PrototypePolicy.declaration(None)
             if stored is not None:
-                PrototypePolicy.screen(stored[1])
+                # Existing public publications may contain institutional contact
+                # details. Declaration screens authored project content; source
+                # contacts are reviewed independently at import/use time.
+                PrototypePolicy.screen_state_content(stored[1], require_source_reviews=False)
         except ValueError as exc:
             raise api._workflow_conflict(exc) from exc
     if stored is None:

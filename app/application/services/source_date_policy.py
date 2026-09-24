@@ -9,11 +9,20 @@ from app.domain.models.source_metadata import SourceDateEvidence
 
 
 class SourceDatePolicy:
-    VERSION = "explicit-scientific-date-v1"
+    VERSION = "explicit-scientific-date-v2"
+    _months = {
+        "janvier": 1, "février": 2, "fevrier": 2, "mars": 3, "avril": 4,
+        "mai": 5, "juin": 6, "juillet": 7, "août": 8, "aout": 8,
+        "septembre": 9, "octobre": 10, "novembre": 11, "décembre": 12,
+        "decembre": 12,
+    }
     _line = re.compile(
         r"^(?P<label>publication date|published(?: online)?|date de publication|publié(?:e)?|"
-        r"last updated|last update|updated|mis(?:e)? à jour)(?:\s*:\s*|\s+(?:on|in|le|en)\s+)"
-        r"(?P<date>\d{4}(?:-\d{2}(?:-\d{2})?)?)\.?$", re.IGNORECASE,
+        r"date de validation(?: par le collège)?|last updated|last update|updated|mis(?:e)? à jour)"
+        r"(?:\s*:\s*|\s+(?:on|in|le|en)\s+)"
+        r"(?P<date>\d{4}(?:-\d{2}(?:-\d{2})?)?|"
+        r"(?:janvier|f[eé]vrier|mars|avril|mai|juin|juillet|ao[uû]t|septembre|octobre|novembre|d[eé]cembre)\s+\d{4})\.?$",
+        re.IGNORECASE,
     )
     _namespaces = (
         "http://prismstandard.org/namespaces/basic/2.0/",
@@ -36,6 +45,16 @@ class SourceDatePolicy:
         if earliest > date.today():
             raise SourceDatePolicy.missing()
         return ("year", "month", "day")[len(parts) - 1]
+
+    @classmethod
+    def _normalized_value(cls, value):
+        named = re.fullmatch(r"([a-zà-ÿ]+)\s+(\d{4})", value, re.IGNORECASE)
+        if not named:
+            return value
+        month = cls._months.get(named.group(1).casefold())
+        if month is None:
+            raise cls.missing()
+        return f"{named.group(2)}-{month:02d}"
 
     @staticmethod
     def xml_root(xml):
@@ -61,7 +80,8 @@ class SourceDatePolicy:
                     break
                 match = cls._line.fullmatch(line)
                 if match:
-                    label, value = match.group("label", "date")
+                    label, raw_value = match.group("label", "date")
+                    value = cls._normalized_value(raw_value)
                     candidates.append(SourceDateEvidence(
                         value=value, precision=cls._value(value),
                         kind="update" if any(word in label.lower() for word in ("updat", "jour")) else "publication",
@@ -88,6 +108,8 @@ class SourceDatePolicy:
 
     @classmethod
     def require(cls, resource, *, allow_unconfirmed=False):
+        from app.application.services.resource_privacy_policy import ResourcePrivacyPolicy
+        ResourcePrivacyPolicy.require_generation_ready(resource)
         if resource._original_content is not None:
             from app.application.services.source_document import SourceDocument
             SourceDocument.verify(resource, resource._original_content)
