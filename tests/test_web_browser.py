@@ -43,12 +43,27 @@ expect = playwright_sync_api.expect
 sync_playwright = playwright_sync_api.sync_playwright
 
 
-class DeterministicBrowserBlueprint:
-    """No-network model substitute for one blueprint generation job."""
+class DeterministicBrowserAgenda:
+    """No-network model substitute for one Agenda generation job."""
 
     def execute(self, state: GraphState) -> GraphState:
         presentation = state.presentation
         assert presentation is not None
+        presentation.agenda = Agenda(items=["Evidence overview", "Clinical application"])
+        presentation.state.current_step = WorkflowStep.BLUEPRINT_VALIDATION
+        presentation.state.workflow_status = WorkflowStatus.AWAITING_AGENDA_APPROVAL
+        state.execution = ExecutionContext(last_tool="build_agenda")
+        state.messages.append(AIMessage(content="Deterministic Agenda ready for review."))
+        return state
+
+
+class DeterministicBrowserBlueprint:
+    """No-network model substitute for one Blueprint generation job."""
+
+    def execute(self, state: GraphState) -> GraphState:
+        presentation = state.presentation
+        assert presentation is not None
+        assert presentation.agenda is not None and presentation.agenda.is_validated
         presentation.blueprint = Blueprint(
             title=presentation.title,
             learning_objective=presentation.context.objective,
@@ -70,9 +85,8 @@ class DeterministicBrowserBlueprint:
                 ),
             ],
         )
-        presentation.agenda = Agenda(items=["Evidence overview", "Clinical application"])
         presentation.state.current_step = WorkflowStep.BLUEPRINT_VALIDATION
-        presentation.state.workflow_status = WorkflowStatus.AWAITING_AGENDA_APPROVAL
+        presentation.state.workflow_status = WorkflowStatus.AWAITING_BLUEPRINT_APPROVAL
         state.execution = ExecutionContext(last_tool="build_blueprint")
         state.messages.append(AIMessage(content="Deterministic blueprint ready for review."))
         return state
@@ -146,6 +160,7 @@ def test_hcp_can_upload_validate_analyze_and_generate_blueprint_in_browser(tmp_p
     repository = UserSessionRepository(tmp_path / "browser.sqlite3")
     monkeypatch.setattr(api, "get_repository", lambda: repository)
     monkeypatch.setattr(api, "SummarizeResourcesUseCase", DeterministicBrowserOverview)
+    monkeypatch.setattr(job_routes, "BuildAgendaWorkflowUseCase", DeterministicBrowserAgenda)
     monkeypatch.setattr(job_routes, "BuildBlueprintWorkflowUseCase", DeterministicBrowserBlueprint)
 
     pdf_path = tmp_path / "evidence.pdf"
@@ -208,15 +223,19 @@ def test_hcp_can_upload_validate_analyze_and_generate_blueprint_in_browser(tmp_p
             # assessment before Agenda creation.
             expect(page.locator("#resource-workflow-action [data-action='assess-coverage']")).to_be_visible()
             page.locator("#resource-workflow-action [data-action='assess-coverage']").click()
-            expect(page.locator("#resource-workflow-action [data-action='resource-generate-blueprint']")).to_be_visible()
+            expect(page.locator("#resource-workflow-action [data-action='resource-generate-agenda']")).to_be_visible()
 
             page.locator("#analyze-resources").click()
             page.locator(".workspace-tab[data-workspace='analysis']").click()
             expect(page.locator("#resource-analysis-area")).to_contain_text("evidence.pdf")
 
             page.locator(".workspace-tab[data-workspace='resources']").click()
-            page.locator("#resource-workflow-action [data-action='resource-generate-blueprint']").click()
+            page.locator("#resource-workflow-action [data-action='resource-generate-agenda']").click()
             expect(page.locator("#agenda-area")).to_contain_text("Evidence overview")
+            page.locator("#agenda-area [data-action='agenda-approve']").click()
+            page.locator(".workspace-tab[data-workspace='resources']").click()
+            expect(page.locator("#resource-workflow-action [data-action='resource-generate-blueprint']")).to_be_visible()
+            page.locator("#resource-workflow-action [data-action='resource-generate-blueprint']").click()
             expect(page.locator("#review-area")).to_contain_text("Clinical application")
         browser.close()
 
