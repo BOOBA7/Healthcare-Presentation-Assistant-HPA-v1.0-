@@ -169,7 +169,7 @@ class BlueprintItemEditRequest(BaseModel):
     title: str = Field(min_length=1, max_length=500)
     objective: str = Field(min_length=1, max_length=4_000)
     key_message: str = Field(min_length=1, max_length=4_000)
-    supporting_source_ids: list[str] = Field(min_length=1, max_length=100)
+    supporting_source_ids: list[str] = Field(default_factory=list, max_length=100)
     planned_visual: str = Field(min_length=1, max_length=4_000)
     content_origin: str = Field(pattern=r"^(user_edited|user_authored)$")
 

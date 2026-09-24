@@ -10,6 +10,7 @@ from app.domain.exceptions.workflow_error import WorkflowError
 from app.domain.models.resource import Resource
 from app.domain.models.resource_chunk import ResourceChunk
 from app.application.services.evidence_coverage import EvidenceCoverageService
+from app.application.services.blueprint_structure import BlueprintStructurePolicy
 
 
 class BuildBlueprintUseCase:
@@ -50,6 +51,7 @@ class BuildBlueprintUseCase:
         EvidenceCoverageService().require_current(presentation, resources or presentation.resources, chunks or [])
         if presentation.agenda is None or not presentation.agenda.is_validated:
             raise WorkflowError("AGENDA_NOT_APPROVED", "Generate, review and approve the Agenda before generating the Blueprint.")
+        BlueprintStructurePolicy.require_viable_target(presentation)
         evidence_error = ProductionEvidenceGate.generation_error(
             presentation,
             EvidenceContextBuilder.presentation_query(presentation),
@@ -70,6 +72,7 @@ class BuildBlueprintUseCase:
             blueprint_schema,
             {resource.id for resource in (resources or presentation.resources) if resource.is_validated},
         )
+        BlueprintStructurePolicy.require_valid(presentation)
         presentation.state.current_step = WorkflowStep.BLUEPRINT_VALIDATION
         presentation.state.workflow_status = WorkflowStatus.AWAITING_BLUEPRINT_APPROVAL
         append_generation_record(presentation, generation_stage)

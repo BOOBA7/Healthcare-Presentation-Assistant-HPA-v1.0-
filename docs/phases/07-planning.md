@@ -1,6 +1,6 @@
 # Phase 07 — Agenda and Blueprint approval
 
-Status: Planned. Implementation and product-owner gate approval: pending.
+Status: Completed. Product-owner gate approved 2026-09-24.
 
 ## Outcome and scope
 
@@ -41,23 +41,25 @@ Present a reviewable diff and evidence against every criterion. Record product-o
 
 ## Session handoff
 
-- Current slice: **07.2 implemented; review/approval pending.** 07.1 was
-  explicitly approved on 2026-09-24. No commit created; 07.3 was not started.
-- Delivered: every generated Blueprint item now carries its slide number,
-  title, objective, key message, validated supporting-resource IDs, planned
-  visual, content origin and validation state. Unknown generated or edited
-  resource IDs are refused. `/app` displays and edits the complete item; edits
-  retain the original AI snapshot and existing downstream invalidation.
-- Main files: Blueprint domain/schema/mapper/prompt/build use case, Blueprint
-  edit API/use case, `/app`, and focused Blueprint tests.
-- Checks: focused Blueprint/workflow/prompt/Agenda/API/end-to-end/resource
-  regressions — **58 passed, 6 warnings**. Ruff on changed
-  Python, Python compilation and `git diff --check` passed. `node` is absent,
-  so JavaScript syntax and browser/screenshots were not run; no live provider
-  call was made.
-- Working tree: started clean on `main` synchronized with `origin/main`; only
-  the uncommitted 07.2 files listed above and this handoff are changed.
-- Next exact slice: after explicit 07.2 approval, 07.3 may require item review,
-  downstream invalidation and structural-slide counting. Do not start it
-  automatically.
-- Product-owner phase gate approval: pending; record only an explicit decision.
+- Current slice: **07.3 implemented and approved.** 07.1, 07.2 and the complete
+  phase-07 gate were explicitly approved on 2026-09-24.
+- Delivered: versioned Blueprints explicitly represent title, Agenda, main
+  content, conclusion, references and thank-you roles. Server policy requires
+  their normal order, consecutive numbering, exact complete-deck target count,
+  sources on content/conclusion, a conclusion message already reviewed in main
+  content, and human review of every structural item before approval. Existing
+  item edits continue to invalidate Agenda, Blueprint, slides and final state;
+  `/app` exposes each role during review.
+- Main files: Blueprint item/domain/schema/mapper/prompt, deterministic
+  structure policy, build/approval/edit boundaries, API and `/app`, with
+  focused Blueprint tests.
+- Checks: focused Blueprint/Agenda/workflow/end-to-end regressions — **33
+  passed, 6 warnings**; prompt/Blueprint checks — **22 passed, 5 warnings**.
+  Ruff on changed Python, Python compilation and `git diff --check` passed.
+  `node` is absent, so JavaScript syntax and browser screenshots were not run;
+  no live provider call was made.
+- Working tree: started clean; only the uncommitted 07.3 implementation, tests
+  and this handoff are changed.
+- Next exact step: 08.1 may start only when explicitly authorised. Do not start
+  it automatically.
+- Product-owner phase gate approval: **approved explicitly on 2026-09-24.**

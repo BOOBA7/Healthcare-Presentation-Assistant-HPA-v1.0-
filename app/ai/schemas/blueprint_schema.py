@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -10,6 +12,11 @@ class SlideOutline(BaseModel):
     slide_number: int = Field(
         ...,
         description="Slide order in the presentation.",
+    )
+
+    slide_role: Literal["title", "agenda", "content", "conclusion", "references", "thank_you"] = Field(
+        ...,
+        description="Structural role of the slide in the complete deck.",
     )
 
     title: str = Field(
@@ -28,9 +35,8 @@ class SlideOutline(BaseModel):
     )
 
     supporting_source_ids: list[str] = Field(
-        ...,
-        min_length=1,
-        description="Identifiers of validated Project resources planned to support the slide.",
+        default_factory=list,
+        description="Validated Project resource IDs; may be empty only for non-assertive structural slides.",
     )
 
     planned_visual: str = Field(

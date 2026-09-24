@@ -35,6 +35,7 @@ class BlueprintMapper:
         slides = [
             SlideOutline(
                 slide_number=slide.slide_number,
+                slide_role=slide.slide_role,
                 title=PresentationDeidentification.text(slide.title),
                 objective=PresentationDeidentification.text(slide.objective),
                 key_message=PresentationDeidentification.text(slide.key_message),
@@ -50,4 +51,5 @@ class BlueprintMapper:
             target_number_of_slides=len(schema.slides),
             storytelling=PresentationDeidentification.text(schema.storytelling),
             slides=slides,
+            structure_version=1,
         )

@@ -24,6 +24,7 @@ from app.application.services.generation_metadata import append_generation_recor
 from app.domain.models.professional_scope_declaration import ProfessionalScopeDeclaration
 from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuilder
 from app.domain.models.slide import Slide
+from app.application.services.blueprint_structure import BlueprintStructurePolicy
 
 
 class CollectPresentationContextUseCase:
@@ -190,6 +191,7 @@ class ValidateBlueprintWorkflowUseCase:
             raise WorkflowError("BLUEPRINT_NOT_APPROVED", "Blueprint was not approved by the human reviewer.")
         if state.presentation.agenda is None or not state.presentation.agenda.is_validated:
             raise WorkflowError("AGENDA_NOT_APPROVED", "Review and approve the proposed agenda before approving the blueprint.")
+        BlueprintStructurePolicy.require_valid(state.presentation)
         if not all(outline.is_validated for outline in state.presentation.blueprint.slides):
             raise WorkflowError("BLUEPRINT_ITEMS_PENDING", "Approve every blueprint item before approving the complete blueprint.")
         state.presentation.blueprint.is_validated = True
@@ -317,6 +319,8 @@ class EditBlueprintItemUseCase:
         )
         if not 0 <= index < len(state.presentation.blueprint.slides):
             raise ValueError("Blueprint item index is invalid.")
+        presentation = state.presentation
+        item = presentation.blueprint.slides[index]
         values = {
             "title": title.strip(),
             "objective": objective.strip(),
@@ -327,15 +331,13 @@ class EditBlueprintItemUseCase:
             raise ValueError("Title, objective, key message and planned visual are required.")
         normalized_source_ids = list(dict.fromkeys(source_id.strip() for source_id in supporting_source_ids if source_id.strip()))
         available_source_ids = {resource.id for resource in state.presentation.resources if resource.is_validated}
-        if not normalized_source_ids:
+        if item.slide_role in {"content", "conclusion"} and not normalized_source_ids:
             raise ValueError("At least one planned supporting source is required.")
         if not set(normalized_source_ids) <= available_source_ids:
             raise ValueError("Every planned supporting source must be a validated Project resource.")
         if content_origin not in self._origins:
             raise ValueError("Choose whether the item was edited from AI content or written by the user.")
 
-        presentation = state.presentation
-        item = presentation.blueprint.slides[index]
         previous_title = item.title
         if item.original_ai_snapshot is None:
             item.original_ai_snapshot = {

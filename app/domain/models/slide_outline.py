@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 
 ContentOrigin = Literal["ai_generated", "user_edited", "user_authored"]
+SlideRole = Literal["title", "agenda", "content", "conclusion", "references", "thank_you"]
 
 
 class SlideOutline(BaseModel):
@@ -16,6 +17,11 @@ class SlideOutline(BaseModel):
         ...,
         ge=1,
         description="Slide order in the presentation.",
+    )
+
+    slide_role: SlideRole = Field(
+        default="content",
+        description="Explicit role of this item in the normal deck structure.",
     )
 
     title: str = Field(

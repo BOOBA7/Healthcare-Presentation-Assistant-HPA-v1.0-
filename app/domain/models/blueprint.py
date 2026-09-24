@@ -44,6 +44,12 @@ class Blueprint(BaseModel):
         description="Blueprint slide outlines.",
     )
 
+    structure_version: int = Field(
+        default=0,
+        ge=0,
+        description="Version 1 blueprints use explicit structural roles and total-deck counting.",
+    )
+
     is_validated: bool = Field(
         default=False,
         description="Whether the blueprint has been validated.",
