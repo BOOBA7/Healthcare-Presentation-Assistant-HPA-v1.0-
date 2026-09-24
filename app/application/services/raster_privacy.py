@@ -4,20 +4,15 @@ This rejects graphics, faces, stamps and noise outside OCR text regions. It is
 not a general image anonymizer or a calibrated name/face classifier.
 """
 from io import BytesIO
-import re
-
 from PIL import Image, ImageDraw, ImageChops
 
-from app.application.services.prototype_policy import PrototypePolicy
 from app.domain.exceptions.workflow_error import WorkflowError
 
 
 def screen_raster_text(text):
-    PrototypePolicy.screen(text)
-    # A conservative possible-name heuristic for raster import and corrections;
-    # headings/author names may be false positives and are deliberately refused.
-    if re.search(r'\b[A-ZÀ-Ý][a-zà-ÿ]{2,}\s+[A-ZÀ-Ý][a-zà-ÿ]{2,}\b', text):
-        raise WorkflowError('POSSIBLE_IDENTIFIER_DETECTED', 'Possible personal name detected. Remove identifying content before importing.')
+    """Return advisory findings without refusing a source or OCR correction."""
+    from app.application.services.resource_privacy_policy import ResourcePrivacyPolicy
+    return ResourcePrivacyPolicy.analyze(text)
 
 
 def require_text_only_pixels(png, lines):

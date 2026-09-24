@@ -8,9 +8,9 @@ from app.domain.exceptions.workflow_error import WorkflowError
 
 
 def test_unlabelled_name_and_benign_text():
-    with pytest.raises(WorkflowError):
-        screen_raster_text('Alice Example')
-    screen_raster_text('Synthetic teaching evidence\nPublication date: 2024')
+    assert screen_raster_text('Alice Example').finding_categories == []
+    assert screen_raster_text('Name: Alice Example').finding_categories
+    assert screen_raster_text('Synthetic teaching evidence\nPublication date: 2024').finding_categories == []
 
 
 @pytest.mark.parametrize('graphic', ['face', 'stamp', 'color'])
@@ -31,8 +31,5 @@ def test_unrecognized_visual_surface_cannot_pass_text_boxes(graphic):
         require_text_only_pixels(output.getvalue(), [line])
 
 
-def test_public_heading_is_a_measured_false_positive():
-    # Deliberately retained overblocking evidence, not relabelled as an identifier.
-    with pytest.raises(WorkflowError) as error:
-        screen_raster_text('Learning Objectives')
-    assert error.value.code == 'POSSIBLE_IDENTIFIER_DETECTED'
+def test_public_heading_is_not_refused():
+    assert screen_raster_text('Learning Objectives').finding_categories == []

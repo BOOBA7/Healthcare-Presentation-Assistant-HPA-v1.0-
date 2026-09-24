@@ -28,7 +28,7 @@ def test_review_survives_restart_and_updates_evidence(tmp_path, engine_double):
     assert reviewed.is_validated
 
 
-@pytest.mark.parametrize('fault', ['partial', 'duplicate', 'identifier', 'stale', 'date'])
+@pytest.mark.parametrize('fault', ['partial', 'duplicate', 'stale', 'date'])
 def test_review_rejections_are_atomic(tmp_path, engine_double, fault):
     from app.domain.exceptions.workflow_error import WorkflowError
     from app.tests.test_source_lifecycle import snapshot
@@ -43,8 +43,6 @@ def test_review_rejections_are_atomic(tmp_path, engine_double, fault):
         confirmed = [0]
     elif fault == 'duplicate':
         confirmed = [0, 0]
-    elif fault == 'identifier':
-        values[0] = 'alice@example.invalid'
     elif fault == 'stale':
         revision = 1
     else:
@@ -52,6 +50,19 @@ def test_review_rejections_are_atomic(tmp_path, engine_double, fault):
     with pytest.raises(WorkflowError):
         repository.review_ocr('owner', 'synthetic', revision, values, confirmed)
     assert snapshot(repository) == before
+
+
+def test_identifier_in_ocr_correction_is_accepted_for_later_deidentification(tmp_path, engine_double):
+    repository = UserSessionRepository(tmp_path / 'review-identifier.sqlite3')
+    source = SourceDocument.read('synthetic.png', fixtures.synthetic_image(), 'synthetic')
+    repository.save('owner', 'demo', 'thread', GraphState(resource_library=[source]))
+
+    result = repository.review_ocr(
+        'owner', 'synthetic', 0,
+        ['alice@example.invalid', 'Publication date: 2024'], [0, 1],
+    )
+
+    assert result['review_revision'] == 1
 
 
 def test_forged_review_and_tampered_confirmed_value_blocked(tmp_path, engine_double):

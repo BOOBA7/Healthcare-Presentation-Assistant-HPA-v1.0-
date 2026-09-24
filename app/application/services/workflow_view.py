@@ -88,7 +88,9 @@ class WorkflowViewBuilder:
                     diagnostic={"dimensions": [result.model_dump(mode="json") for result in coverage.results]},
                 ))
                 allowed.append("assess_evidence_coverage")
-            else:
+            elif presentation.agenda is None:
+                allowed.append("generate_agenda")
+            elif presentation.agenda.is_validated:
                 allowed.append("generate_blueprint")
         elif status == WorkflowStatus.AWAITING_SCOPE_CLARIFICATION:
             blockers.append(
@@ -100,7 +102,7 @@ class WorkflowViewBuilder:
                 )
             )
         elif status == WorkflowStatus.AWAITING_AGENDA_APPROVAL:
-            allowed.append("approve_agenda")
+            allowed.extend(["edit_agenda", "approve_agenda"])
         elif status == WorkflowStatus.AWAITING_BLUEPRINT_APPROVAL:
             allowed.extend(["review_blueprint_items", "approve_blueprint"])
         elif status == WorkflowStatus.SLIDE_GENERATION:

@@ -2,7 +2,6 @@ from app.ai.chains.blueprint_chain import BlueprintChain
 from app.ai.mappers.blueprint_mapper import BlueprintMapper
 from app.domain.enums.workflow_step import WorkflowStep
 from app.domain.models.presentation import Presentation
-from app.domain.models.agenda import Agenda
 from app.domain.enums.workflow_status import WorkflowStatus
 from app.application.services.production_evidence_gate import ProductionEvidenceGate
 from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuilder
@@ -49,6 +48,8 @@ class BuildBlueprintUseCase:
         """
 
         EvidenceCoverageService().require_current(presentation, resources or presentation.resources, chunks or [])
+        if presentation.agenda is None or not presentation.agenda.is_validated:
+            raise WorkflowError("AGENDA_NOT_APPROVED", "Generate, review and approve the Agenda before generating the Blueprint.")
         evidence_error = ProductionEvidenceGate.generation_error(
             presentation,
             EvidenceContextBuilder.presentation_query(presentation),
@@ -68,14 +69,8 @@ class BuildBlueprintUseCase:
         presentation.blueprint = self.mapper.to_domain(
             blueprint_schema,
         )
-        # The LLM proposes the agenda through its ordered blueprint titles.
-        # It is deliberately a separate, human-approved artefact.
-        presentation.agenda = Agenda(
-            items=[outline.title for outline in presentation.blueprint.slides]
-        )
-
         presentation.state.current_step = WorkflowStep.BLUEPRINT_VALIDATION
-        presentation.state.workflow_status = WorkflowStatus.AWAITING_AGENDA_APPROVAL
+        presentation.state.workflow_status = WorkflowStatus.AWAITING_BLUEPRINT_APPROVAL
         append_generation_record(presentation, generation_stage)
 
         return presentation

@@ -65,9 +65,8 @@ class DeterministicPresentationAgent:
                     ),
                 ],
             )
-            presentation.agenda = Agenda(items=["Evidence overview", "Clinical application"])
             presentation.state.current_step = WorkflowStep.BLUEPRINT_VALIDATION
-            presentation.state.workflow_status = WorkflowStatus.AWAITING_AGENDA_APPROVAL
+            presentation.state.workflow_status = WorkflowStatus.AWAITING_BLUEPRINT_APPROVAL
             result.execution = ExecutionContext(last_tool="build_blueprint")
             result.messages.append(AIMessage(content="Deterministic blueprint ready for human review."))
             return result.model_dump()
@@ -108,6 +107,17 @@ class DeterministicBlueprintGeneration:
 
     def execute(self, state: GraphState) -> GraphState:
         return GraphState(**self.agent.invoke(state, "deterministic-blueprint"))
+
+
+class DeterministicAgendaGeneration:
+    """Model boundary substitute used only by the explicit Agenda command."""
+
+    def execute(self, state: GraphState) -> GraphState:
+        presentation = state.presentation
+        assert presentation is not None
+        presentation.agenda = Agenda(items=["Evidence overview", "Clinical application"])
+        presentation.state.workflow_status = WorkflowStatus.AWAITING_AGENDA_APPROVAL
+        return state
 
 
 class DeterministicSlideGeneration:
@@ -213,6 +223,11 @@ def test_end_to_end_human_controlled_workflow_without_live_model(tmp_path, monke
     monkeypatch.setattr(api, "DiscussResourcesUseCase", DeterministicResourceDiscussion)
     monkeypatch.setattr(
         job_routes,
+        "BuildAgendaWorkflowUseCase",
+        DeterministicAgendaGeneration,
+    )
+    monkeypatch.setattr(
+        job_routes,
         "BuildBlueprintWorkflowUseCase",
         lambda: DeterministicBlueprintGeneration(deterministic_agent),
     )
@@ -312,6 +327,28 @@ def test_end_to_end_human_controlled_workflow_without_live_model(tmp_path, monke
     assert coverage.status_code == 200
     assert coverage.json()["presentation"]["evidence_coverage"]["sufficient"] is True
 
+    bypass = client.post(
+        "/api/v1/projects/hcp-e2e/vitamin-d/blueprint/jobs",
+        headers=headers,
+    )
+    assert bypass.status_code == 409
+    assert bypass.json()["detail"]["code"] == "AGENDA_NOT_APPROVED"
+
+    agenda_job = client.post(
+        "/api/v1/projects/hcp-e2e/vitamin-d/agenda/jobs",
+        headers=headers,
+    )
+    assert agenda_job.status_code == 202
+    assert _wait_for_job(client, headers, "hcp-e2e", agenda_job.json()["job_id"])["status"] == "completed"
+    edited_agenda = client.put(
+        "/projects/hcp-e2e/vitamin-d/agenda",
+        headers=headers,
+        json={"items": ["Evidence", "Application"], "comments": "High-level structure reviewed."},
+    )
+    assert edited_agenda.status_code == 200
+    assert edited_agenda.json()["presentation"]["agenda"]["items"] == ["Evidence", "Application"]
+    assert client.post("/projects/hcp-e2e/vitamin-d/agenda/approve", headers=headers).status_code == 200
+
     blueprint_job = client.post(
         "/api/v1/projects/hcp-e2e/vitamin-d/blueprint/jobs",
         headers=headers,
@@ -337,7 +374,6 @@ def test_end_to_end_human_controlled_workflow_without_live_model(tmp_path, monke
         None,
     ]
 
-    assert client.post("/projects/hcp-e2e/vitamin-d/agenda/approve", headers=headers).status_code == 200
     for index in (0, 1):
         assert client.post(
             f"/projects/hcp-e2e/vitamin-d/blueprint/items/{index}/approve",

@@ -36,8 +36,6 @@ class LocalImageScreening:
     def inspect(cls, png: bytes) -> ImageInspection:
         from app.application.services.raster_privacy import screen_raster_text, require_text_only_pixels
         result = cls.inspect_experimental(png)
-        if result.faces:
-            raise WorkflowError('POSSIBLE_IDENTIFIER_DETECTED', 'Possible face detected. Remove identifying content before importing.')
         screen_raster_text('\n'.join(line.text for line in result.lines))
         require_text_only_pixels(png, result.lines)
         return result

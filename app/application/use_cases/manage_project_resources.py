@@ -2,7 +2,6 @@
 
 from app.application.services.prototype_policy import PrototypePolicy
 from app.application.services.source_screening import SourceScreening
-from app.application.services.source_date_policy import SourceDatePolicy
 from app.ai.workflows.graph_state import GraphState
 from app.application.use_cases.add_resource import AddResourceUseCase
 from app.application.use_cases.remove_resource import RemoveResourceUseCase
@@ -12,10 +11,11 @@ from app.domain.models.resource import Resource
 
 class AddProjectResourceUseCase:
     def execute(self, state: GraphState, resource: Resource) -> GraphState:
-        PrototypePolicy.state(state)
+        PrototypePolicy.declaration(
+            state.prototype_declaration,
+            patient_case_mode=state.patient_case_mode or state.patient_case_acknowledged,
+        )
         SourceScreening.resource(resource, require_text=True)
-        if resource.metadata.privacy_decision != "local_only":
-            SourceDatePolicy.require(resource, allow_unconfirmed=True)
         if any(item.id == resource.id for item in state.resource_library):
             raise WorkflowError("RESOURCE_ALREADY_EXISTS", "This PDF is already in the Project library.")
         state.resource_library.append(resource)
@@ -25,6 +25,7 @@ class AddProjectResourceUseCase:
 
 class AttachResourceToPresentationUseCase:
     def execute(self, state: GraphState, resource_id: str) -> GraphState:
+        from app.application.services.source_date_policy import SourceDatePolicy
         if state.presentation is None:
             raise WorkflowError("PRESENTATION_NOT_FOUND", "Create a presentation before selecting production resources.")
         resource = next((item for item in state.resource_library if item.id == resource_id), None)

@@ -32,6 +32,21 @@ def test_resource_api_response_excludes_extracted_pdf_text():
     assert "extracted_pages" not in response
 
 
+def test_resource_list_response_does_not_reparse_original_pdf(monkeypatch):
+    from app.application.services.source_document import SourceDocument
+
+    resource = dated_resource(id="pdf-fast", filename="fast.pdf")
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("Dashboard metadata must not reparse source originals")
+
+    monkeypatch.setattr(SourceDocument, "verify", unexpected)
+    response = _resource_response(resource)
+
+    assert response["id"] == "pdf-fast"
+    assert response["scientific_date"]["value"] == "2024"
+
+
 def test_resource_validation_action_is_available_immediately_after_upload():
     """The web UI must not wait for a model turn to expose the next approval."""
     context = PresentationContext(

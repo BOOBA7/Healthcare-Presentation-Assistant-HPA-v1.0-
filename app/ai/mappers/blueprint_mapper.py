@@ -1,6 +1,7 @@
 from app.ai.schemas.blueprint_schema import BlueprintSchema
 from app.domain.models.blueprint import Blueprint
 from app.domain.models.slide_outline import SlideOutline
+from app.application.services.presentation_deidentification import PresentationDeidentification
 
 
 class BlueprintMapper:
@@ -20,17 +21,17 @@ class BlueprintMapper:
         slides = [
             SlideOutline(
                 slide_number=slide.slide_number,
-                title=slide.title,
-                objective=slide.objective,
-                key_message=slide.key_message,
+                title=PresentationDeidentification.text(slide.title),
+                objective=PresentationDeidentification.text(slide.objective),
+                key_message=PresentationDeidentification.text(slide.key_message),
             )
             for slide in schema.slides
         ]
 
         return Blueprint(
-            title=schema.title,
-            learning_objective="\n".join(schema.learning_objectives),
+            title=PresentationDeidentification.text(schema.title),
+            learning_objective=PresentationDeidentification.text("\n".join(schema.learning_objectives)),
             target_number_of_slides=len(schema.slides),
-            storytelling=schema.storytelling,
+            storytelling=PresentationDeidentification.text(schema.storytelling),
             slides=slides,
         )

@@ -13,7 +13,6 @@ class ExtractPdfResourceUseCase:
                 resource_declaration: str | None = None,
                 institutional_contacts_confirmed: bool = False) -> Resource:
         PrototypePolicy.declaration(prototype_declaration, patient_case_mode=patient_case_mode)
-        PrototypePolicy.screen(filename)
         return SourceDocument.read(
             filename, content, str(uuid4()),
             resource_declaration=resource_declaration,

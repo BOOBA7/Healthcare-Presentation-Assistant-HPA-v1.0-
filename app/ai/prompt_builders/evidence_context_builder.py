@@ -14,7 +14,7 @@ from app.domain.models.resource_chunk import ResourceChunk
 from app.domain.models.slide_outline import SlideOutline
 from app.application.services.observability import record
 from app.domain.enums.evidence_context_mode import EvidenceContextMode
-from app.application.services.source_date_policy import SourceDatePolicy
+from app.application.services.presentation_deidentification import PresentationDeidentification
 
 
 @dataclass(frozen=True)
@@ -385,7 +385,6 @@ class EvidenceContextBuilder:
     def _chunks_for_resources(
         self, resources: list[Resource], persisted_chunks: list[ResourceChunk] | None = None
     ) -> list[EvidenceChunk]:
-        SourceDatePolicy.require_all(resources)
         validated_resources = {resource.id: resource for resource in resources if resource.is_validated}
         # An empty cache means this state has not been hydrated from SQLite
         # yet (for example an in-memory unit test or a freshly created state).
@@ -454,11 +453,13 @@ class EvidenceContextBuilder:
         return scores
 
     def _format_chunk(self, chunk: EvidenceChunk) -> str:
+        title = PresentationDeidentification.text(chunk.title) or "[UNTITLED SOURCE]"
+        text = PresentationDeidentification.text(chunk.text) or ""
         return (
             "BEGIN UNTRUSTED SOURCE EXCERPT\n"
-            f"SOURCE ID: {chunk.resource_id} | TITLE: {chunk.title} | {chunk.location_kind.upper()}: {chunk.page} | PROVENANCE: {chunk.provenance}\n"
+            f"SOURCE ID: {chunk.resource_id} | TITLE: {title} | {chunk.location_kind.upper()}: {chunk.page} | PROVENANCE: {chunk.provenance}\n"
             f"{chunk.source_warning or ''}\n"
-            f"{chunk.text}\n"
+            f"{text}\n"
             "END UNTRUSTED SOURCE EXCERPT"
         )
 

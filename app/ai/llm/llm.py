@@ -9,6 +9,7 @@ from app.application.services.prototype_policy import PrototypePolicy
 from app.application.services.identifier_screening import IdentifierScreening
 from app.application.services.source_screening import SourceScreening
 from app.core.config import get_settings
+from app.application.services.presentation_deidentification import PresentationDeidentification
 
 
 class PrototypeProviderGuard(BaseCallbackHandler):
@@ -35,6 +36,11 @@ class PrototypeProviderGuard(BaseCallbackHandler):
                 # interpolated identifiers and must pass the identifier gate.
                 if message.type == "system":
                     IdentifierScreening.screen(content)
+                elif "BEGIN UNTRUSTED SOURCE EXCERPT" in content:
+                    # Resource exploration receives locally de-identified text.
+                    # Patient/confidential topic words are evidence content, not
+                    # a reason to reject the provider call.
+                    IdentifierScreening.screen(PresentationDeidentification.text(content) or "")
                 else:
                     PrototypePolicy.screen(content)
 

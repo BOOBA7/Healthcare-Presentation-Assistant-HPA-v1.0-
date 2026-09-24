@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     )
 
     gemini_model: str = Field(
-        default="gemini-3.6-flash",
+        default="gemini-2.5-flash",
         alias="GEMINI_MODEL",
     )
 
@@ -71,7 +71,11 @@ class Settings(BaseSettings):
     @field_validator("debug", mode="before")
     @classmethod
     def normalize_debug(cls, value: object) -> object:
-        if isinstance(value, str) and value.lower() in {"release", "production", "prod"}:
+        if isinstance(value, str) and value.lower() in {
+            "release",
+            "production",
+            "prod",
+        }:
             return False
         return value
 

@@ -42,8 +42,8 @@ class SourceDocument:
                     institutional_contacts_confirmed=institutional_contacts_confirmed,
                 )
                 xml = document.get_xml_metadata() or None
-                from app.application.services.source_assets import pdf_assets
-                assets = pdf_assets(content)
+                from app.application.services.source_assets import optional_pdf_assets
+                assets = optional_pdf_assets(content)
         except WorkflowError:
             raise
         except Exception:

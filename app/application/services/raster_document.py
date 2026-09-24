@@ -85,8 +85,6 @@ class RasterDocument:
                 result = LocalImageScreening.inspect(png)
                 if time.monotonic() - start > cls.MAX_SECONDS:
                     raise LocalImageScreening.incomplete()
-                if result.faces:
-                    raise WorkflowError('POSSIBLE_IDENTIFIER_DETECTED', 'Possible face detected. Remove identifying content before importing.')
                 if not result.lines:
                     raise LocalImageScreening.incomplete()
                 text = '\n'.join(line.text for line in result.lines)
@@ -156,8 +154,8 @@ class RasterDocument:
                 ),
             )
             if kind == "pdf":
-                from app.application.services.source_assets import pdf_assets
-                resource.metadata.assets = pdf_assets(content, raster=True)
+                from app.application.services.source_assets import optional_pdf_assets
+                resource.metadata.assets = optional_pdf_assets(content, raster=True)
             from app.application.services.source_screening import SourceScreening
             SourceScreening.resource(resource, require_text=True)
             resource._original_content = content

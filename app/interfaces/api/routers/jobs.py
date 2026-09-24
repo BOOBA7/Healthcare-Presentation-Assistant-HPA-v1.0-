@@ -7,6 +7,7 @@ from app.application.services.resource_library import resolve_presentation_resou
 from app.application.services.evidence_coverage import EvidenceCoverageService
 from app.application.services.workflow_policy import WorkflowPolicy
 from app.application.use_cases.workflow_steps import (
+    BuildAgendaWorkflowUseCase,
     BuildBlueprintWorkflowUseCase,
     GenerateSlidesWorkflowUseCase,
     RegenerateBlueprintUseCase,
@@ -60,7 +61,7 @@ def _require_generation_ready(state, *, action: str) -> None:
 
     expected_statuses = (
         (WorkflowStatus.BLUEPRINT_GENERATION,)
-        if action == "blueprint"
+        if action in {"agenda", "blueprint"}
         else (WorkflowStatus.SLIDE_GENERATION, WorkflowStatus.AWAITING_SLIDE_RESOLUTION)
     )
     WorkflowPolicy.require_status(
@@ -68,15 +69,19 @@ def _require_generation_ready(state, *, action: str) -> None:
         expected_statuses,
         f"generate the {action}",
     )
-    if action == "blueprint" and not presentation.state.resources_validated:
+    if action in {"agenda", "blueprint"} and not presentation.state.resources_validated:
         raise WorkflowError(
             "RESOURCES_NOT_VALIDATED",
-            "Validate the selected PDF resources before generating the blueprint.",
+            "Validate the selected resources before generating planning content.",
         )
-    if action == "blueprint":
+    if action in {"agenda", "blueprint"}:
         EvidenceCoverageService().require_current(
             presentation, resolve_presentation_resources(state), state.resource_chunks
         )
+    if action == "agenda" and presentation.agenda is not None:
+        raise WorkflowError("AGENDA_ALREADY_GENERATED", "Review the current Agenda instead of generating another one.")
+    if action == "blueprint" and (presentation.agenda is None or not presentation.agenda.is_validated):
+        raise WorkflowError("AGENDA_NOT_APPROVED", "Generate, review and approve the Agenda before generating the Blueprint.")
     if action == "slides" and not presentation.state.blueprint_validated:
         raise WorkflowError(
             "BLUEPRINT_NOT_VALIDATED",
@@ -155,7 +160,10 @@ def _queue_generation_job(user_id: str, project_id: str, authenticated_user: str
         try:
             _require_generation_ready(current_state, action=action)
             progress(55, f"generating_{action}")
-            if action == "blueprint":
+            if action == "agenda":
+                current_state = BuildAgendaWorkflowUseCase().execute(current_state)
+                event_type = "AGENDA_GENERATED_FROM_EXPLICIT_COMMAND"
+            elif action == "blueprint":
                 current_state = BuildBlueprintWorkflowUseCase().execute(current_state)
                 event_type = "BLUEPRINT_GENERATED_FROM_EXPLICIT_COMMAND"
             else:
@@ -390,6 +398,16 @@ def start_blueprint_generation_job(
 ) -> dict[str, object]:
     """Generate a blueprint only after an explicit UI command and server checks."""
     return _queue_generation_job(user_id, project_id, authenticated_user, action="blueprint")
+
+
+@router.post("/projects/{user_id}/{project_id}/agenda/jobs", tags=["presentation"], status_code=202)
+def start_agenda_generation_job(
+    user_id: str,
+    project_id: str,
+    authenticated_user: str = Depends(api._authenticated_user),
+) -> dict[str, object]:
+    """Generate high-level Agenda sections behind the coverage and resource gates."""
+    return _queue_generation_job(user_id, project_id, authenticated_user, action="agenda")
 
 
 @router.post("/projects/{user_id}/{project_id}/slides/jobs", tags=["presentation"], status_code=202)

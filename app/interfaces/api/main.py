@@ -356,23 +356,32 @@ def _project_response(user_id: str, project_id: str, thread_id: str, state: Grap
 
 
 def _resource_response(resource) -> dict[str, object]:
-    """Expose source descriptors only; no raw extraction or embedded metadata."""
-    try:
-        date_evidence = SourceDatePolicy.require(resource, allow_unconfirmed=True).model_dump(mode="json")
+    """Expose stored source descriptors without reparsing original files.
+
+    Originals are verified on import, mutation and scientific use. A dashboard
+    read must stay proportional to metadata size rather than reopening every
+    PDF and rerunning OCR/asset extraction.
+    """
+    evidence = resource.metadata.scientific_date
+    date_evidence = evidence.model_dump(mode="json") if evidence is not None else None
+    date_blocker = None
+    if resource._original_content is None:
+        date_blocker = {
+            "code": "SOURCE_ORIGINAL_REQUIRED",
+            "message": "The original file is unavailable. Remove this legacy source and import the original again.",
+        }
+    elif evidence is None:
+        date_blocker = {
+            "code": "SOURCE_DATE_REQUIRED",
+            "message": "A reliable publication or update date is required before scientific use.",
+        }
+    else:
         from app.application.services.ocr_review import is_reviewed
-        date_blocker = ({"code": "OCR_CONFIRMATION_REQUIRED", "message": "Review every OCR region against its original before using this source."}
-                        if resource.metadata.ocr_engine and not is_reviewed(resource) else None)
+        if resource.metadata.ocr_engine and not is_reviewed(resource):
+            date_blocker = {"code": "OCR_CONFIRMATION_REQUIRED", "message": "Review every OCR region against its original before using this source."}
         from app.application.services.source_assets import is_reviewed as assets_reviewed
         if date_blocker is None and resource.metadata.assets and not assets_reviewed(resource):
             date_blocker = {"code": "ASSET_CONFIRMATION_REQUIRED", "message": "Review extracted images and tables against their original."}
-        if date_blocker is None and resource._original_content is None:
-            date_blocker = {
-                "code": "SOURCE_ORIGINAL_REQUIRED",
-                "message": "The original file is unavailable. Remove this legacy source and import the original again.",
-            }
-    except DomainError as exc:
-        date_evidence = None
-        date_blocker = {"code": exc.code, "message": exc.user_message}
     return {
         "id": resource.id,
         "filename": resource.filename,
@@ -444,7 +453,13 @@ def _require_prototype_input(value):
 
 def _require_prototype(state):
     try:
-        PrototypePolicy.state(state)
+        # Upload authorization is independent from privacy findings in the
+        # existing Project history. Resource privacy is advisory; generation
+        # applies its own de-identification boundary.
+        PrototypePolicy.declaration(
+            state.prototype_declaration,
+            patient_case_mode=state.patient_case_mode or state.patient_case_acknowledged,
+        )
     except ValueError as exc:
         raise _workflow_conflict(exc) from exc
 
@@ -825,9 +840,6 @@ async def upload_pdf_resource(user_id: str, project_id: str, request: Request, a
             and not filename.lower().endswith((".pdf", ".png", ".jpg", ".jpeg", ".pptx"))):
         raise HTTPException(status_code=415, detail="Only PDF, PNG, JPEG and PPTX uploads are accepted.")
     try:
-        # Inspect the supplied name before basename normalization can discard it.
-        from app.application.services.raster_privacy import screen_raster_text
-        screen_raster_text(original_filename)
         resource = ExtractPdfResourceUseCase().execute(
             filename,
             content,
@@ -1118,15 +1130,6 @@ def discuss_resources(
     _require_prototype_input(request)
     thread_id, state = _get_project(user_id, project_id, require_context=False)
     ensure_resource_library(state)
-    try:
-        SourceDatePolicy.require_all(state.resource_library)
-    except DomainError as exc:
-        raise _workflow_conflict(exc) from None
-    if state.patient_case_mode:
-        try:
-            PatientCasePrivacyGuard().ensure_text_safe(request.question)
-        except ValueError as exc:
-            raise _workflow_conflict(exc) from exc
     # The resource workspace has its own durable transcript. Persist the user
     # question before provider work so a failed analysis cannot erase it.
     add_resource_turn(state, "user", request.question)
@@ -1391,11 +1394,15 @@ def update_agenda(user_id: str, project_id: str, request: AgendaRequest, authent
     _require_prototype_input(request)
     thread_id, state = _get_project(user_id, project_id)
     if state.presentation is None or state.presentation.agenda is None:
-        raise HTTPException(status_code=409, detail="Generate a blueprint before editing the agenda.")
+        raise HTTPException(status_code=409, detail="Generate an Agenda before editing it.")
     try:
         WorkflowPolicy.require_status(
             state.presentation.state.workflow_status,
-            (WorkflowStatus.AWAITING_AGENDA_APPROVAL,),
+            (
+                WorkflowStatus.AWAITING_AGENDA_APPROVAL,
+                WorkflowStatus.BLUEPRINT_GENERATION,
+                WorkflowStatus.AWAITING_BLUEPRINT_APPROVAL,
+            ),
             "edit the agenda",
         )
     except ValueError as exc:
@@ -1406,7 +1413,8 @@ def update_agenda(user_id: str, project_id: str, request: AgendaRequest, authent
     state.presentation.agenda.items = items
     state.presentation.agenda.reviewer_comments = request.comments.strip() or None
     state.presentation.agenda.is_validated = False
-    state.presentation.blueprint.is_validated = False
+    if state.presentation.blueprint is not None:
+        state.presentation.blueprint.is_validated = False
     state.presentation.state.blueprint_validated = False
     state.presentation.state.slides_validated = False
     state.presentation.state.presentation_validated = False
@@ -1429,7 +1437,7 @@ def approve_agenda(user_id: str, project_id: str, authenticated_user: str = Depe
     except ValueError as exc:
         raise _workflow_conflict(exc) from exc
     state.presentation.agenda.is_validated = True
-    state.presentation.state.workflow_status = WorkflowStatus.AWAITING_BLUEPRINT_APPROVAL
+    state.presentation.state.workflow_status = WorkflowStatus.BLUEPRINT_GENERATION
     return _save_project(user_id, project_id, thread_id, state, event_type="AGENDA_APPROVED", actor="user")
 
 

@@ -9,7 +9,7 @@ from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuild
 from app.domain.models.resource import Resource
 from app.domain.models.resource_chunk import ResourceChunk
 from app.application.services.observability import observe_llm_call
-from app.application.services.patient_case_privacy import PatientCasePrivacyGuard
+from app.application.services.presentation_deidentification import PresentationDeidentification
 from app.domain.enums.evidence_context_mode import EvidenceContextMode
 from app.application.validators.response_citation_validator import ResponseCitationValidator
 
@@ -26,17 +26,9 @@ class DiscussResourcesUseCase:
         prototype_declaration: str | None = None,
     ) -> str:
         PrototypePolicy.declaration(prototype_declaration, patient_case_mode=patient_case_mode)
-        PrototypePolicy.screen(resources)
-        PrototypePolicy.screen(chunks)
-        PrototypePolicy.screen(question)
         question = question.strip()
         if not question:
             raise ValueError("Enter a question about the uploaded resources.")
-        if patient_case_mode:
-            guard = PatientCasePrivacyGuard()
-            guard.ensure_text_safe(question)
-            for resource in resources:
-                guard.ensure_resource_safe(resource)
         context = EvidenceContextBuilder().for_resources(resources, question, chunks, evidence_context_mode)
         if context.startswith("No relevant"):
             raise ValueError("The uploaded PDFs do not contain relevant readable passages for this question.")
@@ -49,10 +41,10 @@ class DiscussResourcesUseCase:
                 "[[cite: resource_id | p. page | exact verbatim evidence excerpt]]. "
                 f"Reply in {language}."
             )),
-            HumanMessage(content=f"QUESTION: {question}\n\nUSER-UPLOADED PDF PASSAGES:\n{context}"),
+            HumanMessage(content=f"QUESTION: {PresentationDeidentification.text(question)}\n\nUSER-UPLOADED PDF PASSAGES:\n{context}"),
         ]
         response = observe_llm_call("resource_discussion", prompt, lambda: get_llm().invoke(prompt))
-        answer = SummarizeResourcesUseCase._message_text(response).strip()
+        answer = (PresentationDeidentification.text(SummarizeResourcesUseCase._message_text(response)) or "").strip()
         if not answer:
             raise ValueError("The model returned an empty resource discussion response. Please retry.")
         ResponseCitationValidator().validate(answer, resources)

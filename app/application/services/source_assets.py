@@ -213,6 +213,19 @@ def pdf_assets(content, *, raster=False):
     return result
 
 
+def optional_pdf_assets(content, *, raster=False):
+    """Return retained derivatives when available, never reject the PDF.
+
+    Images and reconstructed tables are optional review conveniences. Failure
+    to qualify or reproduce one must not prevent ingestion of the original PDF
+    and its independently extracted text.
+    """
+    try:
+        return pdf_assets(content, raster=raster)
+    except WorkflowError:
+        return []
+
+
 def review_digest(resource):
     return hashlib.sha256(json.dumps([resource.id, resource.metadata.original_sha256,
         [asset.model_dump(mode='json') for asset in resource.metadata.assets],

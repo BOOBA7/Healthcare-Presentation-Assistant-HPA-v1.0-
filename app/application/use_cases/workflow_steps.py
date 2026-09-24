@@ -4,6 +4,7 @@ from app.application.services.prototype_policy import PrototypePolicy
 from app.application.services.source_date_policy import SourceDatePolicy
 from app.ai.workflows.graph_state import GraphState
 from app.application.use_cases.build_blueprint import BuildBlueprintUseCase
+from app.application.use_cases.build_agenda import BuildAgendaUseCase
 from app.application.use_cases.create_presentation import CreatePresentationUseCase
 from app.application.use_cases.generate_slides import GenerateSlidesUseCase
 from app.application.use_cases.validate_resources import ValidateResourcesUseCase
@@ -96,6 +97,26 @@ class BuildBlueprintWorkflowUseCase:
             resources,
             state.resource_chunks,
         )
+        return state.model_copy(update={"presentation": presentation})
+
+
+class BuildAgendaWorkflowUseCase:
+    def execute(self, state: GraphState) -> GraphState:
+        PrototypePolicy.state(state)
+        if state.presentation is None:
+            raise WorkflowError("PRESENTATION_NOT_CREATED", "Create the presentation before generating its Agenda.")
+        if not state.presentation.state.resources_validated:
+            raise WorkflowError("RESOURCES_NOT_VALIDATED", "Validate uploaded resources before generating the Agenda.")
+        WorkflowPolicy.require_status(
+            state.presentation.state.workflow_status,
+            (WorkflowStatus.BLUEPRINT_GENERATION,),
+            "generate the Agenda",
+        )
+        if state.presentation.agenda is not None:
+            raise WorkflowError("AGENDA_ALREADY_GENERATED", "Review the current Agenda instead of generating another one.")
+        resources = resolve_presentation_resources(state)
+        SourceDatePolicy.require_all(resources)
+        presentation = BuildAgendaUseCase().execute(state.presentation, resources, state.resource_chunks)
         return state.model_copy(update={"presentation": presentation})
 
 

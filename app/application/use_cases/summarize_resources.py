@@ -9,7 +9,7 @@ from app.domain.models.resource import Resource
 from app.domain.models.resource_chunk import ResourceChunk
 from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuilder
 from app.application.services.observability import observe_llm_call
-from app.application.services.patient_case_privacy import PatientCasePrivacyGuard
+from app.application.services.presentation_deidentification import PresentationDeidentification
 from app.domain.enums.evidence_context_mode import EvidenceContextMode
 from app.application.validators.response_citation_validator import ResponseCitationValidator
 
@@ -27,14 +27,8 @@ class SummarizeResourcesUseCase:
         prototype_declaration: str | None = None,
     ) -> ResourceAnalysis:
         PrototypePolicy.declaration(prototype_declaration, patient_case_mode=patient_case_mode)
-        PrototypePolicy.screen(resources)
-        PrototypePolicy.screen(chunks)
         if not resources:
             raise ValueError("Upload at least one PDF before requesting a resource overview.")
-
-        if patient_case_mode:
-            for resource in resources:
-                PatientCasePrivacyGuard().ensure_resource_safe(resource)
         context = EvidenceContextBuilder().for_overview(resources, chunks, evidence_context_mode)
         prompt = [
                 SystemMessage(
@@ -51,7 +45,7 @@ class SummarizeResourcesUseCase:
                 HumanMessage(content=f"USER-UPLOADED PDF PASSAGES:\n{context}"),
             ]
         response = observe_llm_call("resource_overview", prompt, lambda: get_llm().invoke(prompt))
-        summary = self._message_text(response).strip()
+        summary = (PresentationDeidentification.text(self._message_text(response)) or "").strip()
         if not summary:
             raise ValueError("The model returned an empty resource overview. Please retry.")
         ResponseCitationValidator().validate(summary, resources)

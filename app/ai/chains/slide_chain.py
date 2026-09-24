@@ -10,6 +10,7 @@ from app.domain.models.slide_outline import SlideOutline
 from app.domain.models.resource import Resource
 from app.domain.models.resource_chunk import ResourceChunk
 from app.application.services.observability import observe_llm_call
+from app.application.services.source_date_policy import SourceDatePolicy
 
 
 class SlideChain:
@@ -36,8 +37,7 @@ class SlideChain:
 
         PrototypePolicy.presentation(presentation)
         PresentationContextPolicy.require(presentation)
-        PrototypePolicy.screen(resources)
-        PrototypePolicy.screen(chunks)
+        SourceDatePolicy.require_all(resources or presentation.resources)
         prompt = self.prompt_builder.build(
             presentation=presentation,
             outline=outline,

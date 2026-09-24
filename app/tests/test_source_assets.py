@@ -51,8 +51,9 @@ def test_asset_review_atomic_authority_and_model_gate(tmp_path):
     repository = UserSessionRepository(tmp_path / 'assets.sqlite3')
     source = SourceDocument.read('synthetic.pptx', deck(), 'source')
     repository.save('owner', 'demo', 'thread', GraphState(resource_library=[source]))
-    with pytest.raises(WorkflowError, match='Review extracted'):
-        EvidenceContextBuilder().for_overview([source])
+    # Resource exploration may use readable text before optional assets are
+    # reviewed; production generation retains its separate review gate.
+    assert 'synthetic' in EvidenceContextBuilder().for_overview([source]).lower()
     values = [{name: getattr(asset, name) for name in asset.fields} for asset in source.metadata.assets]
     repository.review_assets('owner', 'source', 0, values, [a.id for a in source.metadata.assets])
     restored = UserSessionRepository(repository.database_path).library_resource('owner', 'source')
@@ -62,8 +63,10 @@ def test_asset_review_atomic_authority_and_model_gate(tmp_path):
     assert 'synthetic' in EvidenceContextBuilder().for_overview([restored]).lower()
     forged = Resource.model_validate_json(restored.model_dump_json())
     forged._original_content = restored._original_content
+    assert 'synthetic' in EvidenceContextBuilder().for_overview([forged]).lower()
+    from app.application.services.source_date_policy import SourceDatePolicy
     with pytest.raises(WorkflowError):
-        EvidenceContextBuilder().for_overview([forged])
+        SourceDatePolicy.require_all([forged])
     before = snapshot(repository)
     with pytest.raises(WorkflowError):
         repository.review_assets('owner', 'source', 0, values, [a.id for a in source.metadata.assets])
@@ -228,7 +231,7 @@ def test_identical_shapes_have_different_stable_identity():
 
 
 @pytest.mark.parametrize('surface', ['caption', 'filename', 'ocr', 'pixels', 'metadata'])
-def test_sensitive_surfaces_refused_before_storage(engine_double, surface):
+def test_privacy_findings_are_advisory_but_unsupported_surfaces_are_refused(engine_double, surface):
     from app.domain.exceptions.workflow_error import WorkflowError
     from app.tests.test_pptx_sources import attack
     from app.domain.models.source_metadata import OcrRegion
@@ -244,9 +247,13 @@ def test_sensitive_surfaces_refused_before_storage(engine_double, surface):
         engine_double.faces = 1
     else:
         content = attack('metadata_email')
-    with pytest.raises(WorkflowError) as error:
-        SourceDocument.read(filename, content, 'source')
-    assert 'alice@' not in str(error.value)
+    if surface in {'filename', 'ocr'}:
+        source = SourceDocument.read(filename, content, 'source')
+        assert source.extracted_text
+    else:
+        with pytest.raises(WorkflowError) as error:
+            SourceDocument.read(filename, content, 'source')
+        assert 'alice@' not in str(error.value)
 
 
 def test_pdf_original_region_preview_and_table_order(engine_double):

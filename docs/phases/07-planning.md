@@ -41,9 +41,24 @@ Present a reviewable diff and evidence against every criterion. Record product-o
 
 ## Session handoff
 
-- Current slice: 07.1, not started.
-- Changes and implementation commits: none.
-- Checks/results: not run for this phase.
-- Decisions/blockers: inspect current implementation; no technology choice is preapproved by this plan.
-- Next action: verify prerequisites and execute the authorised slice.
+- Current slice: **07.1 implemented; review/approval pending.** No commit created.
+- Delivered: a dedicated evidence-grounded Agenda schema/prompt/chain and async
+  `/agenda/jobs` action; resource validation plus a current sufficient coverage
+  assessment are enforced before generation. It creates editable high-level
+  sections only. Agenda editing/approval is exposed in `/app`; Blueprint calls
+  now refuse until the Agenda is approved, and Agenda edits reset dependent
+  aggregate approvals. Existing source invalidation still clears Agenda,
+  Blueprint, coverage and downstream content.
+- Main files: `app/ai/{chains,prompt_builders,schemas}/agenda_*`,
+  `app/application/use_cases/build_agenda.py`, workflow use cases/view, job/API
+  routes, `/app`, and focused provider-free tests.
+- Checks: focused Agenda/coverage/workflow/API/end-to-end regressions — **44
+  passed, 6 warnings**; final end-to-end scenario — **1 passed, 6 warnings**.
+  Ruff (changed Python files), Python compilation and `git diff --check`
+  passed. JavaScript syntax was not checked because `node` is absent from the
+  current PATH; browser/screenshots and live-provider calls were not run.
+- Working tree: pre-existing modified/untracked user work was preserved; the
+  repository remains on `main`, one commit ahead of `origin/main`.
+- Next exact slice: after explicit 07.1 approval, 07.2 may complete Blueprint
+  item fields. Do not start 07.2 automatically.
 - Product-owner gate approval: pending; record date, scope and explicit decision.

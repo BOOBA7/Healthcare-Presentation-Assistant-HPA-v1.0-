@@ -15,6 +15,8 @@ from app.domain.models.resource import Resource
 
 
 class SourceLifecycleRepository:
+    _source_verification_token = object()
+
     def _init_source_lifecycle(self, connection):
         connection.execute("""CREATE TABLE IF NOT EXISTS owner_resources (
             user_id TEXT NOT NULL, resource_id TEXT NOT NULL, resource_json TEXT NOT NULL,
@@ -67,11 +69,13 @@ class SourceLifecycleRepository:
         ).fetchone():
             raise WorkflowError("OBJECT_DELETED", "This object was permanently deleted. Use a new identifier.")
 
-    def _remember_source(self, connection, user, resource, *, check_only=False):
+    def _remember_source(self, connection, user, resource, *, check_only=False, _verification_token=None):
         if not connection.in_transaction:
             connection.execute("BEGIN IMMEDIATE")
         self._verify_review_authority(connection, user, resource)
-        SourceScreening.resource(resource, require_text=True)
+        verified_in_transaction = _verification_token is self._source_verification_token
+        if not verified_in_transaction:
+            SourceScreening.resource(resource, require_text=True)
         self._assert_not_deleted(connection, user, "source", resource.id)
         previous = connection.execute(
             "SELECT original_pdf, resource_json FROM owner_resources WHERE user_id = ? AND resource_id = ?",
@@ -82,7 +86,7 @@ class SourceLifecycleRepository:
                      and Resource.model_validate_json(previous[1]).model_dump(mode="json") == resource.model_dump(mode="json"))
         # Keeping an already accepted identical record is not a new acceptance.
         # Deletion/recovery must not depend on a currently available OCR engine.
-        if resource._original_content is not None and not unchanged:
+        if resource._original_content is not None and not unchanged and not verified_in_transaction:
             SourceDocument.verify(resource, resource._original_content)
         if previous is not None and previous[0] != resource._original_content:
             raise WorkflowError("SOURCE_ID_CONFLICT", "This library identifier belongs to another original. Import with a new identifier.")

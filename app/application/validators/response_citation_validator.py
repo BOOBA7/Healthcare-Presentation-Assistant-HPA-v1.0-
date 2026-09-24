@@ -8,6 +8,7 @@ import re
 from app.application.validators.evidence_provenance_validator import EvidenceProvenanceValidator
 from app.domain.exceptions.validation_error import ValidationError
 from app.domain.models.resource import Resource
+from app.application.services.presentation_deidentification import PresentationDeidentification
 
 
 _CITATION = re.compile(
@@ -57,7 +58,10 @@ class ResponseCitationValidator:
             )
             if not isinstance(page_text, str):
                 raise ValidationError("The model response cites a PDF page that does not exist.")
-            if EvidenceProvenanceValidator._normalize(excerpt) not in EvidenceProvenanceValidator._normalize(page_text):
+            normalized_excerpt = EvidenceProvenanceValidator._normalize(excerpt)
+            protected_page = PresentationDeidentification.text(page_text) or ""
+            if (normalized_excerpt not in EvidenceProvenanceValidator._normalize(page_text)
+                    and normalized_excerpt not in EvidenceProvenanceValidator._normalize(protected_page)):
                 raise ValidationError("The model response evidence excerpt was not found on the cited PDF page.")
             verified.append(VerifiedResponseCitation(resource_id, page, excerpt))
         return verified

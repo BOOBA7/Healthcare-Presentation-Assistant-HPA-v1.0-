@@ -1014,9 +1014,15 @@ class UserSessionRepository(SourceLifecycleRepository):
         if removed_ids and _removal_token is not self._resource_removal_token:
             raise WorkflowError("SOURCE_REMOVAL_REQUIRES_STATE", "Remove the source through a Project state transaction.")
         for resource in resources:
-            self._remember_source(connection, user_id, resource, check_only=True)
+            self._remember_source(
+                connection, user_id, resource, check_only=True,
+                _verification_token=self._source_verification_token,
+            )
         for resource in resources:
-            self._remember_source(connection, user_id, resource)
+            self._remember_source(
+                connection, user_id, resource,
+                _verification_token=self._source_verification_token,
+            )
         for resource_id in removed_ids:
             for table in ("project_resource_chunks", "project_resource_pages", "project_resources"):
                 connection.execute(
