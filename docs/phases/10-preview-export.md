@@ -42,9 +42,9 @@ Present a reviewable diff and evidence against every criterion. Record product-o
 
 ## Session handoff
 
-- Current slice: 10.1, not started.
-- Changes and implementation commits: none.
-- Checks/results: not run for this phase.
-- Decisions/blockers: inspect current implementation; no technology choice is preapproved by this plan.
-- Next action: verify prerequisites and execute the authorised slice.
+- Current slice: 10.1 implemented; positive native render remains unverified.
+- Changes: local LibreOffice PPTX-to-PDF adapter, synthetic one-source evaluator and focused tests; no commit.
+- Checks/results: owner ran `venv/bin/python -m pytest -q app/tests/test_presentation_rendering.py` — 3 passed. Native evaluator returned `PRESENTATION_RENDERER_UNAVAILABLE`; LibreOffice is not installed/on PATH.
+- Decision: keep editable PPTX as the single source and render PDF locally with isolated headless LibreOffice profiles. Fidelity limits and stable unavailable/failure errors are documented in the adapter.
+- Next action: install/approve LibreOffice separately, then rerun `venv/bin/python -m app.tests.evaluate_presentation_rendering` and manually compare the synthetic PPTX/PDF before 10.2.
 - Product-owner gate approval: pending; record date, scope and explicit decision.
