@@ -594,6 +594,46 @@ class UserSessionRepository(SourceLifecycleRepository):
         self._cleanup_if_pending()
         return thread, state
 
+    def update_slide_visual(self, user, project, expected_revision, slide_index, *, layout, visual):
+        """Validate and save visual edits atomically without any model/provider call."""
+        from app.application.services.source_assets import is_reviewed
+        stored = self.load(user, project)
+        if stored is None:
+            raise WorkflowError("PROJECT_NOT_FOUND", "Project not found.")
+        thread, state = stored
+        if type(expected_revision) is not int or state.project_revision != expected_revision:
+            raise ConcurrentModificationError()
+        presentation = state.presentation
+        if presentation is None or not 0 <= slide_index < len(presentation.slides):
+            raise WorkflowError("SLIDE_INDEX_INVALID", "The requested slide does not exist.")
+        if visual is None and layout != "text_only":
+            raise WorkflowError("VISUAL_REQUIRED", "This layout requires a supplied visual.")
+        if visual is not None and layout == "text_only":
+            raise WorkflowError("VISUAL_LAYOUT_REQUIRED", "Select a visual layout before placing a visual.")
+        if visual is not None and visual.kind == "image":
+            resource = next((item for item in state.resource_library if item.id == visual.resource_id), None)
+            selected_ids = {item.id for item in presentation.resources}
+            if resource is None or resource.id not in selected_ids or not is_reviewed(resource):
+                raise WorkflowError("REVIEWED_IMAGE_REQUIRED", "Select an image reviewed against its supplied original.")
+            asset = next((item for item in resource.metadata.assets if item.id == visual.asset_id), None)
+            if asset is None or asset.kind != "image" or asset.review_status != "confirmed" or not asset.content_base64:
+                raise WorkflowError("REVIEWED_IMAGE_REQUIRED", "Select an image reviewed against its supplied original.")
+        slide = presentation.slides[slide_index]
+        slide.layout = layout
+        slide.visual = visual
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute("SELECT 1 FROM project_jobs WHERE user_id = ? AND project_id = ? AND status IN ('queued', 'running')", (user, project)).fetchone():
+                raise ProjectJobRunningError()
+            self._save_project_row(connection, user, project, thread, state, None)
+            self._insert_event(connection, user, project, "SLIDE_VISUAL_UPDATED", user, {
+                "slide_index": slide_index, "layout": layout,
+                "visual_kind": visual.kind if visual else None,
+                "resource_id": visual.resource_id if visual and visual.kind == "image" else None,
+                "asset_id": visual.asset_id if visual and visual.kind == "image" else None,
+            })
+        return thread, state
+
     def record_event(
         self,
         user_id: str,
@@ -838,7 +878,23 @@ class UserSessionRepository(SourceLifecycleRepository):
                     raise WorkflowError("SOURCE_ORIGINAL_REQUIRED", "Select a verified library source before saving.")
         ensure_resource_library(state)
         if state.presentation:
+            from app.application.services.source_assets import is_reviewed
             for slide in state.presentation.slides:
+                if slide.visual and slide.visual.kind == "image":
+                    visual_resource = next(
+                        (item for item in state.resource_library if item.id == slide.visual.resource_id), None
+                    )
+                    visual_asset = next(
+                        (item for item in visual_resource.metadata.assets if item.id == slide.visual.asset_id), None
+                    ) if visual_resource else None
+                    selected_ids = {item.id for item in state.presentation.resources}
+                    if (visual_resource is None or visual_resource.id not in selected_ids or not is_reviewed(visual_resource)
+                            or visual_asset is None or visual_asset.kind != "image"
+                            or visual_asset.review_status != "confirmed" or not visual_asset.content_base64):
+                        raise WorkflowError(
+                            "REVIEWED_IMAGE_REQUIRED",
+                            "A slide image must reference an intact Project asset reviewed against its supplied original.",
+                        )
                 if slide.is_validated and slide.content_classification == "medical" and slide.source_missing:
                     raise WorkflowError(
                         "UNSOURCED_MEDICAL_APPROVAL_FORBIDDEN",
@@ -890,7 +946,7 @@ class UserSessionRepository(SourceLifecycleRepository):
                     visible_fields = (
                         "title", "objective", "key_messages", "content", "references",
                         "reference_details", "claims", "evidence_links", "visual_recommendations",
-                        "content_origin", "content_classification", "source_missing",
+                        "content_origin", "content_classification", "source_missing", "layout", "visual",
                     )
                     if any(getattr(slide, field) != getattr(old_slide, field) for field in visible_fields):
                         slide.is_validated = False

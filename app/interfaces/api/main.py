@@ -2,6 +2,7 @@ from app.application.services.pptx_roles import source_warning, reference_warnin
 from app.application.services.presentation_context_policy import PresentationContextPolicy
 from app.domain.models.professional_scope_declaration import ProfessionalScopeDeclaration
 from app.domain.models.claim_evidence import EvidenceLink, MedicalClaim
+from app.domain.models.slide import SlideVisual
 from functools import lru_cache
 import hashlib
 import logging
@@ -189,6 +190,12 @@ class SlideEditRequest(BaseModel):
 
 class SlideReformulationRequest(SlideEditRequest):
     """Human-accepted reformulation; no provider call or implied evidence."""
+
+
+class SlideVisualRequest(BaseModel):
+    expected_revision: int = Field(ge=1, strict=True)
+    layout: str = Field(pattern=r"^(text_only|text_left_visual_right|visual_left_text_right|visual_focus)$")
+    visual: SlideVisual | None = None
 
 
 class SpeakerNoteReviewRequest(BaseModel):
@@ -1611,6 +1618,24 @@ def save_slide_reformulation(
     except (DomainError, ValueError) as exc:
         raise _workflow_conflict(exc) from exc
     return _save_project(user_id, project_id, thread_id, state, event_type="SLIDE_REFORMULATION_ACCEPTED", actor=authenticated_user, extra_audit={"slide_index": index, "content_classification": request.content_classification})
+
+
+@app.put("/projects/{user_id}/{project_id}/slides/{index}/visual")
+def update_slide_visual(
+    user_id: str, project_id: str, index: int, request: SlideVisualRequest,
+    authenticated_user: str = Depends(_authenticated_user),
+):
+    """Persist a layout and either a reviewed supplied image or supplied-value visual."""
+    _assert_owner(user_id, authenticated_user)
+    _require_prototype_input(request)
+    try:
+        thread_id, state = get_repository().update_slide_visual(
+            user_id, project_id, request.expected_revision, index,
+            layout=request.layout, visual=request.visual,
+        )
+    except (DomainError, ValueError) as exc:
+        raise _workflow_conflict(exc) from exc
+    return _project_response(user_id, project_id, thread_id, state)
 
 
 @app.put("/projects/{user_id}/{project_id}/slides/{index}/comments")

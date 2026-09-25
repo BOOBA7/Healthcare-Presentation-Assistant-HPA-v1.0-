@@ -316,3 +316,82 @@ def test_active_job_and_direct_theme_save_cannot_bypass_explicit_selection(works
     repository.create_job('synthetic-owner', 'demo', 'conversation')
     with pytest.raises(ProjectJobRunningError):
         repository.select_presentation_style('synthetic-owner', 'demo', state.project_revision, theme=PresentationTheme.MIDNIGHT)
+
+
+def test_supplied_value_visual_layout_is_strict_durable_and_invalidates_approval(workspace):
+    from app.domain.models.slide import Slide
+    from app.interfaces.storage.user_session_repository import UserSessionRepository
+    client, repository = workspace
+    state = setup_presentation(repository)
+    state.presentation.slides = [Slide(slide_number=1, title='Synthetic', is_validated=True,
+                                       approved_by='synthetic-owner')]
+    repository.save_with_event(
+        'synthetic-owner', 'demo', 'thread', state,
+        'SLIDE_APPROVED', 'synthetic-owner', {'slide_index': 0},
+    )
+    state = repository.load('synthetic-owner', 'demo')[1]
+    path = '/projects/synthetic-owner/demo/slides/0/visual'
+    response = client.put(path, json={
+        'expected_revision': state.project_revision,
+        'layout': 'text_left_visual_right',
+        'visual': {'kind': 'bar_chart', 'categories': ['A', 'B'],
+                   'series': {'Supplied': [1.5, 2.0]}},
+    })
+    assert response.status_code == 200, response.text
+    restored = UserSessionRepository(repository.database_path).load('synthetic-owner', 'demo')[1]
+    slide = restored.presentation.slides[0]
+    assert slide.layout == 'text_left_visual_right'
+    assert slide.visual.categories == ['A', 'B']
+    assert slide.visual.series == {'Supplied': [1.5, 2.0]}
+    assert not slide.is_validated and slide.approved_by is None
+    event = repository.list_events('synthetic-owner', 'demo')[0]
+    assert event['event_type'] == 'SLIDE_VISUAL_UPDATED'
+    assert event['payload']['visual_kind'] == 'bar_chart'
+    assert client.put(path, json={
+        'expected_revision': restored.project_revision,
+        'layout': 'text_left_visual_right',
+        'visual': {'kind': 'line_chart', 'categories': ['A', 'B'], 'series': {'Missing': [1]}},
+    }).status_code == 422
+
+
+def test_visual_server_refuses_stale_revision_unreviewed_image_and_layout_bypass(workspace):
+    from app.domain.models.slide import Slide
+    from app.domain.exceptions.concurrent_modification_error import ConcurrentModificationError
+    from app.domain.exceptions.workflow_error import WorkflowError
+    _, repository = workspace
+    state = setup_presentation(repository)
+    state.presentation.slides = [Slide(slide_number=1, title='Synthetic')]
+    repository.save('synthetic-owner', 'demo', 'thread', state)
+    state = repository.load('synthetic-owner', 'demo')[1]
+    with pytest.raises(ConcurrentModificationError):
+        repository.update_slide_visual('synthetic-owner', 'demo', state.project_revision - 1, 0,
+                                       layout='text_only', visual=None)
+    with pytest.raises(WorkflowError, match='reviewed'):
+        from app.domain.models.slide import SlideVisual
+        repository.update_slide_visual(
+            'synthetic-owner', 'demo', state.project_revision, 0,
+            layout='visual_focus',
+            visual=SlideVisual(
+                kind='image', resource_id='absent-resource', asset_id='unreviewed-image',
+            ),
+        )
+    with pytest.raises(WorkflowError, match='requires a supplied visual'):
+        repository.update_slide_visual('synthetic-owner', 'demo', state.project_revision, 0,
+                                       layout='visual_focus', visual=None)
+
+
+def test_pptx_builds_only_the_supplied_table_values():
+    from pptx import Presentation as PowerPoint
+    from app.application.use_cases.export_powerpoint import ExportPowerPointUseCase, THEMES
+    from app.domain.enums.presentation_theme import PresentationTheme
+    from app.domain.models.slide import Slide, SlideVisual
+    deck = PowerPoint()
+    source = Slide(
+        slide_number=1, title='Synthetic supplied values', layout='visual_focus',
+        visual=SlideVisual(kind='table', columns=['Group', 'Value'], rows=[['A', '12'], ['B', '18']]),
+    )
+    ExportPowerPointUseCase()._add_content_slide(deck, source, THEMES[PresentationTheme.CLINICAL], [])
+    table = next(shape.table for shape in deck.slides[0].shapes if shape.has_table)
+    assert [[cell.text for cell in row.cells] for row in table.rows] == [
+        ['Group', 'Value'], ['A', '12'], ['B', '18'],
+    ]

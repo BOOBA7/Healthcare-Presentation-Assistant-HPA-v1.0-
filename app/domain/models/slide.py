@@ -4,10 +4,45 @@ from typing import List, Literal, Optional
 import hashlib
 import json
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.domain.models.claim_evidence import EvidenceLink, LegacySlideReference, MedicalClaim
 from app.domain.value_objects.speaker_note import SpeakerNote
+
+
+class SlideVisual(BaseModel):
+    """A user-selected visual; no field can request generated imagery."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    kind: Literal["image", "table", "bar_chart", "line_chart", "diagram"]
+    resource_id: str | None = Field(default=None, min_length=1, max_length=128)
+    asset_id: str | None = Field(default=None, min_length=1, max_length=256)
+    title: str = Field(default="", max_length=500)
+    columns: list[str] = Field(default_factory=list, max_length=12)
+    rows: list[list[str]] = Field(default_factory=list, max_length=20)
+    categories: list[str] = Field(default_factory=list, max_length=20)
+    series: dict[str, list[float]] = Field(default_factory=dict)
+    nodes: list[str] = Field(default_factory=list, max_length=12)
+
+    @model_validator(mode="after")
+    def supplied_content_only(self):
+        if self.kind == "image":
+            if not self.resource_id or not self.asset_id:
+                raise ValueError("A supplied image must identify its Project resource and reviewed asset.")
+            if self.columns or self.rows or self.categories or self.series or self.nodes:
+                raise ValueError("An image placement cannot contain generated values.")
+        elif self.resource_id or self.asset_id:
+            raise ValueError("Only supplied-image placements may reference an asset.")
+        elif self.kind == "table":
+            if not self.columns or not self.rows or any(len(row) != len(self.columns) for row in self.rows):
+                raise ValueError("A table requires supplied columns and complete supplied rows.")
+        elif self.kind in {"bar_chart", "line_chart"}:
+            if not self.categories or not self.series or any(len(values) != len(self.categories) for values in self.series.values()):
+                raise ValueError("A chart requires supplied categories and one value per category.")
+        elif not self.nodes:
+            raise ValueError("A diagram requires supplied node labels.")
+        return self
 
 
 class Slide(BaseModel):
@@ -75,6 +110,13 @@ class Slide(BaseModel):
     visual_recommendations: List[str] = Field(
         default_factory=list,
         description="Suggested visuals for this slide.",
+    )
+
+    layout: Literal["text_only", "text_left_visual_right", "visual_left_text_right", "visual_focus"] = "text_only"
+
+    visual: SlideVisual | None = Field(
+        default=None,
+        description="User-supplied image or deterministic visual built only from user-supplied values.",
     )
 
     is_validated: bool = Field(

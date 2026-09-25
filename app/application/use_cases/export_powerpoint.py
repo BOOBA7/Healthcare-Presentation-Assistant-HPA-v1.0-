@@ -6,6 +6,8 @@ from uuid import uuid4
 from pptx import Presentation as PowerPoint
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
+from pptx.chart.data import ChartData
+from pptx.enum.chart import XL_CHART_TYPE
 from pptx.enum.text import PP_ALIGN
 from pptx.util import Inches, Pt
 
@@ -76,7 +78,7 @@ class ExportPowerPointUseCase:
         self._add_title_slide(deck, presentation, palette)
         self._add_agenda_slide(deck, presentation, palette)
         for slide in presentation.slides:
-            self._add_content_slide(deck, slide, palette)
+            self._add_content_slide(deck, slide, palette, resources)
             claim_references = [{"resource_id": link.resource_id} for link in slide.evidence_links]
             for warning in reference_warnings(slide.reference_details + claim_references, resources):
                 self._textbox(deck.slides[-1], warning, 0.8, 6.82, 11.7, 0.25, size=9, color=palette["ink"])
@@ -158,19 +160,31 @@ class ExportPowerPointUseCase:
             self._textbox(slide, item, 1.4, top - 0.02, 10.7, 0.45, size=20, color=palette["ink"], bold=True)
         self._footer(slide, palette)
 
-    def _add_content_slide(self, deck: PowerPoint, source_slide, palette: dict[str, tuple[int, int, int]]) -> None:
+    def _add_content_slide(self, deck: PowerPoint, source_slide, palette: dict[str, tuple[int, int, int]], resources: list[Resource]) -> None:
         slide = deck.slides.add_slide(self._blank_layout(deck))
         self._background(slide, palette["paper"])
         self._header(slide, source_slide.title, palette)
-        bullet_frame = slide.shapes.add_textbox(Inches(0.85), Inches(1.65), Inches(11.5), Inches(3.85)).text_frame
-        bullet_frame.clear()
-        for index, message in enumerate(source_slide.key_messages or [source_slide.content]):
-            paragraph = bullet_frame.paragraphs[0] if index == 0 else bullet_frame.add_paragraph()
-            paragraph.text = message
-            paragraph.level = 0
-            paragraph.font.size = Pt(22)
-            paragraph.font.color.rgb = self._rgb(palette["ink"])
-            paragraph.space_after = Pt(13)
+        visual = source_slide.visual
+        text_left = source_slide.layout != "visual_left_text_right"
+        text_width = 5.45 if visual else 11.5
+        text_x = 0.85 if text_left else 7.0
+        if source_slide.layout != "visual_focus":
+            bullet_frame = slide.shapes.add_textbox(Inches(text_x), Inches(1.65), Inches(text_width), Inches(3.85)).text_frame
+            bullet_frame.clear()
+            for index, message in enumerate(source_slide.key_messages or [source_slide.content]):
+                paragraph = bullet_frame.paragraphs[0] if index == 0 else bullet_frame.add_paragraph()
+                paragraph.text = message
+                paragraph.level = 0
+                paragraph.font.size = Pt(22)
+                paragraph.font.color.rgb = self._rgb(palette["ink"])
+                paragraph.space_after = Pt(13)
+        if visual:
+            visual_x = 6.75 if text_left else 0.75
+            if source_slide.layout == "visual_focus":
+                visual_x, visual_width = 2.05, 9.25
+            else:
+                visual_width = 5.75
+            self._add_visual(slide, visual, resources, palette, visual_x, 1.55, visual_width, 3.9)
         if source_slide.content_origin == "ai_generated" and source_slide.evidence_verified:
             references = [{
                 "title": link.resource_title, "resource_id": link.resource_id,
@@ -182,6 +196,44 @@ class ExportPowerPointUseCase:
         else:
             self._add_authorship_box(slide, source_slide, palette)
         self._footer(slide, palette, self._content_origin_label(source_slide))
+
+    def _add_visual(self, slide, visual, resources, palette, left, top, width, height):
+        if visual.kind == "image":
+            from app.application.services.source_assets import asset_content, is_reviewed
+            resource = next((item for item in resources if item.id == visual.resource_id), None)
+            if resource is None or not is_reviewed(resource):
+                raise ValueError("A reviewed supplied image is required for export.")
+            content, media_type = asset_content(resource, visual.asset_id)
+            if not media_type or not media_type.startswith("image/"):
+                raise ValueError("The selected supplied asset is not an image.")
+            slide.shapes.add_picture(BytesIO(content), Inches(left), Inches(top), Inches(width), Inches(height))
+            return
+        if visual.kind == "table":
+            shape = slide.shapes.add_table(len(visual.rows) + 1, len(visual.columns), Inches(left), Inches(top), Inches(width), Inches(height))
+            for column, label in enumerate(visual.columns):
+                shape.table.cell(0, column).text = label
+            for row_index, row in enumerate(visual.rows, 1):
+                for column, value in enumerate(row):
+                    shape.table.cell(row_index, column).text = value
+            return
+        if visual.kind in {"bar_chart", "line_chart"}:
+            data = ChartData()
+            data.categories = visual.categories
+            for name, values in visual.series.items():
+                data.add_series(name, values)
+            chart_type = XL_CHART_TYPE.COLUMN_CLUSTERED if visual.kind == "bar_chart" else XL_CHART_TYPE.LINE_MARKERS
+            slide.shapes.add_chart(chart_type, Inches(left), Inches(top), Inches(width), Inches(height), data)
+            return
+        gap = width / max(len(visual.nodes), 1)
+        for index, label in enumerate(visual.nodes):
+            box = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(left + index * gap), Inches(top + 1.1), Inches(max(gap - .18, .5)), Inches(1.05))
+            box.fill.solid()
+            box.fill.fore_color.rgb = self._rgb(palette["accent"])
+            box.text_frame.text = label
+            if index:
+                arrow = slide.shapes.add_shape(MSO_SHAPE.RIGHT_ARROW, Inches(left + index * gap - .18), Inches(top + 1.43), Inches(.22), Inches(.3))
+                arrow.fill.solid()
+                arrow.fill.fore_color.rgb = self._rgb(palette["primary"])
 
     def _header(self, slide, title: str, palette: dict[str, tuple[int, int, int]]) -> None:
         bar = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0), Inches(0), Inches(13.333), Inches(1.05))

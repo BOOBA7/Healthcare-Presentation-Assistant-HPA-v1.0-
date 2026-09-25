@@ -1,6 +1,6 @@
 # Phase 09 — Themes, layouts and supplied visuals
 
-Status: Planned. Implementation and product-owner gate approval: pending.
+Status: In progress. 09.1 approved by the product owner on 2026-09-25; 09.2 completed locally and review pending.
 
 ## Outcome and scope
 
@@ -42,9 +42,9 @@ Present a reviewable diff and evidence against every criterion. Record product-o
 
 ## Session handoff
 
-- Current slice: 09.1 completed locally; product-owner review pending. No commit created.
-- Result/files: HPA themes, finite colour palettes and explicitly imported local PPTX templates now persist through the existing Project aggregate and SQLite repository. Deterministic repository/API/use-case gates expose selection only after Blueprint approval, close it when slide generation starts, and require an explicit style before generation. The browser no longer offers evidence-library PPTX files as styles; evidence import and local-template selection remain separate actions.
-- Checks/results: focused 09.1 selection/gate tests **8 passed**; one affected provider-free regression pass **31 passed, 6 warnings**. The complete legacy `app/tests/test_pptx_roles.py` run produced **19 passed, 2 unrelated failures** in older asset/export expectations; the 09.1 subset passed. Ruff on modified Python files, `compileall -q app`, and `git diff --check` passed. Node was unavailable, so `node --check` was not run.
-- Decisions/blockers: palettes are a finite enum (`theme`, `teal`, `blue`, `warm`) and affect deterministic PPTX export. Style selection is persisted as an explicit boolean rather than inferred from the default theme. No 09.2 layout/visual work or additional 09.3 provenance/invalidation work was added.
-- Next action: review and explicitly approve 09.1; do not start 09.2 without separate authorisation.
-- Product-owner gate approval: pending; record date, scope and explicit decision.
+- Current slice: 09.2 completed locally; product-owner review pending. No commit created and 09.3 was not started.
+- Result/files: four persisted slide layouts now place reviewed Project images or deterministic tables, bar/line charts and diagrams. Structured server models accept only supplied values; medical-image generation and missing-value completion have no supported input path. Image selection is restricted to intact, user-reviewed assets in selected Project resources. Changes autosave transactionally with optimistic concurrency and audit, survive restart, invalidate slide/global approvals, and render into PPTX; the `/app` review UI supports replacement and placement.
+- Checks/results: focused provider-free 09.2 tests **3 passed** (persistence/invalidation, refusal/concurrency, exact supplied table values). Targeted 09.1 style regression **1 passed**; the known legacy export test still fails before rendering on the pre-existing audited-approval gate (`SLIDE_APPROVAL_REQUIRED`). Ruff on modified 09.2 Python files, `compileall -q app`, and `git diff --check` passed. Node was unavailable, so `node --check` was not run. No full suite was run.
+- Decisions/blockers: visual kinds and layouts are finite; chart/table/diagram payloads reject incomplete dimensions and extra fields, while images reference canonical reviewed assets rather than storing a new copy. `app/core/config.py` is a concurrent user modification and is excluded from this slice. Browser/artifact visual inspection remains pending because Node is unavailable.
+- Next action: review and explicitly approve 09.2; do not start 09.3 without separate authorisation.
+- Product-owner gate approval: 09.1 approved 2026-09-25; 09.2 pending.
