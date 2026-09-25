@@ -19,7 +19,7 @@ Planning read the complete PRD, documentation index, project overview, CI and se
 | [06](06-claim-evidence.md) | Claim evidence, coverage and resource discussion | Approved 2026-09-17 with documented reservations |
 | [07](07-planning.md) | Agenda and Blueprint approval | Approved 2026-09-24 |
 | [08](08-slide-review.md) | Supported generation, editing and speaker notes | Planned |
-| [09](09-visual-style.md) | Themes, layouts and supplied visuals | Planned |
+| [09](09-visual-style.md) | Themes, layouts and supplied visuals | Approved 2026-09-25 |
 | [10](10-preview-export.md) | Faithful preview, PowerPoint and PDF | Planned |
 | [11](11-public-pilot.md) | Measured public-resource pilot | Planned |
 | [12](12-professional-mode.md) | Verified professional local execution | Planned |

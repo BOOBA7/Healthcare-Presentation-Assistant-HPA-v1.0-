@@ -1,6 +1,6 @@
 # Phase 09 — Themes, layouts and supplied visuals
 
-Status: In progress. 09.1 approved by the product owner on 2026-09-25; 09.2 approved on 2026-09-25; 09.3 completed locally and review pending.
+Status: Completed and approved by the product owner on 2026-09-25.
 
 ## Outcome and scope
 
@@ -42,9 +42,9 @@ Present a reviewable diff and evidence against every criterion. Record product-o
 
 ## Session handoff
 
-- Current slice: 09.3 completed locally; product-owner review pending. No commit created and no later phase was started.
+- Current slice: 09.3 completed and approved; phase 09 gate closed. No commit was created by the agent and no later phase was started.
 - Result/files: style, layout and visual provenance now persist as deterministic server-issued receipts over the exact theme/template identity, supplied values, or intact reviewed asset hashes. Authenticated style/visual actions retain optimistic concurrency and atomic audit; direct visual mutation or stale receipts are refused. Later style changes and visual changes invalidate affected slide, global slide and final approvals, then survive repository restart.
 - Checks/results: focused provider-free 09.3 tests **3 passed** (late-style and final invalidation/restart, supplied-value provenance/invalidation, concurrency/refusal/tamper). Targeted Ruff, `compileall -q app`, and `git diff --check` passed. Node was unavailable, so `node --check` was not run. No full suite was run.
 - Decisions/blockers: provenance stores identifiers and SHA-256 receipts, not copied image bytes or invented values; the existing reviewed-asset gate remains authoritative. `app/core/config.py` is a concurrent user modification and was not touched. Browser checks remain pending because Node is unavailable.
-- Next action: review and explicitly approve 09.3; do not start phase 10 without separate authorisation.
-- Product-owner gate approval: 09.1 and 09.2 approved 2026-09-25; 09.3 pending.
+- Next action: begin phase 10 only with separate authorisation, starting at 10.1.
+- Product-owner gate approval: phase 09 explicitly approved in full on 2026-09-25.
