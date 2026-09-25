@@ -319,13 +319,14 @@ class SourceLifecycleRepository:
             (user, project),
         ):
             name = json.loads(payload).get("filename", "")
-            if re.fullmatch(r"[0-9a-fA-F-]{36}-[0-9a-f]{8}\.pptx", name):
+            if re.fullmatch(r"[0-9a-fA-F-]{36}-[0-9a-f]{8}\.(?:pptx|pdf)", name):
                 names.add(name)
         if state.presentation and re.fullmatch(r"[0-9a-fA-F-]{36}", state.presentation.id):
             # Includes old exports interrupted between file creation and audit.
             prefix = state.presentation.id
-            names.update(p.name for p in self.legacy_exports_path.glob(f"{prefix}-*.pptx")
-                         if re.fullmatch(re.escape(prefix) + r"-[0-9a-f]{8}\.pptx", p.name))
+            for suffix in ("pptx", "pdf"):
+                names.update(p.name for p in self.legacy_exports_path.glob(f"{prefix}-*.{suffix}")
+                             if re.fullmatch(re.escape(prefix) + rf"-[0-9a-f]{{8}}\.{suffix}", p.name))
         if names:
             for (other_payload,) in connection.execute("SELECT state_json FROM project_sessions WHERE user_id != ?", (user,)):
                 other_id = (json.loads(other_payload).get("presentation") or {}).get("id")
@@ -393,7 +394,7 @@ class SourceLifecycleRepository:
                 connection.execute("BEGIN IMMEDIATE")
                 generation = connection.execute("SELECT pending FROM source_cleanup_state WHERE id = 1").fetchone()[0]
                 for (filename,) in connection.execute("SELECT filename FROM source_cleanup").fetchall():
-                    if not re.fullmatch(r"[0-9a-fA-F-]{36}-[0-9a-f]{8}\.pptx", filename):
+                    if not re.fullmatch(r"[0-9a-fA-F-]{36}-[0-9a-f]{8}\.(?:pptx|pdf)", filename):
                         return False
                     if self.legacy_exports_path.is_symlink():
                         return False

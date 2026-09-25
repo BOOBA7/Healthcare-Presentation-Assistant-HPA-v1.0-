@@ -35,6 +35,29 @@ COLOURS: dict[PresentationColour, dict[str, tuple[int, int, int]]] = {
 class ExportPowerPointUseCase:
     """Export a human-approved presentation in a professional visual theme."""
 
+    @staticmethod
+    def require_eligible(presentation: Presentation, resources: list[Resource]) -> None:
+        """Apply the single deterministic gate shared by preview and exports."""
+        from app.application.services.source_date_policy import SourceDatePolicy
+
+        SourceDatePolicy.require_all(resources)
+        if not presentation.slides:
+            raise ValueError("Generate presentation slides before export.")
+        if not presentation.state.presentation_validated:
+            raise ValueError("Human approval of the final presentation is required before export.")
+        WorkflowPolicy.require_export_eligible(presentation)
+        if not resources or not presentation.state.resources_validated:
+            raise ValueError("Validated user resources are required before export.")
+        if not all(resource.is_validated for resource in resources):
+            raise ValueError("Every resource must be validated by the user before export.")
+        if presentation.agenda is None or not presentation.agenda.is_validated:
+            raise ValueError("A user-approved agenda is required before export.")
+        if presentation.blueprint is None or not presentation.state.blueprint_validated:
+            raise ValueError("A user-approved Blueprint is required before export.")
+        EvidenceProvenanceValidator().validate_presentation(
+            [slide.model_copy(deep=True) for slide in presentation.slides], resources
+        )
+
     def execute(
         self,
         presentation: Presentation,
@@ -42,23 +65,8 @@ class ExportPowerPointUseCase:
         graphic_source: Resource | None = None,
         resources: list[Resource] | None = None,
     ) -> Path | BytesIO:
-        from app.application.services.source_date_policy import SourceDatePolicy
         resources = resources if resources is not None else presentation.resources
-        SourceDatePolicy.require_all(resources)
-        if not presentation.slides:
-            raise ValueError("Generate presentation slides before exporting PowerPoint.")
-        if not presentation.state.presentation_validated:
-            raise ValueError("Human approval of the final presentation is required before export.")
-        WorkflowPolicy.require_export_eligible(presentation)
-        if not resources or not presentation.state.resources_validated:
-            raise ValueError("Validated user resources are required before exporting PowerPoint.")
-        if not all(resource.is_validated for resource in resources):
-            raise ValueError("Every resource must be validated by the user before export.")
-        if presentation.agenda is None or not presentation.agenda.is_validated:
-            raise ValueError("A user-approved agenda is required before exporting PowerPoint.")
-        EvidenceProvenanceValidator().validate_presentation(
-            [slide.model_copy(deep=True) for slide in presentation.slides], resources
-        )
+        self.require_eligible(presentation, resources)
 
         if isinstance(output_dir, Path):
             output_dir.mkdir(parents=True, exist_ok=True)

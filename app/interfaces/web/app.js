@@ -519,6 +519,11 @@ function presentationPreviewCitationNumber(resourceId) {
 function renderPresentationPreview(presentation) {
   const area = $("#presentation-preview-area");
   if (!area) return;
+  const gate = state.project?.export_gate;
+  if (!gate?.allowed) {
+    area.innerHTML = presentation?.slides?.length ? `<section class="review-section presentation-preview"><h2>${escapeHtml(t("presentationPreview"))}</h2><p class="preview-note">${escapeHtml(gate?.message || "Preview unavailable until every export requirement is approved.")}</p></section>` : "";
+    return;
+  }
   const pages = presentationPreviewPages(presentation);
   if (!pages.length) {
     area.innerHTML = "";

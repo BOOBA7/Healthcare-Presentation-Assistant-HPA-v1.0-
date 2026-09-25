@@ -42,9 +42,9 @@ Present a reviewable diff and evidence against every criterion. Record product-o
 
 ## Session handoff
 
-- Current slice: 10.2 implemented; 10.1 explicitly approved at `78e9554` on 2026-09-25. No commit created for 10.2.
-- Changes: preview/PPTX/PDF share a stable approved-content revision; PDF renders from the editable PPTX; approved notes, visible citation markers and cited resources are included. Existing deterministic export gates remain authoritative.
-- Files: `app/application/use_cases/export_powerpoint.py`, `app/interfaces/api/main.py`, `app/interfaces/web/app.js`, `app/interfaces/web/index.html`.
-- Owner checks: focused pytest command — 24 passed, 6 warnings. `node --check` unavailable (`node: command not found`). Native evaluator returned `PRESENTATION_RENDERER_UNAVAILABLE` because LibreOffice is absent. Final revision-binding edits were reviewed but not rerun.
-- Next action: verify JavaScript syntax where Node is available and, after separately installing/approving LibreOffice, inspect matching-revision synthetic PPTX/PDF output manually. Do not begin 10.3 without explicit authorisation.
+- Current slice: 10.3 implemented; 10.1 explicitly approved at `78e9554` on 2026-09-25. No commit created for 10.2/10.3.
+- Changes: preview/PPTX/PDF use one deterministic eligibility gate; exports require the preview’s exact approved revision and retain the existing atomic save refusal for concurrent edits/deletion. PDF temporary workspace cleanup remains scoped to success/failure; Project cleanup now recognizes owned legacy PPTX/PDF outputs only, never external copies.
+- Files: `app/application/use_cases/export_powerpoint.py`, `app/interfaces/api/main.py`, `app/interfaces/web/app.js`, `app/interfaces/storage/source_lifecycle_repository.py`.
+- Owner checks: 10.3 checks not run. `node --check app/interfaces/web/app.js` could not start (`node: command not found`). No pytest result supplied. Native evaluator remains blocked by absent LibreOffice.
+- Next action: run the focused synthetic export/race/deletion checks where Node is available; inspect matching-revision PPTX/PDF manually after separately installing/approving LibreOffice. Product-owner approval remains pending.
 - Product-owner gate approval for 10.2: pending.

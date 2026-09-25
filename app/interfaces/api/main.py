@@ -345,12 +345,14 @@ def _project_response(user_id: str, project_id: str, thread_id: str, state: Grap
     comparison_resources = [r for r in state.resource_library if r.id in selected and r.is_validated]
     comparisons = DiscussionTransferService().comparisons(state.resource_conversation_history, comparison_resources)
     transfer_context = DiscussionTransferService().planning_context(state)
+    export_gate = _export_gate_response(state)
     return {
         "user_id": user_id,
         "project_id": project_id,
         "thread_id": thread_id,
         "project_revision": state.project_revision,
-        "approved_revision": _approved_revision(state.presentation) if state.presentation and state.presentation.state.presentation_validated else None,
+        "approved_revision": _approved_revision(state.presentation) if state.presentation and export_gate["allowed"] else None,
+        "export_gate": export_gate,
         "presentation": presentation,
         "resource_library": [_resource_response(resource) for resource in state.resource_library],
         "owner_library": [_resource_response(resource) for resource in get_repository().list_library_resources(user_id)],
@@ -387,6 +389,33 @@ def _approved_revision(presentation) -> str:
     snapshot.state.workflow_status = WorkflowStatus.READY_FOR_EXPORT
     payload = json.dumps(snapshot.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _require_export_snapshot(state: GraphState) -> list:
+    """Use one gate for preview, PPTX and PDF on the same stored snapshot."""
+    presentation = state.presentation
+    if presentation is None:
+        raise WorkflowError("PRESENTATION_REQUIRED", "Create a presentation before preview or export.")
+    WorkflowPolicy.require_status(
+        presentation.state.workflow_status,
+        (WorkflowStatus.READY_FOR_EXPORT, WorkflowStatus.EXPORTED),
+        "preview or export the presentation",
+    )
+    resources = resolve_presentation_resources(state)
+    ExportPowerPointUseCase.require_eligible(presentation, resources)
+    return resources
+
+
+def _export_gate_response(state: GraphState) -> dict[str, object]:
+    try:
+        _require_export_snapshot(state)
+    except (DomainError, ValueError) as exc:
+        return {
+            "allowed": False,
+            "code": getattr(exc, "code", "EXPORT_GATE_BLOCKED"),
+            "message": getattr(exc, "user_message", str(exc)),
+        }
+    return {"allowed": True, "code": None, "message": None}
 
 
 def _resource_response(resource) -> dict[str, object]:
@@ -1720,16 +1749,11 @@ def export_powerpoint(user_id: str, project_id: str, approved_revision: str | No
     if stored is None or stored[1].presentation is None:
         raise HTTPException(status_code=404, detail="Presentation not found.")
     thread_id, state = stored
-    if approved_revision and approved_revision != _approved_revision(state.presentation):
+    if not approved_revision or approved_revision != _approved_revision(state.presentation):
         raise HTTPException(status_code=409, detail={"code": "APPROVED_REVISION_STALE", "message": "The approved presentation changed. Reload its preview before export.", "retryable": False})
     try:
-        WorkflowPolicy.require_status(
-            state.presentation.state.workflow_status,
-            (WorkflowStatus.READY_FOR_EXPORT, WorkflowStatus.EXPORTED),
-            "export the presentation",
-        )
-        WorkflowPolicy.require_export_eligible(state.presentation)
-    except ValueError as exc:
+        resources = _require_export_snapshot(state)
+    except (DomainError, ValueError) as exc:
         raise _workflow_conflict(exc) from exc
     try:
         custom_template = (
@@ -1742,9 +1766,9 @@ def export_powerpoint(user_id: str, project_id: str, approved_revision: str | No
             state.presentation,
             output,
             custom_template,
-            resolve_presentation_resources(state),
+            resources,
         )
-    except ValueError as exc:
+    except (DomainError, ValueError) as exc:
         raise _workflow_conflict(exc) from exc
     state.presentation.state.workflow_status = WorkflowStatus.EXPORTED
     _save_project(
@@ -1767,15 +1791,10 @@ def export_pdf(user_id: str, project_id: str, approved_revision: str | None = No
     if stored is None or stored[1].presentation is None:
         raise HTTPException(status_code=404, detail="Presentation not found.")
     thread_id, state = stored
-    if approved_revision and approved_revision != _approved_revision(state.presentation):
+    if not approved_revision or approved_revision != _approved_revision(state.presentation):
         raise HTTPException(status_code=409, detail={"code": "APPROVED_REVISION_STALE", "message": "The approved presentation changed. Reload its preview before export.", "retryable": False})
     try:
-        WorkflowPolicy.require_status(
-            state.presentation.state.workflow_status,
-            (WorkflowStatus.READY_FOR_EXPORT, WorkflowStatus.EXPORTED),
-            "export the presentation",
-        )
-        WorkflowPolicy.require_export_eligible(state.presentation)
+        resources = _require_export_snapshot(state)
         custom_template = (
             get_repository().presentation_template_source(user_id, state.presentation.custom_template_id)
             if state.presentation.custom_template_id
@@ -1790,7 +1809,7 @@ def export_pdf(user_id: str, project_id: str, approved_revision: str | None = No
                 state.presentation,
                 pptx_content,
                 custom_template,
-                resolve_presentation_resources(state),
+                resources,
             )
             pptx_path.write_bytes(pptx_content.getvalue())
             LocalPresentationRenderer().render_pdf(pptx_path, pdf_path)
