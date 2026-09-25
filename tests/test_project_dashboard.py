@@ -82,11 +82,20 @@ def test_dashboard_returns_only_persisted_project_metadata_and_resume_data(tmp_p
         f"/projects/professor/cardiology/resources/{resource_id}/attach",
         headers=headers,
     ).status_code == 200
+    thread_id, style_state = repository.load("professor", "cardiology")
+    style_state.presentation.state.blueprint_validated = True
+    from app.domain.enums.workflow_status import WorkflowStatus
+    style_state.presentation.state.workflow_status = WorkflowStatus.SLIDE_GENERATION
+    repository.save("professor", "cardiology", thread_id, style_state)
     assert client.put(
         "/projects/professor/cardiology/theme",
         headers=headers,
         json={"theme": "academic", "expected_revision": repository.load("professor", "cardiology")[1].project_revision},
     ).status_code == 200
+    thread_id, style_state = repository.load("professor", "cardiology")
+    style_state.presentation.state.blueprint_validated = False
+    style_state.presentation.state.workflow_status = WorkflowStatus.AWAITING_RESOURCE_VALIDATION
+    repository.save("professor", "cardiology", thread_id, style_state)
 
     dashboard = client.get("/users/professor/dashboard", headers=headers)
     assert dashboard.status_code == 200
@@ -127,6 +136,7 @@ def test_dashboard_returns_only_persisted_project_metadata_and_resume_data(tmp_p
     )
     thread_id, state = repository.load("professor", "cardiology")
     state.presentation.state.blueprint_validated = True
+    state.presentation.state.workflow_status = WorkflowStatus.SLIDE_GENERATION
     repository.save("professor", "cardiology", thread_id, state)
     repository.select_presentation_style("professor", "cardiology", state.project_revision, template_id=template["id"])
     styled = client.get("/users/professor/dashboard", headers=headers).json()

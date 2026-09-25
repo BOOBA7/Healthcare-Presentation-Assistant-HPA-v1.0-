@@ -41,6 +41,8 @@ def setup_presentation(repository):
     )
     state.presentation.state.blueprint_validated = True
     state.presentation.state.resources_validated = True
+    from app.domain.enums.workflow_status import WorkflowStatus
+    state.presentation.state.workflow_status = WorkflowStatus.SLIDE_GENERATION
     repository.save('synthetic-owner', 'demo', thread, state)
     return state
 
@@ -56,10 +58,6 @@ def test_explicit_reuse_restart_no_evidence_approval_and_invalidation(workspace)
     identifier = response.json()['resource_id']
     thread, state = repository.load('synthetic-owner', 'demo')
     assert state.presentation.custom_template_id is None
-    state.presentation.slides = [Slide(slide_number=1, title='Synthetic', is_validated=True)]
-    state.presentation.state.slides_validated = True
-    state.presentation.state.presentation_validated = True
-    repository.save('synthetic-owner', 'demo', thread, state)
     before = state.resource_library[0].model_dump()
     response = client.put('/projects/synthetic-owner/demo/theme', json={
         'custom_template_id': identifier, 'expected_revision': state.project_revision,
@@ -70,8 +68,7 @@ def test_explicit_reuse_restart_no_evidence_approval_and_invalidation(workspace)
     assert state.presentation.custom_template_id == identifier
     assert state.presentation.resources == []
     assert state.resource_library[0].model_dump() == before
-    assert not state.presentation.slides[0].is_validated
-    assert not state.presentation.state.presentation_validated
+    assert state.presentation.style_selected
     assert state.presentation.state.blueprint_validated
     assert state.presentation.state.resources_validated
     assert not state.resource_library[0].metadata.asset_reviews
@@ -81,6 +78,49 @@ def test_explicit_reuse_restart_no_evidence_approval_and_invalidation(workspace)
     assert 'Synthetic evidence' not in str(event)
     assert restored.presentation_template_source('other', identifier) is None
     assert not list(repository.templates_path.iterdir())
+
+    state.presentation.slides = [Slide(slide_number=1, title='Synthetic')]
+    repository.save('synthetic-owner', 'demo', thread, state)
+    with pytest.raises(ValueError, match='before slide generation'):
+        restored.select_presentation_style(
+            'synthetic-owner', 'demo', state.project_revision,
+            template_id=identifier,
+        )
+
+
+def test_hpa_theme_and_colour_are_explicit_durable_and_stage_gated(workspace):
+    from app.domain.enums.presentation_theme import PresentationColour, PresentationTheme
+    from app.domain.enums.workflow_status import WorkflowStatus
+    client, repository = workspace
+    state = setup_presentation(repository)
+    path = '/projects/synthetic-owner/demo/theme'
+
+    response = client.put(path, json={
+        'theme': 'academic', 'colour': 'blue', 'expected_revision': state.project_revision,
+    })
+    assert response.status_code == 200, response.text
+    restored = type(repository)(repository.database_path).load('synthetic-owner', 'demo')[1]
+    assert restored.presentation.theme == PresentationTheme.ACADEMIC
+    assert restored.presentation.colour == PresentationColour.BLUE
+    assert restored.presentation.style_selected
+    assert repository.list_events('synthetic-owner', 'demo')[0]['payload']['colour'] == 'blue'
+
+    restored.presentation.state.workflow_status = WorkflowStatus.AWAITING_SLIDE_APPROVAL
+    repository.save('synthetic-owner', 'demo', response.json()['thread_id'], restored)
+    response = client.put(path, json={
+        'colour': 'warm', 'expected_revision': restored.project_revision,
+    })
+    assert response.status_code == 409
+    assert response.json()['detail']['code'] == 'STYLE_SELECTION_CLOSED'
+
+
+def test_slide_job_requires_explicit_style_without_calling_provider(workspace):
+    client, repository = workspace
+    setup_presentation(repository)
+    response = client.post('/api/v1/projects/synthetic-owner/demo/slides/jobs')
+    assert response.status_code == 409
+    assert response.json()['detail']['code'] == 'STYLE_SELECTION_REQUIRED'
+    assert repository.active_job('synthetic-owner', 'demo') is None
 
 
 @pytest.mark.parametrize('roundtrip', [False, True])

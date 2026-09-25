@@ -53,7 +53,7 @@ from app.application.services.resource_library import ensure_resource_library, r
 from app.core.config import get_settings
 from app.core.versioning import HARNESS_VERSION, RETRIEVAL_VERSION, WORKFLOW_VERSION
 from app.interfaces.storage.user_session_repository import UserSessionRepository
-from app.domain.enums.presentation_theme import PresentationTheme
+from app.domain.enums.presentation_theme import PresentationColour, PresentationTheme
 from app.domain.enums.evidence_context_mode import EvidenceContextMode
 from app.domain.enums.audience_type import AudienceType
 from app.domain.enums.language import Language
@@ -210,6 +210,7 @@ class ThemeRequest(BaseModel):
     expected_revision: int = Field(ge=1, strict=True)
     theme: PresentationTheme | None = None
     custom_template_id: str | None = Field(default=None, min_length=1, max_length=128)
+    colour: PresentationColour | None = None
 
 
 class PresentationDetailsRequest(BaseModel):
@@ -1465,7 +1466,7 @@ def update_theme(user_id: str, project_id: str, request: ThemeRequest, authentic
     try:
         thread_id, state = get_repository().select_presentation_style(
             user_id, project_id, request.expected_revision,
-            template_id=request.custom_template_id, theme=request.theme,
+            template_id=request.custom_template_id, theme=request.theme, colour=request.colour,
         )
     except ValueError as exc:
         raise _workflow_conflict(exc) from exc

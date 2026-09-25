@@ -8,3 +8,12 @@ class PresentationTheme(str, Enum):
     ACADEMIC = "academic"
     EXECUTIVE = "executive"
     MIDNIGHT = "midnight"
+
+
+class PresentationColour(str, Enum):
+    """Finite colour choices offered during explicit style selection."""
+
+    THEME = "theme"
+    TEAL = "teal"
+    BLUE = "blue"
+    WARM = "warm"

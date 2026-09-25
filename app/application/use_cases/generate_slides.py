@@ -36,6 +36,10 @@ class GenerateSlidesUseCase:
 
         if presentation.blueprint is None:
             raise ValueError("Presentation blueprint has not been generated.")
+        if not presentation.state.blueprint_validated:
+            raise ValueError("Approve the Blueprint before generating slides.")
+        if not presentation.style_selected:
+            raise ValueError("Select a visual style after Blueprint approval before generating slides.")
 
         resolved_resources = resources if resources is not None else presentation.resources
 

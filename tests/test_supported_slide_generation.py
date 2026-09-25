@@ -103,6 +103,7 @@ def presentation(outline_count=1):
         is_validated=True,
     )
     result.state.blueprint_validated = True
+    result.style_selected = True
     result.state.workflow_status = WorkflowStatus.SLIDE_GENERATION
     result.professional_scope_declaration = ProfessionalScopeDeclaration(
         actor_user_id="owner",

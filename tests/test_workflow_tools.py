@@ -711,6 +711,8 @@ def test_user_authored_blueprint_item_becomes_a_slide_without_a_model_call():
             is_validated=True,
         )
     ]
+    presentation.state.blueprint_validated = True
+    presentation.style_selected = True
 
     # No constructor: this branch must not initialize or call an LLM chain.
     result = GenerateSlidesUseCase.execute(object.__new__(GenerateSlidesUseCase), presentation)
@@ -766,6 +768,8 @@ def test_unsupported_ai_outline_blocks_only_that_slide_and_keeps_supported_user_
         )
     ]
     presentation.state.resources_validated = True
+    presentation.state.blueprint_validated = True
+    presentation.style_selected = True
     presentation.state.workflow_status = WorkflowStatus.SLIDE_GENERATION
     result = GenerateSlidesUseCase.execute(object.__new__(GenerateSlidesUseCase), presentation)
 

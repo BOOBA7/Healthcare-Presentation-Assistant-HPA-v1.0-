@@ -547,7 +547,7 @@ class UserSessionRepository(SourceLifecycleRepository):
         SourceDocument.verify(resource, resource._original_content)
         return resource
 
-    def select_presentation_style(self, user, project, expected_revision, *, template_id=None, theme=None):
+    def select_presentation_style(self, user, project, expected_revision, *, template_id=None, theme=None, colour=None):
         """Authenticated API supplies the owner; state, invalidation and audit commit together."""
         from app.application.services.source_date_policy import SourceDatePolicy
         stored = self.load(user, project)
@@ -560,9 +560,13 @@ class UserSessionRepository(SourceLifecycleRepository):
         presentation = state.presentation
         if presentation is None:
             raise WorkflowError("PRESENTATION_REQUIRED", "Create a presentation before selecting a style.")
+        if not presentation.state.blueprint_validated:
+            raise WorkflowError("BLUEPRINT_APPROVAL_REQUIRED", "Approve the Blueprint before selecting a visual style.")
+        if presentation.slides or presentation.state.workflow_status.value != "slide_generation":
+            raise WorkflowError("STYLE_SELECTION_CLOSED", "Select the visual style before slide generation starts.")
+        if template_id and theme is not None:
+            raise WorkflowError("STYLE_CHOICE_AMBIGUOUS", "Select either an HPA theme or a local PowerPoint template.")
         if template_id:
-            if not presentation.state.blueprint_validated:
-                raise WorkflowError("BLUEPRINT_APPROVAL_REQUIRED", "Approve the Blueprint before reusing a graphic template.")
             source = self.presentation_template_source(user, template_id)
             if source is None or source.file_type.value != "pptx" or source._original_content is None:
                 raise WorkflowError("TEMPLATE_UNAVAILABLE", "Select a screened PowerPoint from your local library.")
@@ -572,8 +576,11 @@ class UserSessionRepository(SourceLifecycleRepository):
         elif theme is not None:
             presentation.theme = theme
             presentation.custom_template_id = None
-        else:
+        elif colour is None:
             raise WorkflowError("STYLE_REQUIRED", "Select a built-in theme or a screened PowerPoint.")
+        if colour is not None:
+            presentation.colour = colour
+        presentation.style_selected = True
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             if connection.execute("SELECT 1 FROM project_jobs WHERE user_id = ? AND project_id = ? AND status IN ('queued', 'running')", (user, project)).fetchone():
@@ -581,6 +588,7 @@ class UserSessionRepository(SourceLifecycleRepository):
             self._save_project_row(connection, user, project, thread, state, None, style_action=True)
             self._insert_event(connection, user, project, "PRESENTATION_THEME_SELECTED", user,
                                {"template_resource_id": presentation.custom_template_id, "theme": presentation.theme.value,
+                                "colour": presentation.colour.value,
                                 "workflow_status": presentation.state.workflow_status.value,
                                 "original_sha256": source.metadata.original_sha256 if template_id else None})
         self._cleanup_if_pending()
@@ -982,15 +990,17 @@ class UserSessionRepository(SourceLifecycleRepository):
                 presentation.custom_template_id = None
             changed_template = presentation.custom_template_id != old_template
             changed_theme = old_presentation and presentation.theme != old_presentation.theme
+            changed_colour = old_presentation and presentation.colour != old_presentation.colour
+            changed_style_selection = old_presentation and presentation.style_selected != old_presentation.style_selected
             automatic_clear = removed_template and presentation.custom_template_id is None and not changed_theme
-            if (changed_template or changed_theme) and not style_action and not automatic_clear:
+            if (changed_template or changed_theme or changed_colour or changed_style_selection) and not style_action and not automatic_clear:
                 raise WorkflowError("EXPLICIT_STYLE_ACTION_REQUIRED", "Use the explicit style-selection action.")
             if presentation.custom_template_id:
                 self._assert_not_deleted(connection, user_id, "source", presentation.custom_template_id)
                 candidate = connection.execute("SELECT resource_json FROM owner_resources WHERE user_id = ? AND resource_id = ?", (user_id, presentation.custom_template_id)).fetchone()
                 if candidate is None or json.loads(candidate[0]).get("file_type") != "pptx":
                     raise WorkflowError("TEMPLATE_UNAVAILABLE", "Select a screened PowerPoint from your local library.")
-            if changed_template or changed_theme:
+            if changed_template or changed_theme or changed_colour:
                 self._queue_project_exports(connection, user_id, project_id, state)
                 presentation.state.presentation_validated = False
                 presentation.state.slides_validated = False

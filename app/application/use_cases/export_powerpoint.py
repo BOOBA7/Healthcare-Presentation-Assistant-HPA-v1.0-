@@ -10,7 +10,7 @@ from pptx.enum.text import PP_ALIGN
 from pptx.util import Inches, Pt
 
 from app.application.validators.evidence_provenance_validator import EvidenceProvenanceValidator
-from app.domain.enums.presentation_theme import PresentationTheme
+from app.domain.enums.presentation_theme import PresentationColour, PresentationTheme
 from app.domain.models.presentation import Presentation
 from app.domain.models.resource import Resource
 from app.application.services.workflow_policy import WorkflowPolicy
@@ -21,6 +21,12 @@ THEMES: dict[PresentationTheme, dict[str, tuple[int, int, int]]] = {
     PresentationTheme.ACADEMIC: {"primary": (30, 55, 98), "accent": (194, 145, 62), "paper": (248, 248, 252), "ink": (27, 40, 72)},
     PresentationTheme.EXECUTIVE: {"primary": (36, 44, 61), "accent": (209, 113, 75), "paper": (250, 249, 247), "ink": (36, 44, 61)},
     PresentationTheme.MIDNIGHT: {"primary": (15, 23, 42), "accent": (56, 189, 248), "paper": (241, 245, 249), "ink": (15, 23, 42)},
+}
+
+COLOURS: dict[PresentationColour, dict[str, tuple[int, int, int]]] = {
+    PresentationColour.TEAL: THEMES[PresentationTheme.CLINICAL],
+    PresentationColour.BLUE: THEMES[PresentationTheme.ACADEMIC],
+    PresentationColour.WARM: THEMES[PresentationTheme.EXECUTIVE],
 }
 
 
@@ -65,7 +71,7 @@ class ExportPowerPointUseCase:
             self._remove_template_slides(deck)
         else:
             deck.slide_width, deck.slide_height = Inches(13.333), Inches(7.5)
-        palette = THEMES[presentation.theme]
+        palette = THEMES[presentation.theme] if presentation.colour == PresentationColour.THEME else COLOURS[presentation.colour]
 
         self._add_title_slide(deck, presentation, palette)
         self._add_agenda_slide(deck, presentation, palette)

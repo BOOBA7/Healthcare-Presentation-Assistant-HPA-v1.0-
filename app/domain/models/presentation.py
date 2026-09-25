@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from app.domain.enums.presentation_status import PresentationStatus
 from app.domain.models.blueprint import Blueprint
 from app.domain.models.agenda import Agenda
-from app.domain.enums.presentation_theme import PresentationTheme
+from app.domain.enums.presentation_theme import PresentationColour, PresentationTheme
 from app.domain.models.presentation_state import PresentationState
 from app.domain.models.resource import Resource
 from app.domain.models.slide import Slide
@@ -99,6 +99,16 @@ class Presentation(BaseModel):
     custom_template_id: str | None = Field(
         default=None,
         description="Optional user-owned PPTX template used as the export base.",
+    )
+
+    colour: PresentationColour = Field(
+        default=PresentationColour.THEME,
+        description="Finite colour choice applied to the selected HPA theme or local template.",
+    )
+
+    style_selected: bool = Field(
+        default=False,
+        description="True only after an explicit style action in the post-Blueprint window.",
     )
 
     owner_profile: UserProfile = Field(

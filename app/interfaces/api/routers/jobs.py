@@ -87,6 +87,11 @@ def _require_generation_ready(state, *, action: str) -> None:
             "BLUEPRINT_NOT_VALIDATED",
             "Approve the agenda and every blueprint item before generating slides.",
         )
+    if action == "slides" and not presentation.style_selected:
+        raise WorkflowError(
+            "STYLE_SELECTION_REQUIRED",
+            "Select an HPA theme or local PowerPoint style before generating slides.",
+        )
 
     clarification = PresentationCompatibilityValidator().clarification_message(
         presentation, resolve_presentation_resources(state)

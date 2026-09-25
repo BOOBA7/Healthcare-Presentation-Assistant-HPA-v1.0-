@@ -381,6 +381,12 @@ def test_end_to_end_human_controlled_workflow_without_live_model(tmp_path, monke
             json={"comments": "Reviewed by the HCP."},
         ).status_code == 200
     assert client.post("/projects/hcp-e2e/vitamin-d/blueprint/approve", headers=headers).status_code == 200
+    current = repository.load("hcp-e2e", "vitamin-d")[1]
+    assert client.put(
+        "/projects/hcp-e2e/vitamin-d/theme",
+        headers=headers,
+        json={"theme": "clinical", "expected_revision": current.project_revision},
+    ).status_code == 200
 
     slides_job = client.post(
         "/api/v1/projects/hcp-e2e/vitamin-d/slides/jobs",

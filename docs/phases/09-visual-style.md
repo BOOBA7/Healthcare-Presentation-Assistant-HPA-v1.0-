@@ -42,9 +42,9 @@ Present a reviewable diff and evidence against every criterion. Record product-o
 
 ## Session handoff
 
-- Current slice: 09.1, not started.
-- Changes and implementation commits: none.
-- Checks/results: not run for this phase.
-- Decisions/blockers: inspect current implementation; no technology choice is preapproved by this plan.
-- Next action: verify prerequisites and execute the authorised slice.
+- Current slice: 09.1 completed locally; product-owner review pending. No commit created.
+- Result/files: HPA themes, finite colour palettes and explicitly imported local PPTX templates now persist through the existing Project aggregate and SQLite repository. Deterministic repository/API/use-case gates expose selection only after Blueprint approval, close it when slide generation starts, and require an explicit style before generation. The browser no longer offers evidence-library PPTX files as styles; evidence import and local-template selection remain separate actions.
+- Checks/results: focused 09.1 selection/gate tests **8 passed**; one affected provider-free regression pass **31 passed, 6 warnings**. The complete legacy `app/tests/test_pptx_roles.py` run produced **19 passed, 2 unrelated failures** in older asset/export expectations; the 09.1 subset passed. Ruff on modified Python files, `compileall -q app`, and `git diff --check` passed. Node was unavailable, so `node --check` was not run.
+- Decisions/blockers: palettes are a finite enum (`theme`, `teal`, `blue`, `warm`) and affect deterministic PPTX export. Style selection is persisted as an explicit boolean rather than inferred from the default theme. No 09.2 layout/visual work or additional 09.3 provenance/invalidation work was added.
+- Next action: review and explicitly approve 09.1; do not start 09.2 without separate authorisation.
 - Product-owner gate approval: pending; record date, scope and explicit decision.
