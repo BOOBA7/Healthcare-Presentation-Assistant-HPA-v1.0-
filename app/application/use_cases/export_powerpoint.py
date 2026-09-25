@@ -52,8 +52,6 @@ class ExportPowerPointUseCase:
             raise ValueError("Every resource must be validated by the user before export.")
         if presentation.agenda is None or not presentation.agenda.is_validated:
             raise ValueError("A user-approved agenda is required before export.")
-        if presentation.blueprint is None or not presentation.state.blueprint_validated:
-            raise ValueError("A user-approved Blueprint is required before export.")
         EvidenceProvenanceValidator().validate_presentation(
             [slide.model_copy(deep=True) for slide in presentation.slides], resources
         )

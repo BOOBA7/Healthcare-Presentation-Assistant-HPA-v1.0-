@@ -401,6 +401,8 @@ def _require_export_snapshot(state: GraphState) -> list:
         (WorkflowStatus.READY_FOR_EXPORT, WorkflowStatus.EXPORTED),
         "preview or export the presentation",
     )
+    if presentation.blueprint is None or not presentation.state.blueprint_validated:
+        raise WorkflowError("BLUEPRINT_APPROVAL_REQUIRED", "A user-approved Blueprint is required before preview or export.")
     resources = resolve_presentation_resources(state)
     ExportPowerPointUseCase.require_eligible(presentation, resources)
     return resources
@@ -1749,7 +1751,7 @@ def export_powerpoint(user_id: str, project_id: str, approved_revision: str | No
     if stored is None or stored[1].presentation is None:
         raise HTTPException(status_code=404, detail="Presentation not found.")
     thread_id, state = stored
-    if not approved_revision or approved_revision != _approved_revision(state.presentation):
+    if approved_revision and approved_revision != _approved_revision(state.presentation):
         raise HTTPException(status_code=409, detail={"code": "APPROVED_REVISION_STALE", "message": "The approved presentation changed. Reload its preview before export.", "retryable": False})
     try:
         resources = _require_export_snapshot(state)
@@ -1791,7 +1793,7 @@ def export_pdf(user_id: str, project_id: str, approved_revision: str | None = No
     if stored is None or stored[1].presentation is None:
         raise HTTPException(status_code=404, detail="Presentation not found.")
     thread_id, state = stored
-    if not approved_revision or approved_revision != _approved_revision(state.presentation):
+    if approved_revision and approved_revision != _approved_revision(state.presentation):
         raise HTTPException(status_code=409, detail={"code": "APPROVED_REVISION_STALE", "message": "The approved presentation changed. Reload its preview before export.", "retryable": False})
     try:
         resources = _require_export_snapshot(state)
