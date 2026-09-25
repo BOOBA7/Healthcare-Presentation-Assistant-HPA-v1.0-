@@ -1297,7 +1297,7 @@ def attach_resource_to_presentation(
     except ValueError as exc:
         raise _workflow_conflict(exc) from exc
     state.execution = ExecutionContext()
-    return _save_project(user_id, project_id, thread_id, state, event_type="RESOURCE_ATTACHED_TO_PRESENTATION", actor="user", extra_audit={"resource_id": resource_id})
+    return _save_project(user_id, project_id, thread_id, state, event_type="RESOURCE_ATTACHED_TO_PRESENTATION", actor=authenticated_user, extra_audit={"resource_id": resource_id})
 
 
 @app.delete("/projects/{user_id}/{project_id}/resources/{resource_id}/attach")
@@ -1311,7 +1311,7 @@ def detach_resource_from_presentation(
     except ValueError as exc:
         raise _workflow_conflict(exc) from exc
     state.execution = ExecutionContext()
-    return _save_project(user_id, project_id, thread_id, state, event_type="RESOURCE_DETACHED_FROM_PRESENTATION", actor="user", extra_audit={"resource_id": resource_id})
+    return _save_project(user_id, project_id, thread_id, state, event_type="RESOURCE_DETACHED_FROM_PRESENTATION", actor=authenticated_user, extra_audit={"resource_id": resource_id})
 
 
 @app.post("/projects/{user_id}/{project_id}/blueprint/items/{index}/approve")
@@ -1533,7 +1533,7 @@ def approve_slide(user_id: str, project_id: str, index: int, request: ReviewRequ
     _require_prototype_input(request)
     thread_id, state = _get_project(user_id, project_id)
     try:
-        state = ReviewSlideUseCase().execute(state, index, request.comments)
+        state = ReviewSlideUseCase().execute(state, index, request.comments, authenticated_user)
     except (DomainError, ValueError) as exc:
         raise _workflow_conflict(exc) from exc
     return _save_project(user_id, project_id, thread_id, state, event_type="SLIDE_APPROVED", actor=authenticated_user, extra_audit={"slide_index": index, "approval": True})
@@ -1641,8 +1641,11 @@ def review_speaker_note(user_id: str, project_id: str, index: int, request: Spea
     thread_id, state = _get_project(user_id, project_id)
     try:
         state = ReviewSpeakerNoteUseCase().execute(state, index, approved=request.approved)
-        if state.presentation.slides[index].speaker_note and request.approved:
-            state.presentation.slides[index].speaker_note.approved_by = authenticated_user
+        note = state.presentation.slides[index].speaker_note
+        if note and request.approved:
+            from datetime import datetime, timezone
+            note.approved_by = authenticated_user
+            note.approved_at = datetime.now(timezone.utc)
     except (DomainError, ValueError) as exc:
         raise _workflow_conflict(exc) from exc
     event = "SPEAKER_NOTE_APPROVED" if request.approved else "SPEAKER_NOTE_REJECTED"
@@ -1668,7 +1671,7 @@ def approve_final_presentation(user_id: str, project_id: str, authenticated_user
         state = validate_final_presentation.func(state, approved=True)
     except ValueError as exc:
         raise _workflow_conflict(exc) from exc
-    return _save_project(user_id, project_id, thread_id, state, event_type="PRESENTATION_APPROVED", actor="user")
+    return _save_project(user_id, project_id, thread_id, state, event_type="PRESENTATION_APPROVED", actor=authenticated_user)
 
 
 @app.get("/presentations/{user_id}/{project_id}/export/pptx")
@@ -1685,6 +1688,7 @@ def export_powerpoint(user_id: str, project_id: str, authenticated_user: str = D
             (WorkflowStatus.READY_FOR_EXPORT, WorkflowStatus.EXPORTED),
             "export the presentation",
         )
+        WorkflowPolicy.require_export_eligible(state.presentation)
     except ValueError as exc:
         raise _workflow_conflict(exc) from exc
     try:
@@ -1709,7 +1713,7 @@ def export_powerpoint(user_id: str, project_id: str, authenticated_user: str = D
         thread_id,
         state,
         event_type="PRESENTATION_EXPORTED",
-        actor="user",
+        actor=authenticated_user,
         extra_audit={"delivery": "memory_download"},
     )
     return Response(output.getvalue(), media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation", headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(state.presentation.title, safe='')}.pptx", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})

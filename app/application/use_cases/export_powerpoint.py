@@ -13,6 +13,7 @@ from app.application.validators.evidence_provenance_validator import EvidencePro
 from app.domain.enums.presentation_theme import PresentationTheme
 from app.domain.models.presentation import Presentation
 from app.domain.models.resource import Resource
+from app.application.services.workflow_policy import WorkflowPolicy
 
 
 THEMES: dict[PresentationTheme, dict[str, tuple[int, int, int]]] = {
@@ -40,6 +41,7 @@ class ExportPowerPointUseCase:
             raise ValueError("Generate presentation slides before exporting PowerPoint.")
         if not presentation.state.presentation_validated:
             raise ValueError("Human approval of the final presentation is required before export.")
+        WorkflowPolicy.require_export_eligible(presentation)
         if not resources or not presentation.state.resources_validated:
             raise ValueError("Validated user resources are required before exporting PowerPoint.")
         if not all(resource.is_validated for resource in resources):

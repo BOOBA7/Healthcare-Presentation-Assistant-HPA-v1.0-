@@ -1,5 +1,7 @@
 """State-based workflow use cases used exclusively by HPA business tools."""
 
+from datetime import datetime, timezone
+
 from app.application.services.prototype_policy import PrototypePolicy
 from app.application.services.source_date_policy import SourceDatePolicy
 from app.ai.workflows.graph_state import GraphState
@@ -248,6 +250,7 @@ class ValidateSlidesWorkflowUseCase:
             )
         if not all(slide.is_validated for slide in state.presentation.slides):
             raise WorkflowError("SLIDE_ITEMS_PENDING", "Approve every slide before approving all slides.")
+        WorkflowPolicy.require_export_eligible(state.presentation)
         state.presentation.state.slides_validated = True
         state.presentation.state.workflow_status = WorkflowStatus.AWAITING_FINAL_APPROVAL
         return state
@@ -271,7 +274,13 @@ class ReviewBlueprintItemUseCase:
 
 
 class ReviewSlideUseCase:
-    def execute(self, state: GraphState, index: int, comments: str | None) -> GraphState:
+    def execute(
+        self,
+        state: GraphState,
+        index: int,
+        comments: str | None,
+        actor: str = "authenticated-user",
+    ) -> GraphState:
         if state.presentation is None or not state.presentation.slides:
             raise ValueError("Generate slides before reviewing them.")
         WorkflowPolicy.require_status(
@@ -288,6 +297,8 @@ class ReviewSlideUseCase:
                 "A user-provided medical draft with a missing source cannot receive scientific approval.",
             )
         slide.is_validated = True
+        slide.approved_by = actor
+        slide.approved_at = datetime.now(timezone.utc)
         slide.reviewer_comments = comments.strip() or None if comments else None
         return state
 
@@ -517,6 +528,8 @@ class EditSlideUseCase:
             "user-provided, source missing" if slide.source_missing else None
         )
         slide.is_validated = False
+        slide.approved_by = None
+        slide.approved_at = None
         # Citations can still be displayed as provenance, but the system must
         # not imply that they prove newly human-written statements.
         slide.evidence_verified = False
@@ -530,6 +543,10 @@ class EditSlideUseCase:
             link.provenance_verified = False
             link.semantic_review = "pending"
             link.semantic_reviewed_by = None
+        if slide.speaker_note is not None:
+            slide.speaker_note.is_approved = False
+            slide.speaker_note.approved_by = None
+            slide.speaker_note.approved_at = None
         state.presentation.state.slides_validated = False
         state.presentation.state.presentation_validated = False
         state.presentation.state.workflow_status = WorkflowStatus.AWAITING_SLIDE_APPROVAL
@@ -578,7 +595,8 @@ class ReviewSpeakerNoteUseCase:
                 "Speaker notes require traceable Project evidence before approval.",
             )
         note.is_approved = approved
-        note.approved_by = "authenticated-user" if approved else None
+        note.approved_by = None
+        note.approved_at = None
         return state
 
 
@@ -615,6 +633,8 @@ class RejectSlideUseCase:
             raise ValueError("Slide index is invalid.")
         slide = state.presentation.slides[index]
         slide.is_validated = False
+        slide.approved_by = None
+        slide.approved_at = None
         slide.reviewer_comments = comments.strip() or "Revision requested by reviewer."
         state.presentation.state.slides_validated = False
         state.presentation.state.presentation_validated = False
@@ -727,6 +747,7 @@ class ValidateFinalPresentationWorkflowUseCase:
         )
         if not approved:
             raise WorkflowError("FINAL_APPROVAL_REQUIRED", "Final presentation was not approved by the human reviewer.")
+        WorkflowPolicy.require_export_eligible(state.presentation)
         state.presentation.state.presentation_validated = True
         state.presentation.state.workflow_status = WorkflowStatus.READY_FOR_EXPORT
         return state

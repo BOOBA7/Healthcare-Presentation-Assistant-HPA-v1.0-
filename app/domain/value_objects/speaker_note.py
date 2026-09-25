@@ -1,5 +1,7 @@
 """Speaker notes kept separate from visible slide content and its evidence."""
 
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 from app.domain.models.claim_evidence import EvidenceLink, MedicalClaim
@@ -11,3 +13,4 @@ class SpeakerNote(BaseModel):
     evidence_links: list[EvidenceLink] = Field(default_factory=list)
     is_approved: bool = False
     approved_by: str | None = Field(default=None, max_length=256)
+    approved_at: datetime | None = None

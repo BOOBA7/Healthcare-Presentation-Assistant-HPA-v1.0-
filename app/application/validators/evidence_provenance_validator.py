@@ -41,6 +41,7 @@ class EvidenceProvenanceValidator:
             )
             slide.speaker_note.is_approved = False
             slide.speaker_note.approved_by = None
+            slide.speaker_note.approved_at = None
 
         resources_by_id = {resource.id: resource for resource in resources}
         if any(source_warning(resources_by_id[link.resource_id]) for link in slide.evidence_links):

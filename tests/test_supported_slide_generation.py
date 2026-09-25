@@ -378,7 +378,28 @@ def test_slide_edit_review_controls_are_deterministic_audited_and_restart_safe(t
         "/projects/owner/project/slides/0/approve", headers=headers, json={"comments": "Approved"}
     )
     assert approved.status_code == 200
-    assert approved.json()["presentation"]["slides"][0]["is_validated"] is True
+    approved_slide = approved.json()["presentation"]["slides"][0]
+    assert approved_slide["is_validated"] is True
+    assert approved_slide["approved_by"] == "owner"
+    assert approved_slide["approved_at"]
+
+    # A visual/data mutation is invalidated again by the persistence boundary,
+    # even if a caller tries to retain the old approval flags.
+    thread_id, changed_state = repository.load("owner", "project")
+    changed_state.presentation.slides[0].visual_recommendations = ["Updated chart"]
+    repository.save_with_event(
+        "owner", "project", thread_id, changed_state,
+        "SLIDE_VISUAL_UPDATED", "owner", {"slide_index": 0},
+    )
+    _, changed_state = repository.load("owner", "project")
+    assert changed_state.presentation.slides[0].is_validated is False
+    assert changed_state.presentation.slides[0].approved_by is None
+    assert changed_state.presentation.state.presentation_validated is False
+    assert client.post(
+        "/projects/owner/project/slides/0/approve",
+        headers=headers,
+        json={"comments": "Visual reviewed"},
+    ).status_code == 200
 
     note = client.post(
         "/projects/owner/project/slides/1/speaker-note/review",
@@ -386,7 +407,10 @@ def test_slide_edit_review_controls_are_deterministic_audited_and_restart_safe(t
         json={"approved": True},
     )
     assert note.status_code == 200
-    assert note.json()["presentation"]["slides"][1]["speaker_note"]["is_approved"] is True
+    approved_note = note.json()["presentation"]["slides"][1]["speaker_note"]
+    assert approved_note["is_approved"] is True
+    assert approved_note["approved_by"] == "owner"
+    assert approved_note["approved_at"]
     assert note.json()["presentation"]["slides"][1]["is_validated"] is False
 
     reformulated = client.put(
@@ -394,6 +418,11 @@ def test_slide_edit_review_controls_are_deterministic_audited_and_restart_safe(t
         json=edit_payload("medical", "Accepted reformulation"),
     )
     assert reformulated.status_code == 200
+    changed_slide = reformulated.json()["presentation"]["slides"][1]
+    assert changed_slide["is_validated"] is False
+    assert changed_slide["approved_by"] is None
+    assert changed_slide["speaker_note"]["is_approved"] is False
+    assert changed_slide["speaker_note"]["approved_at"] is None
     unsupported_note = client.post(
         "/projects/owner/project/slides/1/speaker-note/review",
         headers=headers,
@@ -412,4 +441,8 @@ def test_slide_edit_review_controls_are_deterministic_audited_and_restart_safe(t
     assert {event["event_type"] for event in events} >= {
         "SLIDE_EDITED_BY_USER", "SLIDE_COMMENT_UPDATED", "SLIDE_APPROVED",
         "SPEAKER_NOTE_APPROVED", "SLIDE_REFORMULATION_ACCEPTED", "SLIDE_DELETED",
+        "SLIDE_VISUAL_UPDATED",
     }
+    for event in events:
+        assert event["actor"]
+        assert event["created_at"]

@@ -422,7 +422,7 @@ def test_end_to_end_human_controlled_workflow_without_live_model(tmp_path, monke
             "objective": "Close the presentation.",
             "key_messages": ["This conclusion was written by the HCP."],
             "content": "This conclusion was written by the HCP.",
-            "speaker_notes": "Close and invite discussion.",
+            "speaker_notes": "",
             "content_origin": "user_authored",
             "content_classification": "nonmedical",
         },

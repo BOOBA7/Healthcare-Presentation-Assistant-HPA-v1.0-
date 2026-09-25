@@ -1,4 +1,5 @@
 from app.tests.source_fixtures import dated_resource
+from datetime import datetime, timezone
 import pytest
 
 from app.ai.workflows.graph_state import GraphState
@@ -116,7 +117,7 @@ def test_updating_title_slide_details_reopens_only_final_approval():
 
 def test_final_approval_requires_slide_approval_first():
     state = GraphState(prototype_declaration="synthetic")
-    state.presentation = type("Presentation", (), {"slides": [Slide(slide_number=1, title="Test")], "state": type("State", (), {"slides_validated": False, "presentation_validated": False, "workflow_status": WorkflowStatus.AWAITING_SLIDE_APPROVAL})()})()
+    state.presentation = type("Presentation", (), {"slides": [Slide(slide_number=1, title="Test", content_classification="nonmedical")], "state": type("State", (), {"slides_validated": False, "presentation_validated": False, "workflow_status": WorkflowStatus.AWAITING_SLIDE_APPROVAL})()})()
 
     state = ReviewSlideUseCase().execute(state, index=0, comments="Approved")
     state = validate_slides.func(state, approved=True)
@@ -510,6 +511,9 @@ def test_powerpoint_always_ends_with_user_validated_resources(tmp_path):
                     "evidence_excerpt": "Evidence supporting clinical management.",
                 }
             ],
+            is_validated=True,
+            approved_by="owner",
+            approved_at=datetime.now(timezone.utc),
         )
     ]
     presentation.resources = [
@@ -587,6 +591,9 @@ def test_powerpoint_splits_many_resource_blocks_over_multiple_final_slides(tmp_p
                     "evidence_excerpt": "Evidence one supports this presentation.",
                 }
             ],
+            is_validated=True,
+            approved_by="owner",
+            approved_at=datetime.now(timezone.utc),
         )
     ]
     presentation.resources = [
@@ -638,7 +645,10 @@ def test_powerpoint_labels_user_authored_slide_without_claiming_verified_evidenc
             title="Clinical reflection",
             key_messages=["Human-authored message"],
             content_origin="user_authored",
+            content_classification="nonmedical",
             is_validated=True,
+            approved_by="owner",
+            approved_at=datetime.now(timezone.utc),
         )
     ]
     presentation.resources = [

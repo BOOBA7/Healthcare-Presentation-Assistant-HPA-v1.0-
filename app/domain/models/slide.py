@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import List, Literal, Optional
 
 import hashlib
@@ -80,6 +81,10 @@ class Slide(BaseModel):
         default=False,
         description="Whether the slide has been validated by the user.",
     )
+
+    approved_by: str | None = Field(default=None, max_length=256)
+
+    approved_at: datetime | None = None
 
     reviewer_comments: str | None = Field(
         default=None,

@@ -82,3 +82,8 @@ class ClaimEvidenceService:
         supported = {link.claim_id for link in approved}
         slide.evidence_verified = bool(slide.claims) and supported == {claim.id for claim in slide.claims}
         slide.evidence_review_required = not slide.evidence_verified or bool(slide.legacy_references)
+        if slide.content_origin != "ai_generated" and slide.content_classification == "medical":
+            slide.source_missing = not slide.evidence_verified
+            slide.authorship_warning = (
+                "user-provided, source missing" if slide.source_missing else None
+            )

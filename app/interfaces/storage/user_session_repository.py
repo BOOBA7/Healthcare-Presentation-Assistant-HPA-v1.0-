@@ -57,6 +57,8 @@ class UserSessionRepository(SourceLifecycleRepository):
             ClaimEvidenceService.set_claims(slide, claims)
             ClaimEvidenceService.review_link(slide, link, state.resource_library, actor)
             slide.is_validated = False
+            slide.approved_by = None
+            slide.approved_at = None
             state.presentation.state.slides_validated = False
             state.presentation.state.presentation_validated = False
             self._save_project_row(connection, user_id, project_id, row[0], state, None, claim_action=True)
@@ -869,9 +871,54 @@ class UserSessionRepository(SourceLifecycleRepository):
         if previous_row:
             previous = self._deserialize_state(json.loads(previous_row[0]))
             if state.presentation and previous.presentation:
+                previous_slides = {
+                    slide.slide_number: slide for slide in previous.presentation.slides
+                }
+                invalidated = False
+                for slide in state.presentation.slides:
+                    old_slide = previous_slides.get(slide.slide_number)
+                    if old_slide is None:
+                        continue
+                    visible_fields = (
+                        "title", "objective", "key_messages", "content", "references",
+                        "reference_details", "claims", "evidence_links", "visual_recommendations",
+                        "content_origin", "content_classification", "source_missing",
+                    )
+                    if any(getattr(slide, field) != getattr(old_slide, field) for field in visible_fields):
+                        slide.is_validated = False
+                        slide.approved_by = None
+                        slide.approved_at = None
+                        invalidated = True
+                    note_fields = ("text", "claims", "evidence_links")
+                    note_changed = (
+                        (slide.speaker_note is None) != (old_slide.speaker_note is None)
+                        or (
+                            slide.speaker_note is not None
+                            and old_slide.speaker_note is not None
+                            and any(
+                                getattr(slide.speaker_note, field) != getattr(old_slide.speaker_note, field)
+                                for field in note_fields
+                            )
+                        )
+                    )
+                    if note_changed or slide.speaker_notes != old_slide.speaker_notes:
+                        if slide.speaker_note is not None:
+                            slide.speaker_note.is_approved = False
+                            slide.speaker_note.approved_by = None
+                            slide.speaker_note.approved_at = None
+                        invalidated = True
+                if invalidated:
+                    from app.domain.enums.workflow_status import WorkflowStatus
+                    state.presentation.state.slides_validated = False
+                    state.presentation.state.presentation_validated = False
+                    state.presentation.state.workflow_status = WorkflowStatus.AWAITING_SLIDE_APPROVAL
                 old_approved = {slide.slide_number for slide in previous.presentation.slides if slide.is_validated}
                 old_note_approvals = {
-                    (slide.speaker_note.text, slide.speaker_note.approved_by)
+                    (
+                        slide.speaker_note.text,
+                        slide.speaker_note.approved_by,
+                        slide.speaker_note.approved_at,
+                    )
                     for slide in previous.presentation.slides
                     if slide.speaker_note and slide.speaker_note.is_approved
                 }
@@ -879,7 +926,11 @@ class UserSessionRepository(SourceLifecycleRepository):
                     if slide.is_validated and slide.slide_number not in old_approved and not slide_review_action:
                         raise WorkflowError("EXPLICIT_SLIDE_REVIEW_REQUIRED", "Use the authenticated slide review action.")
                     if (slide.speaker_note and slide.speaker_note.is_approved
-                            and (slide.speaker_note.text, slide.speaker_note.approved_by) not in old_note_approvals
+                            and (
+                                slide.speaker_note.text,
+                                slide.speaker_note.approved_by,
+                                slide.speaker_note.approved_at,
+                            ) not in old_note_approvals
                             and not note_review_action):
                         raise WorkflowError("EXPLICIT_SPEAKER_NOTE_REVIEW_REQUIRED", "Use the authenticated speaker-note review action.")
             if not claim_action and state.presentation and previous.presentation:
@@ -945,6 +996,8 @@ class UserSessionRepository(SourceLifecycleRepository):
                 presentation.state.slides_validated = False
                 for slide in presentation.slides:
                     slide.is_validated = False
+                    slide.approved_by = None
+                    slide.approved_at = None
                 if presentation.slides:
                     from app.domain.enums.workflow_status import WorkflowStatus
                     presentation.state.workflow_status = WorkflowStatus.AWAITING_SLIDE_APPROVAL
