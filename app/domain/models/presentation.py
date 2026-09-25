@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.enums.presentation_status import PresentationStatus
 from app.domain.models.blueprint import Blueprint
@@ -17,6 +17,17 @@ from app.domain.models.professional_scope_declaration import ProfessionalScopeDe
 from app.domain.value_objects.presentation_context import PresentationContext
 from app.domain.enums.evidence_context_mode import EvidenceContextMode
 from app.domain.models.evidence_coverage import EvidenceCoverageAssessment
+
+
+class StyleProvenance(BaseModel):
+    """Server-issued receipt for the exact built-in style or supplied template."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(pattern=r"^(hpa_theme|supplied_template)$")
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    template_resource_id: str | None = None
+    template_original_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class Presentation(BaseModel):
@@ -109,6 +120,11 @@ class Presentation(BaseModel):
     style_selected: bool = Field(
         default=False,
         description="True only after an explicit style action in the post-Blueprint window.",
+    )
+
+    style_provenance: StyleProvenance | None = Field(
+        default=None,
+        description="Server-verified provenance for the exact persisted visual style.",
     )
 
     owner_profile: UserProfile = Field(

@@ -562,8 +562,6 @@ class UserSessionRepository(SourceLifecycleRepository):
             raise WorkflowError("PRESENTATION_REQUIRED", "Create a presentation before selecting a style.")
         if not presentation.state.blueprint_validated:
             raise WorkflowError("BLUEPRINT_APPROVAL_REQUIRED", "Approve the Blueprint before selecting a visual style.")
-        if presentation.slides or presentation.state.workflow_status.value != "slide_generation":
-            raise WorkflowError("STYLE_SELECTION_CLOSED", "Select the visual style before slide generation starts.")
         if template_id and theme is not None:
             raise WorkflowError("STYLE_CHOICE_AMBIGUOUS", "Select either an HPA theme or a local PowerPoint template.")
         if template_id:
@@ -581,6 +579,8 @@ class UserSessionRepository(SourceLifecycleRepository):
         if colour is not None:
             presentation.colour = colour
         presentation.style_selected = True
+        from app.application.services.visual_provenance import style_receipt
+        presentation.style_provenance = style_receipt(presentation, source if template_id else None)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             if connection.execute("SELECT 1 FROM project_jobs WHERE user_id = ? AND project_id = ? AND status IN ('queued', 'running')", (user, project)).fetchone():
@@ -590,7 +590,9 @@ class UserSessionRepository(SourceLifecycleRepository):
                                {"template_resource_id": presentation.custom_template_id, "theme": presentation.theme.value,
                                 "colour": presentation.colour.value,
                                 "workflow_status": presentation.state.workflow_status.value,
-                                "original_sha256": source.metadata.original_sha256 if template_id else None})
+                                "original_sha256": source.metadata.original_sha256 if template_id else None,
+                                "style_provenance_digest": presentation.style_provenance.digest,
+                                "provenance_verified": True})
         self._cleanup_if_pending()
         return thread, state
 
@@ -610,6 +612,7 @@ class UserSessionRepository(SourceLifecycleRepository):
             raise WorkflowError("VISUAL_REQUIRED", "This layout requires a supplied visual.")
         if visual is not None and layout == "text_only":
             raise WorkflowError("VISUAL_LAYOUT_REQUIRED", "Select a visual layout before placing a visual.")
+        resource = None
         if visual is not None and visual.kind == "image":
             resource = next((item for item in state.resource_library if item.id == visual.resource_id), None)
             selected_ids = {item.id for item in presentation.resources}
@@ -621,16 +624,20 @@ class UserSessionRepository(SourceLifecycleRepository):
         slide = presentation.slides[slide_index]
         slide.layout = layout
         slide.visual = visual
+        from app.application.services.visual_provenance import visual_receipt
+        slide.visual_provenance = visual_receipt(layout, visual, resource)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             if connection.execute("SELECT 1 FROM project_jobs WHERE user_id = ? AND project_id = ? AND status IN ('queued', 'running')", (user, project)).fetchone():
                 raise ProjectJobRunningError()
-            self._save_project_row(connection, user, project, thread, state, None)
+            self._save_project_row(connection, user, project, thread, state, None, visual_action=True)
             self._insert_event(connection, user, project, "SLIDE_VISUAL_UPDATED", user, {
                 "slide_index": slide_index, "layout": layout,
                 "visual_kind": visual.kind if visual else None,
                 "resource_id": visual.resource_id if visual and visual.kind == "image" else None,
                 "asset_id": visual.asset_id if visual and visual.kind == "image" else None,
+                "visual_provenance_digest": slide.visual_provenance.digest,
+                "provenance_verified": True,
             })
         return thread, state
 
@@ -852,7 +859,8 @@ class UserSessionRepository(SourceLifecycleRepository):
         thread_id: str,
         state: GraphState,
         project_name: str | None,
-        *, style_action: bool = False, claim_action: bool = False, coverage_action: bool = False,
+        *, style_action: bool = False, visual_action: bool = False,
+        claim_action: bool = False, coverage_action: bool = False,
         transfer_action: bool = False, slide_review_action: bool = False,
         note_review_action: bool = False,
     ) -> None:
@@ -879,7 +887,22 @@ class UserSessionRepository(SourceLifecycleRepository):
         ensure_resource_library(state)
         if state.presentation:
             from app.application.services.source_assets import is_reviewed
+            from app.application.services.visual_provenance import style_receipt, visual_receipt
+            presentation = state.presentation
+            if presentation.style_selected:
+                template = None
+                if presentation.custom_template_id:
+                    template = next(
+                        (item for item in state.resource_library if item.id == presentation.custom_template_id),
+                        None,
+                    ) or self.presentation_template_source(user_id, presentation.custom_template_id)
+                expected_style_provenance = style_receipt(presentation, template)
+                if presentation.style_provenance is None:
+                    presentation.style_provenance = expected_style_provenance
+                elif presentation.style_provenance != expected_style_provenance:
+                    raise WorkflowError("STYLE_PROVENANCE_INVALID", "The selected style provenance is missing or stale.")
             for slide in state.presentation.slides:
+                visual_resource = None
                 if slide.visual and slide.visual.kind == "image":
                     visual_resource = next(
                         (item for item in state.resource_library if item.id == slide.visual.resource_id), None
@@ -894,6 +917,15 @@ class UserSessionRepository(SourceLifecycleRepository):
                         raise WorkflowError(
                             "REVIEWED_IMAGE_REQUIRED",
                             "A slide image must reference an intact Project asset reviewed against its supplied original.",
+                        )
+                expected_visual_provenance = visual_receipt(slide.layout, slide.visual, visual_resource)
+                if slide.visual_provenance is not None or slide.visual is not None or slide.layout != "text_only":
+                    if slide.visual_provenance is None:
+                        slide.visual_provenance = expected_visual_provenance
+                    elif slide.visual_provenance != expected_visual_provenance:
+                        raise WorkflowError(
+                            "VISUAL_PROVENANCE_INVALID",
+                            "The slide visual provenance is missing or stale.",
                         )
                 if slide.is_validated and slide.content_classification == "medical" and slide.source_missing:
                     raise WorkflowError(
@@ -953,6 +985,15 @@ class UserSessionRepository(SourceLifecycleRepository):
                         slide.approved_by = None
                         slide.approved_at = None
                         invalidated = True
+                    visual_changed = any(
+                        getattr(slide, field) != getattr(old_slide, field)
+                        for field in ("layout", "visual")
+                    )
+                    if visual_changed and not visual_action:
+                        raise WorkflowError(
+                            "EXPLICIT_VISUAL_ACTION_REQUIRED",
+                            "Use the authenticated visual update action.",
+                        )
                     note_fields = ("text", "claims", "evidence_links")
                     note_changed = (
                         (slide.speaker_note is None) != (old_slide.speaker_note is None)

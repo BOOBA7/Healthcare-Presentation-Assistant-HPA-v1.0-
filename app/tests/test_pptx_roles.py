@@ -106,12 +106,30 @@ def test_hpa_theme_and_colour_are_explicit_durable_and_stage_gated(workspace):
     assert repository.list_events('synthetic-owner', 'demo')[0]['payload']['colour'] == 'blue'
 
     restored.presentation.state.workflow_status = WorkflowStatus.AWAITING_SLIDE_APPROVAL
-    repository.save('synthetic-owner', 'demo', response.json()['thread_id'], restored)
+    restored.presentation.state.slides_validated = True
+    restored.presentation.state.presentation_validated = True
+    from app.domain.models.slide import Slide
+    restored.presentation.slides = [Slide(slide_number=1, title='Approved', is_validated=True,
+                                          approved_by='synthetic-owner')]
+    repository.save_with_event(
+        'synthetic-owner', 'demo', response.json()['thread_id'], restored,
+        'SLIDE_APPROVED', 'synthetic-owner', {'slide_index': 0},
+    )
+    restored = repository.load('synthetic-owner', 'demo')[1]
     response = client.put(path, json={
         'colour': 'warm', 'expected_revision': restored.project_revision,
     })
-    assert response.status_code == 409
-    assert response.json()['detail']['code'] == 'STYLE_SELECTION_CLOSED'
+    assert response.status_code == 200, response.text
+    restarted = type(repository)(repository.database_path)
+    changed = restarted.load('synthetic-owner', 'demo')[1].presentation
+    assert changed.style_provenance.source == 'hpa_theme'
+    assert len(changed.style_provenance.digest) == 64
+    assert not changed.slides[0].is_validated
+    assert not changed.state.slides_validated
+    assert not changed.state.presentation_validated
+    event = restarted.list_events('synthetic-owner', 'demo')[0]
+    assert event['payload']['style_provenance_digest'] == changed.style_provenance.digest
+    assert event['payload']['provenance_verified'] is True
 
 
 def test_slide_job_requires_explicit_style_without_calling_provider(workspace):
@@ -325,6 +343,8 @@ def test_supplied_value_visual_layout_is_strict_durable_and_invalidates_approval
     state = setup_presentation(repository)
     state.presentation.slides = [Slide(slide_number=1, title='Synthetic', is_validated=True,
                                        approved_by='synthetic-owner')]
+    state.presentation.state.slides_validated = True
+    state.presentation.state.presentation_validated = True
     repository.save_with_event(
         'synthetic-owner', 'demo', 'thread', state,
         'SLIDE_APPROVED', 'synthetic-owner', {'slide_index': 0},
@@ -344,9 +364,15 @@ def test_supplied_value_visual_layout_is_strict_durable_and_invalidates_approval
     assert slide.visual.categories == ['A', 'B']
     assert slide.visual.series == {'Supplied': [1.5, 2.0]}
     assert not slide.is_validated and slide.approved_by is None
+    assert slide.visual_provenance.source == 'supplied_values'
+    assert len(slide.visual_provenance.digest) == 64
+    assert not restored.presentation.state.slides_validated
+    assert not restored.presentation.state.presentation_validated
     event = repository.list_events('synthetic-owner', 'demo')[0]
     assert event['event_type'] == 'SLIDE_VISUAL_UPDATED'
     assert event['payload']['visual_kind'] == 'bar_chart'
+    assert event['payload']['visual_provenance_digest'] == slide.visual_provenance.digest
+    assert event['payload']['provenance_verified'] is True
     assert client.put(path, json={
         'expected_revision': restored.project_revision,
         'layout': 'text_left_visual_right',
@@ -378,6 +404,18 @@ def test_visual_server_refuses_stale_revision_unreviewed_image_and_layout_bypass
     with pytest.raises(WorkflowError, match='requires a supplied visual'):
         repository.update_slide_visual('synthetic-owner', 'demo', state.project_revision, 0,
                                        layout='visual_focus', visual=None)
+    from app.domain.models.slide import SlideVisual
+    repository.update_slide_visual(
+        'synthetic-owner', 'demo', state.project_revision, 0,
+        layout='visual_focus',
+        visual=SlideVisual(kind='table', columns=['Supplied'], rows=[['1']]),
+    )
+    forged = repository.load('synthetic-owner', 'demo')[1]
+    forged.presentation.slides[0].visual = SlideVisual(
+        kind='table', columns=['Supplied'], rows=[['2']],
+    )
+    with pytest.raises(WorkflowError, match='visual provenance'):
+        repository.save('synthetic-owner', 'demo', 'thread', forged)
 
 
 def test_pptx_builds_only_the_supplied_table_values():

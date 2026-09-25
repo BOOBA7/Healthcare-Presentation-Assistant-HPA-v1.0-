@@ -1,6 +1,6 @@
 # Phase 09 — Themes, layouts and supplied visuals
 
-Status: In progress. 09.1 approved by the product owner on 2026-09-25; 09.2 completed locally and review pending.
+Status: In progress. 09.1 approved by the product owner on 2026-09-25; 09.2 approved on 2026-09-25; 09.3 completed locally and review pending.
 
 ## Outcome and scope
 
@@ -42,9 +42,9 @@ Present a reviewable diff and evidence against every criterion. Record product-o
 
 ## Session handoff
 
-- Current slice: 09.2 completed locally; product-owner review pending. No commit created and 09.3 was not started.
-- Result/files: four persisted slide layouts now place reviewed Project images or deterministic tables, bar/line charts and diagrams. Structured server models accept only supplied values; medical-image generation and missing-value completion have no supported input path. Image selection is restricted to intact, user-reviewed assets in selected Project resources. Changes autosave transactionally with optimistic concurrency and audit, survive restart, invalidate slide/global approvals, and render into PPTX; the `/app` review UI supports replacement and placement.
-- Checks/results: focused provider-free 09.2 tests **3 passed** (persistence/invalidation, refusal/concurrency, exact supplied table values). Targeted 09.1 style regression **1 passed**; the known legacy export test still fails before rendering on the pre-existing audited-approval gate (`SLIDE_APPROVAL_REQUIRED`). Ruff on modified 09.2 Python files, `compileall -q app`, and `git diff --check` passed. Node was unavailable, so `node --check` was not run. No full suite was run.
-- Decisions/blockers: visual kinds and layouts are finite; chart/table/diagram payloads reject incomplete dimensions and extra fields, while images reference canonical reviewed assets rather than storing a new copy. `app/core/config.py` is a concurrent user modification and is excluded from this slice. Browser/artifact visual inspection remains pending because Node is unavailable.
-- Next action: review and explicitly approve 09.2; do not start 09.3 without separate authorisation.
-- Product-owner gate approval: 09.1 approved 2026-09-25; 09.2 pending.
+- Current slice: 09.3 completed locally; product-owner review pending. No commit created and no later phase was started.
+- Result/files: style, layout and visual provenance now persist as deterministic server-issued receipts over the exact theme/template identity, supplied values, or intact reviewed asset hashes. Authenticated style/visual actions retain optimistic concurrency and atomic audit; direct visual mutation or stale receipts are refused. Later style changes and visual changes invalidate affected slide, global slide and final approvals, then survive repository restart.
+- Checks/results: focused provider-free 09.3 tests **3 passed** (late-style and final invalidation/restart, supplied-value provenance/invalidation, concurrency/refusal/tamper). Targeted Ruff, `compileall -q app`, and `git diff --check` passed. Node was unavailable, so `node --check` was not run. No full suite was run.
+- Decisions/blockers: provenance stores identifiers and SHA-256 receipts, not copied image bytes or invented values; the existing reviewed-asset gate remains authoritative. `app/core/config.py` is a concurrent user modification and was not touched. Browser checks remain pending because Node is unavailable.
+- Next action: review and explicitly approve 09.3; do not start phase 10 without separate authorisation.
+- Product-owner gate approval: 09.1 and 09.2 approved 2026-09-25; 09.3 pending.

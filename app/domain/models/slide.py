@@ -45,6 +45,19 @@ class SlideVisual(BaseModel):
         return self
 
 
+class VisualProvenance(BaseModel):
+    """Server-issued receipt for the exact layout and supplied visual input."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["none", "supplied_values", "reviewed_project_asset"]
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    resource_id: str | None = None
+    asset_id: str | None = None
+    original_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    asset_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
 class Slide(BaseModel):
     """
     Represents a single slide of a healthcare presentation.
@@ -117,6 +130,11 @@ class Slide(BaseModel):
     visual: SlideVisual | None = Field(
         default=None,
         description="User-supplied image or deterministic visual built only from user-supplied values.",
+    )
+
+    visual_provenance: VisualProvenance | None = Field(
+        default=None,
+        description="Server-verified provenance for the exact persisted layout and visual.",
     )
 
     is_validated: bool = Field(
