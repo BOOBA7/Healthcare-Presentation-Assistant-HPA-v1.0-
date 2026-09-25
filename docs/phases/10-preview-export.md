@@ -42,9 +42,9 @@ Present a reviewable diff and evidence against every criterion. Record product-o
 
 ## Session handoff
 
-- Current slice: 10.1 implemented; positive native render remains unverified.
-- Changes: local LibreOffice PPTX-to-PDF adapter, synthetic one-source evaluator and focused tests; no commit.
-- Checks/results: owner ran `venv/bin/python -m pytest -q app/tests/test_presentation_rendering.py` — 3 passed. Native evaluator returned `PRESENTATION_RENDERER_UNAVAILABLE`; LibreOffice is not installed/on PATH.
-- Decision: keep editable PPTX as the single source and render PDF locally with isolated headless LibreOffice profiles. Fidelity limits and stable unavailable/failure errors are documented in the adapter.
-- Next action: install/approve LibreOffice separately, then rerun `venv/bin/python -m app.tests.evaluate_presentation_rendering` and manually compare the synthetic PPTX/PDF before 10.2.
-- Product-owner gate approval: pending; record date, scope and explicit decision.
+- Current slice: 10.2 implemented; 10.1 explicitly approved at `78e9554` on 2026-09-25. No commit created for 10.2.
+- Changes: preview/PPTX/PDF share a stable approved-content revision; PDF renders from the editable PPTX; approved notes, visible citation markers and cited resources are included. Existing deterministic export gates remain authoritative.
+- Files: `app/application/use_cases/export_powerpoint.py`, `app/interfaces/api/main.py`, `app/interfaces/web/app.js`, `app/interfaces/web/index.html`.
+- Owner checks: focused pytest command — 24 passed, 6 warnings. `node --check` unavailable (`node: command not found`). Native evaluator returned `PRESENTATION_RENDERER_UNAVAILABLE` because LibreOffice is absent. Final revision-binding edits were reviewed but not rerun.
+- Next action: verify JavaScript syntax where Node is available and, after separately installing/approving LibreOffice, inspect matching-revision synthetic PPTX/PDF output manually. Do not begin 10.3 without explicit authorisation.
+- Product-owner gate approval for 10.2: pending.

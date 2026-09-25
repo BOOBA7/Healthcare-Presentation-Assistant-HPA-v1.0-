@@ -56,7 +56,9 @@ class ExportPowerPointUseCase:
             raise ValueError("Every resource must be validated by the user before export.")
         if presentation.agenda is None or not presentation.agenda.is_validated:
             raise ValueError("A user-approved agenda is required before exporting PowerPoint.")
-        EvidenceProvenanceValidator().validate_presentation(presentation.slides, resources)
+        EvidenceProvenanceValidator().validate_presentation(
+            [slide.model_copy(deep=True) for slide in presentation.slides], resources
+        )
 
         if isinstance(output_dir, Path):
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -74,14 +76,17 @@ class ExportPowerPointUseCase:
         else:
             deck.slide_width, deck.slide_height = Inches(13.333), Inches(7.5)
         palette = THEMES[presentation.theme] if presentation.colour == PresentationColour.THEME else COLOURS[presentation.colour]
+        citation_markers = self._citation_markers(presentation)
 
         self._add_title_slide(deck, presentation, palette)
         self._add_agenda_slide(deck, presentation, palette)
         for slide in presentation.slides:
-            self._add_content_slide(deck, slide, palette, resources)
+            self._add_content_slide(deck, slide, palette, resources, citation_markers)
             claim_references = [{"resource_id": link.resource_id} for link in slide.evidence_links]
             for warning in reference_warnings(slide.reference_details + claim_references, resources):
                 self._textbox(deck.slides[-1], warning, 0.8, 6.82, 11.7, 0.25, size=9, color=palette["ink"])
+            if slide.speaker_notes:
+                deck.slides[-1].notes_slide.notes_text_frame.text = slide.speaker_notes
         self._add_resources_slide(deck, presentation, resources, palette)
 
         path = output_dir / f"{presentation.id}-{uuid4().hex[:8]}.pptx" if isinstance(output_dir, Path) else output_dir
@@ -160,7 +165,7 @@ class ExportPowerPointUseCase:
             self._textbox(slide, item, 1.4, top - 0.02, 10.7, 0.45, size=20, color=palette["ink"], bold=True)
         self._footer(slide, palette)
 
-    def _add_content_slide(self, deck: PowerPoint, source_slide, palette: dict[str, tuple[int, int, int]], resources: list[Resource]) -> None:
+    def _add_content_slide(self, deck: PowerPoint, source_slide, palette: dict[str, tuple[int, int, int]], resources: list[Resource], citation_markers: dict[str, int] | None = None) -> None:
         slide = deck.slides.add_slide(self._blank_layout(deck))
         self._background(slide, palette["paper"])
         self._header(slide, source_slide.title, palette)
@@ -185,14 +190,15 @@ class ExportPowerPointUseCase:
             else:
                 visual_width = 5.75
             self._add_visual(slide, visual, resources, palette, visual_x, 1.55, visual_width, 3.9)
-        if source_slide.content_origin == "ai_generated" and source_slide.evidence_verified:
+        if source_slide.content_origin == "ai_generated":
             references = [{
                 "title": link.resource_title, "resource_id": link.resource_id,
                 "location_kind": link.location_kind, "page": link.location_number,
                 "evidence_excerpt": link.exact_passage,
             } for link in source_slide.evidence_links
                 if link.provenance_verified and link.semantic_review == "approved"]
-            self._add_evidence_box(slide, references, palette)
+            references.extend(source_slide.reference_details)
+            self._add_evidence_box(slide, references, palette, citation_markers or {})
         else:
             self._add_authorship_box(slide, source_slide, palette)
         self._footer(slide, palette, self._content_origin_label(source_slide))
@@ -248,7 +254,7 @@ class ExportPowerPointUseCase:
             text = f"{text}  ·  {provenance}"
         self._textbox(slide, text, 0.8, 7.08, 11.7, 0.18, size=8, color=palette["ink"])
 
-    def _add_evidence_box(self, slide, references: list[dict[str, object]], palette: dict[str, tuple[int, int, int]]) -> None:
+    def _add_evidence_box(self, slide, references: list[dict[str, object]], palette: dict[str, tuple[int, int, int]], citation_markers: dict[str, int]) -> None:
         if not references:
             return
         box = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(0.8), Inches(5.65), Inches(11.7), Inches(1.15))
@@ -264,9 +270,23 @@ class ExportPowerPointUseCase:
             excerpt = " ".join(str(reference.get("evidence_excerpt") or "").split())
             paragraph = frame.paragraphs[0] if index == 0 else frame.add_paragraph()
             location = "slide" if reference.get("location_kind") == "slide" else "p."
-            paragraph.text = f"{title} — {reference.get('resource_id')}, {location} {reference.get('page')}: « {excerpt} »"
+            marker = citation_markers.get(str(reference.get("resource_id")), index + 1)
+            paragraph.text = f"[{marker}] {title} — {reference.get('resource_id')}, {location} {reference.get('page')}: « {excerpt} »"
             paragraph.font.size = Pt(7)
             paragraph.font.color.rgb = self._rgb(palette["ink"])
+
+    @staticmethod
+    def _citation_markers(presentation: Presentation) -> dict[str, int]:
+        cited_ids: list[str] = []
+        for source_slide in presentation.slides:
+            references = [*source_slide.reference_details, *source_slide.evidence_links]
+            if source_slide.speaker_note is not None:
+                references.extend(source_slide.speaker_note.evidence_links)
+            for reference in references:
+                resource_id = reference.get("resource_id") if isinstance(reference, dict) else reference.resource_id
+                if resource_id and resource_id not in cited_ids:
+                    cited_ids.append(resource_id)
+        return {resource_id: index + 1 for index, resource_id in enumerate(cited_ids)}
 
     def _add_authorship_box(self, slide, source_slide, palette: dict[str, tuple[int, int, int]]) -> None:
         box = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(0.8), Inches(5.82), Inches(11.7), Inches(0.72))
@@ -300,6 +320,7 @@ class ExportPowerPointUseCase:
         # long sentence. IDs remain available for audit, but do not compete
         # with the document title during normal reading.
         batches = [resources[index:index + 4] for index in range(0, len(resources), 4)]
+        citation_markers = self._citation_markers(presentation)
         origins = {
             "ai_generated": sum(item.content_origin == "ai_generated" for item in presentation.slides),
             "user_edited": sum(item.content_origin == "user_edited" for item in presentation.slides),
@@ -338,7 +359,7 @@ class ExportPowerPointUseCase:
                 item_top = top + index * spacing
                 self._textbox(
                     slide,
-                    f"{resource_number}. {resource.title or resource.filename}",
+                    f"{f'[{citation_markers[resource.id]}] ' if resource.id in citation_markers else ''}{resource_number}. {resource.title or resource.filename}",
                     0.95,
                     item_top,
                     11.1,

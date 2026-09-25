@@ -5,9 +5,11 @@ from app.domain.models.claim_evidence import EvidenceLink, MedicalClaim
 from app.domain.models.slide import SlideVisual
 from functools import lru_cache
 import hashlib
+import json
 import logging
 from io import BytesIO
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import httpx
 from fastapi import Request, Depends, FastAPI, Header, HTTPException
@@ -29,6 +31,7 @@ from app.application.services.prototype_policy import PrototypePolicy
 from app.ai.agents.healthcare_presentation_agent import HealthcarePresentationAgent
 from app.ai.workflows.graph_state import GraphState
 from app.application.use_cases.export_powerpoint import ExportPowerPointUseCase
+from app.application.services.presentation_rendering import LocalPresentationRenderer
 from app.application.use_cases.extract_pdf_resource import ExtractPdfResourceUseCase
 from app.application.use_cases.summarize_resources import SummarizeResourcesUseCase
 from app.application.use_cases.discuss_resources import DiscussResourcesUseCase
@@ -347,6 +350,7 @@ def _project_response(user_id: str, project_id: str, thread_id: str, state: Grap
         "project_id": project_id,
         "thread_id": thread_id,
         "project_revision": state.project_revision,
+        "approved_revision": _approved_revision(state.presentation) if state.presentation and state.presentation.state.presentation_validated else None,
         "presentation": presentation,
         "resource_library": [_resource_response(resource) for resource in state.resource_library],
         "owner_library": [_resource_response(resource) for resource in get_repository().list_library_resources(user_id)],
@@ -375,6 +379,14 @@ def _project_response(user_id: str, project_id: str, thread_id: str, state: Grap
             get_repository().active_job(user_id, project_id),
         ),
     }
+
+
+def _approved_revision(presentation) -> str:
+    """Stable content revision shared by preview and both export formats."""
+    snapshot = presentation.model_copy(deep=True)
+    snapshot.state.workflow_status = WorkflowStatus.READY_FOR_EXPORT
+    payload = json.dumps(snapshot.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _resource_response(resource) -> dict[str, object]:
@@ -1701,13 +1713,15 @@ def approve_final_presentation(user_id: str, project_id: str, authenticated_user
 
 
 @app.get("/presentations/{user_id}/{project_id}/export/pptx")
-def export_powerpoint(user_id: str, project_id: str, authenticated_user: str = Depends(_authenticated_user)):
+def export_powerpoint(user_id: str, project_id: str, approved_revision: str | None = None, authenticated_user: str = Depends(_authenticated_user)):
     """Download the generated presentation as a PowerPoint file."""
     _assert_owner(user_id, authenticated_user)
     stored = get_repository().load(user_id, project_id)
     if stored is None or stored[1].presentation is None:
         raise HTTPException(status_code=404, detail="Presentation not found.")
     thread_id, state = stored
+    if approved_revision and approved_revision != _approved_revision(state.presentation):
+        raise HTTPException(status_code=409, detail={"code": "APPROVED_REVISION_STALE", "message": "The approved presentation changed. Reload its preview before export.", "retryable": False})
     try:
         WorkflowPolicy.require_status(
             state.presentation.state.workflow_status,
@@ -1742,7 +1756,67 @@ def export_powerpoint(user_id: str, project_id: str, authenticated_user: str = D
         actor=authenticated_user,
         extra_audit={"delivery": "memory_download"},
     )
-    return Response(output.getvalue(), media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation", headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(state.presentation.title, safe='')}.pptx", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+    return Response(output.getvalue(), media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation", headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(state.presentation.title, safe='')}.pptx", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-HPA-Approved-Revision": _approved_revision(state.presentation)})
+
+
+@app.get("/presentations/{user_id}/{project_id}/export/pdf")
+def export_pdf(user_id: str, project_id: str, approved_revision: str | None = None, authenticated_user: str = Depends(_authenticated_user)):
+    """Render the approved editable deck to PDF from the same loaded snapshot."""
+    _assert_owner(user_id, authenticated_user)
+    stored = get_repository().load(user_id, project_id)
+    if stored is None or stored[1].presentation is None:
+        raise HTTPException(status_code=404, detail="Presentation not found.")
+    thread_id, state = stored
+    if approved_revision and approved_revision != _approved_revision(state.presentation):
+        raise HTTPException(status_code=409, detail={"code": "APPROVED_REVISION_STALE", "message": "The approved presentation changed. Reload its preview before export.", "retryable": False})
+    try:
+        WorkflowPolicy.require_status(
+            state.presentation.state.workflow_status,
+            (WorkflowStatus.READY_FOR_EXPORT, WorkflowStatus.EXPORTED),
+            "export the presentation",
+        )
+        WorkflowPolicy.require_export_eligible(state.presentation)
+        custom_template = (
+            get_repository().presentation_template_source(user_id, state.presentation.custom_template_id)
+            if state.presentation.custom_template_id
+            else None
+        )
+        with TemporaryDirectory(prefix="hpa-approved-export-") as temporary:
+            workspace = Path(temporary)
+            pptx_path = workspace / "approved-revision.pptx"
+            pdf_path = workspace / "approved-revision.pdf"
+            pptx_content = BytesIO()
+            ExportPowerPointUseCase().execute(
+                state.presentation,
+                pptx_content,
+                custom_template,
+                resolve_presentation_resources(state),
+            )
+            pptx_path.write_bytes(pptx_content.getvalue())
+            LocalPresentationRenderer().render_pdf(pptx_path, pdf_path)
+            content = pdf_path.read_bytes()
+    except (DomainError, ValueError) as exc:
+        raise _workflow_conflict(exc) from exc
+    state.presentation.state.workflow_status = WorkflowStatus.EXPORTED
+    _save_project(
+        user_id,
+        project_id,
+        thread_id,
+        state,
+        event_type="PRESENTATION_EXPORTED",
+        actor=authenticated_user,
+        extra_audit={"delivery": "memory_download", "format": "pdf"},
+    )
+    return Response(
+        content,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(state.presentation.title, safe='')}.pdf",
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "X-HPA-Approved-Revision": _approved_revision(state.presentation),
+        },
+    )
 
 
 from app.interfaces.api.routers import auth, jobs, platform, projects  # noqa: E402
