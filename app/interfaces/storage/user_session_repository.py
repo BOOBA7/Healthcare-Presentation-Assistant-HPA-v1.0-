@@ -288,7 +288,11 @@ class UserSessionRepository(SourceLifecycleRepository):
     ) -> None:
         """Persist workflow state and its audit event in one transaction."""
         with self._connect() as connection:
-            self._save_project_row(connection, user_id, project_id, thread_id, state, project_name)
+            self._save_project_row(
+                connection, user_id, project_id, thread_id, state, project_name,
+                slide_review_action=event_type in {"SLIDE_APPROVED", "SLIDE_REJECTED", "SLIDES_APPROVED"},
+                note_review_action=event_type in {"SPEAKER_NOTE_APPROVED", "SPEAKER_NOTE_REJECTED"},
+            )
             self._insert_event(connection, user_id, project_id, event_type, actor, payload)
         self._cleanup_if_pending()
 
@@ -799,7 +803,8 @@ class UserSessionRepository(SourceLifecycleRepository):
         state: GraphState,
         project_name: str | None,
         *, style_action: bool = False, claim_action: bool = False, coverage_action: bool = False,
-        transfer_action: bool = False,
+        transfer_action: bool = False, slide_review_action: bool = False,
+        note_review_action: bool = False,
     ) -> None:
         if not connection.in_transaction:
             connection.execute("BEGIN IMMEDIATE")
@@ -824,6 +829,11 @@ class UserSessionRepository(SourceLifecycleRepository):
         ensure_resource_library(state)
         if state.presentation:
             for slide in state.presentation.slides:
+                if slide.is_validated and slide.content_classification == "medical" and slide.source_missing:
+                    raise WorkflowError(
+                        "UNSOURCED_MEDICAL_APPROVAL_FORBIDDEN",
+                        "A user-provided medical draft with a missing source cannot receive scientific approval.",
+                    )
                 claims = {(claim.id, claim.revision) for claim in slide.claims}
                 for link in slide.evidence_links:
                     if ((link.claim_id, link.claim_revision) not in claims
@@ -845,11 +855,6 @@ class UserSessionRepository(SourceLifecycleRepository):
                             )
                         if link.provenance_verified or link.semantic_review != "pending":
                             ClaimEvidenceService.verify_provenance(link, state.resource_library)
-                    if note.is_approved or note.approved_by:
-                        raise WorkflowError(
-                            "EXPLICIT_SPEAKER_NOTE_REVIEW_REQUIRED",
-                            "Use the authenticated speaker-note review action.",
-                        )
         existing = connection.execute(
             "SELECT revision FROM project_sessions WHERE user_id = ? AND project_id = ?",
             (user_id, project_id),
@@ -863,6 +868,20 @@ class UserSessionRepository(SourceLifecycleRepository):
         previous_row = connection.execute("SELECT state_json FROM project_sessions WHERE user_id = ? AND project_id = ?", (user_id, project_id)).fetchone()
         if previous_row:
             previous = self._deserialize_state(json.loads(previous_row[0]))
+            if state.presentation and previous.presentation:
+                old_approved = {slide.slide_number for slide in previous.presentation.slides if slide.is_validated}
+                old_note_approvals = {
+                    (slide.speaker_note.text, slide.speaker_note.approved_by)
+                    for slide in previous.presentation.slides
+                    if slide.speaker_note and slide.speaker_note.is_approved
+                }
+                for slide in state.presentation.slides:
+                    if slide.is_validated and slide.slide_number not in old_approved and not slide_review_action:
+                        raise WorkflowError("EXPLICIT_SLIDE_REVIEW_REQUIRED", "Use the authenticated slide review action.")
+                    if (slide.speaker_note and slide.speaker_note.is_approved
+                            and (slide.speaker_note.text, slide.speaker_note.approved_by) not in old_note_approvals
+                            and not note_review_action):
+                        raise WorkflowError("EXPLICIT_SPEAKER_NOTE_REVIEW_REQUIRED", "Use the authenticated speaker-note review action.")
             if not claim_action and state.presentation and previous.presentation:
                 old_approved = {
                     (link.id, link.revision, link.claim_id, link.claim_revision)

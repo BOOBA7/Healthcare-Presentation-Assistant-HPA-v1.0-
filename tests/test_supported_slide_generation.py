@@ -14,6 +14,7 @@ from app.domain.enums.presentation_type import PresentationType
 from app.domain.enums.resource_type import ResourceType
 from app.domain.enums.workflow_status import WorkflowStatus
 from app.domain.exceptions.validation_error import ValidationError
+from app.domain.exceptions.workflow_error import WorkflowError
 from app.domain.models.blueprint import Blueprint
 from app.domain.models.professional_scope_declaration import ProfessionalScopeDeclaration
 from app.domain.models.slide_outline import SlideOutline
@@ -308,3 +309,107 @@ def test_invalid_generated_evidence_blocks_only_its_slide(monkeypatch):
     assert [slide.slide_number for slide in result.slides] == [1]
     assert [blocker.slide_number for blocker in result.state.slide_generation_blockers] == [2]
     assert result.state.workflow_status == WorkflowStatus.AWAITING_SLIDE_RESOLUTION
+
+
+def test_slide_edit_review_controls_are_deterministic_audited_and_restart_safe(tmp_path, monkeypatch):
+    repository = UserSessionRepository(tmp_path / "slide-review.sqlite3")
+    repository.register_user("owner", "owner-safe-password")
+    project = presentation(outline_count=2)
+    project.resources = [resource()]
+    project.slides = [SlideMapper().to_domain(schema(1)), SlideMapper().to_domain(schema(2))]
+    for slide in project.slides:
+        EvidenceProvenanceValidator().validate_slide(slide, project.resources, require_claims=True)
+    project.state.workflow_status = WorkflowStatus.AWAITING_SLIDE_APPROVAL
+    state = GraphState(
+        prototype_declaration="synthetic",
+        presentation=project,
+        resource_library=project.resources,
+    )
+    repository.save("owner", "project", "thread", state)
+    monkeypatch.setattr(api, "get_repository", lambda: repository)
+    client = TestClient(api.app)
+    headers = {"Authorization": f"Bearer {repository.create_auth_token('owner')}"}
+
+    def edit_payload(classification, title="Human draft"):
+        return {
+            "title": title,
+            "objective": "Synthetic objective",
+            "key_messages": ["User-provided text"],
+            "content": "User-provided text",
+            "speaker_notes": "Explain the supplied synthetic response.",
+            "content_origin": "user_authored",
+            "content_classification": classification,
+        }
+
+    edited = client.put(
+        "/projects/owner/project/slides/0", headers=headers, json=edit_payload("medical")
+    )
+    assert edited.status_code == 200
+    slide = edited.json()["presentation"]["slides"][0]
+    assert slide["authorship_warning"] == "user-provided, source missing"
+    assert slide["source_missing"] is True
+    thread_id, bypass_state = repository.load("owner", "project")
+    bypass_state.presentation.slides[0].is_validated = True
+    with pytest.raises(WorkflowError, match="missing source"):
+        repository.save_with_event(
+            "owner", "project", thread_id, bypass_state,
+            "UNRELATED_STATE_SAVE", "owner",
+        )
+
+    comment = client.put(
+        "/projects/owner/project/slides/1/comments",
+        headers=headers,
+        json={"comments": "Review this slide first."},
+    )
+    assert comment.status_code == 200
+    refused = client.post(
+        "/projects/owner/project/slides/0/approve", headers=headers, json={"comments": ""}
+    )
+    assert refused.status_code == 409
+    assert refused.json()["detail"]["code"] == "UNSOURCED_MEDICAL_APPROVAL_FORBIDDEN"
+
+    allowed = client.put(
+        "/projects/owner/project/slides/0", headers=headers,
+        json=edit_payload("nonmedical", "Thank you"),
+    )
+    assert allowed.status_code == 200
+    assert allowed.json()["presentation"]["slides"][0]["authorship_warning"] is None
+    approved = client.post(
+        "/projects/owner/project/slides/0/approve", headers=headers, json={"comments": "Approved"}
+    )
+    assert approved.status_code == 200
+    assert approved.json()["presentation"]["slides"][0]["is_validated"] is True
+
+    note = client.post(
+        "/projects/owner/project/slides/1/speaker-note/review",
+        headers=headers,
+        json={"approved": True},
+    )
+    assert note.status_code == 200
+    assert note.json()["presentation"]["slides"][1]["speaker_note"]["is_approved"] is True
+    assert note.json()["presentation"]["slides"][1]["is_validated"] is False
+
+    reformulated = client.put(
+        "/projects/owner/project/slides/1/reformulation", headers=headers,
+        json=edit_payload("medical", "Accepted reformulation"),
+    )
+    assert reformulated.status_code == 200
+    unsupported_note = client.post(
+        "/projects/owner/project/slides/1/speaker-note/review",
+        headers=headers,
+        json={"approved": True},
+    )
+    assert unsupported_note.status_code == 409
+    assert unsupported_note.json()["detail"]["code"] == "SPEAKER_NOTE_EVIDENCE_REQUIRED"
+    deleted = client.delete("/projects/owner/project/slides/0", headers=headers)
+    assert deleted.status_code == 200
+    assert len(deleted.json()["presentation"]["slides"]) == 1
+
+    _, restored = UserSessionRepository(repository.database_path).load("owner", "project")
+    assert restored.presentation.slides[0].title == "Accepted reformulation"
+    assert restored.presentation.slides[0].reviewer_comments == "Review this slide first."
+    events = repository.list_events("owner", "project")
+    assert {event["event_type"] for event in events} >= {
+        "SLIDE_EDITED_BY_USER", "SLIDE_COMMENT_UPDATED", "SLIDE_APPROVED",
+        "SPEAKER_NOTE_APPROVED", "SLIDE_REFORMULATION_ACCEPTED", "SLIDE_DELETED",
+    }

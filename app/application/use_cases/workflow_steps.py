@@ -24,6 +24,7 @@ from app.application.services.generation_metadata import append_generation_recor
 from app.domain.models.professional_scope_declaration import ProfessionalScopeDeclaration
 from app.ai.prompt_builders.evidence_context_builder import EvidenceContextBuilder
 from app.domain.models.slide import Slide
+from app.domain.value_objects.speaker_note import SpeakerNote
 from app.application.services.blueprint_structure import BlueprintStructurePolicy
 
 
@@ -281,6 +282,11 @@ class ReviewSlideUseCase:
         if not 0 <= index < len(state.presentation.slides):
             raise ValueError("Slide index is invalid.")
         slide = state.presentation.slides[index]
+        if slide.content_classification == "medical" and slide.source_missing:
+            raise WorkflowError(
+                "UNSOURCED_MEDICAL_APPROVAL_FORBIDDEN",
+                "A user-provided medical draft with a missing source cannot receive scientific approval.",
+            )
         slide.is_validated = True
         slide.reviewer_comments = comments.strip() or None if comments else None
         return state
@@ -409,6 +415,9 @@ class AuthorSlideFromBlueprintUseCase:
             key_messages=[outline.key_message],
             content=outline.key_message,
             content_origin="user_authored",
+            content_classification="medical",
+            source_missing=True,
+            authorship_warning="user-provided, source missing",
         )
         state.presentation.slides = sorted(
             [
@@ -459,6 +468,7 @@ class EditSlideUseCase:
         content: str,
         speaker_notes: str | None,
         content_origin: str,
+        content_classification: str = "medical",
     ) -> GraphState:
         if state.patient_case_mode:
             PatientCasePrivacyGuard().ensure_texts_safe(
@@ -478,6 +488,8 @@ class EditSlideUseCase:
             raise ValueError("A slide needs a title and at least one key message or content.")
         if content_origin not in self._origins:
             raise ValueError("Choose whether the slide was edited from AI content or written by the user.")
+        if content_classification not in {"medical", "nonmedical"}:
+            raise ValueError("Classify the edited slide as medical or nonmedical.")
 
         slide = state.presentation.slides[index]
         if slide.original_ai_snapshot is None:
@@ -494,8 +506,16 @@ class EditSlideUseCase:
         slide.objective = objective.strip() if objective and objective.strip() else None
         slide.key_messages = normalized_messages
         slide.content = content.strip()
-        slide.speaker_notes = speaker_notes.strip() if speaker_notes and speaker_notes.strip() else None
+        normalized_notes = speaker_notes.strip() if speaker_notes and speaker_notes.strip() else None
+        if normalized_notes != slide.speaker_notes:
+            slide.speaker_note = SpeakerNote(text=normalized_notes) if normalized_notes else None
+        slide.speaker_notes = normalized_notes
         slide.content_origin = content_origin
+        slide.content_classification = content_classification
+        slide.source_missing = content_classification == "medical"
+        slide.authorship_warning = (
+            "user-provided, source missing" if slide.source_missing else None
+        )
         slide.is_validated = False
         # Citations can still be displayed as provenance, but the system must
         # not imply that they prove newly human-written statements.
@@ -513,6 +533,52 @@ class EditSlideUseCase:
         state.presentation.state.slides_validated = False
         state.presentation.state.presentation_validated = False
         state.presentation.state.workflow_status = WorkflowStatus.AWAITING_SLIDE_APPROVAL
+        return state
+
+
+class CommentSlideUseCase:
+    def execute(self, state: GraphState, index: int, comments: str) -> GraphState:
+        if state.presentation is None or not 0 <= index < len(state.presentation.slides):
+            raise ValueError("Slide index is invalid.")
+        state.presentation.slides[index].reviewer_comments = comments.strip() or None
+        return state
+
+
+class DeleteSlideUseCase:
+    def execute(self, state: GraphState, index: int) -> GraphState:
+        if state.presentation is None or not 0 <= index < len(state.presentation.slides):
+            raise ValueError("Slide index is invalid.")
+        del state.presentation.slides[index]
+        for number, slide in enumerate(state.presentation.slides, 1):
+            slide.slide_number = number
+        state.presentation.state.slides_validated = False
+        state.presentation.state.presentation_validated = False
+        state.presentation.state.workflow_status = WorkflowStatus.AWAITING_SLIDE_APPROVAL
+        return state
+
+
+class ReviewSpeakerNoteUseCase:
+    def execute(self, state: GraphState, index: int, *, approved: bool) -> GraphState:
+        if state.presentation is None or not 0 <= index < len(state.presentation.slides):
+            raise ValueError("Slide index is invalid.")
+        note = state.presentation.slides[index].speaker_note
+        if note is None:
+            raise ValueError("This slide has no speaker note to review.")
+        linked_claims = {
+            (link.claim_id, link.claim_revision)
+            for link in note.evidence_links
+            if link.provenance_verified
+        }
+        if approved and (
+            not note.claims
+            or any((claim.id, claim.revision) not in linked_claims for claim in note.claims)
+        ):
+            raise WorkflowError(
+                "SPEAKER_NOTE_EVIDENCE_REQUIRED",
+                "Speaker notes require traceable Project evidence before approval.",
+            )
+        note.is_approved = approved
+        note.approved_by = "authenticated-user" if approved else None
         return state
 
 

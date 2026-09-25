@@ -65,6 +65,9 @@ from app.application.services.patient_case_privacy import PatientCasePrivacyGuar
 from app.application.use_cases.workflow_steps import (
     EditBlueprintItemUseCase,
     EditSlideUseCase,
+    CommentSlideUseCase,
+    DeleteSlideUseCase,
+    ReviewSpeakerNoteUseCase,
     AuthorSlideFromBlueprintUseCase,
     RejectBlueprintItemUseCase,
     RejectSlideUseCase,
@@ -181,6 +184,15 @@ class SlideEditRequest(BaseModel):
     content: str = Field(default="", max_length=20_000)
     speaker_notes: str = Field(default="", max_length=20_000)
     content_origin: str = Field(pattern=r"^(user_edited|user_authored)$")
+    content_classification: str = Field(pattern=r"^(medical|nonmedical)$")
+
+
+class SlideReformulationRequest(SlideEditRequest):
+    """Human-accepted reformulation; no provider call or implied evidence."""
+
+
+class SpeakerNoteReviewRequest(BaseModel):
+    approved: bool
 
 
 class ClaimEvidenceReviewRequest(BaseModel):
@@ -1522,9 +1534,9 @@ def approve_slide(user_id: str, project_id: str, index: int, request: ReviewRequ
     thread_id, state = _get_project(user_id, project_id)
     try:
         state = ReviewSlideUseCase().execute(state, index, request.comments)
-    except ValueError as exc:
+    except (DomainError, ValueError) as exc:
         raise _workflow_conflict(exc) from exc
-    return _save_project(user_id, project_id, thread_id, state, event_type="SLIDE_APPROVED", actor="user", extra_audit={"slide_index": index})
+    return _save_project(user_id, project_id, thread_id, state, event_type="SLIDE_APPROVED", actor=authenticated_user, extra_audit={"slide_index": index, "approval": True})
 
 
 @app.put("/projects/{user_id}/{project_id}/slides/{index}/claim-evidence")
@@ -1554,7 +1566,7 @@ def reject_slide(user_id: str, project_id: str, index: int, request: ReviewReque
         state = RejectSlideUseCase().execute(state, index, request.comments)
     except ValueError as exc:
         raise _workflow_conflict(exc) from exc
-    return _save_project(user_id, project_id, thread_id, state, event_type="SLIDE_REJECTED", actor="user", extra_audit={"slide_index": index})
+    return _save_project(user_id, project_id, thread_id, state, event_type="SLIDE_REJECTED", actor=authenticated_user, extra_audit={"slide_index": index, "approval": False})
 
 
 @app.put("/projects/{user_id}/{project_id}/slides/{index}")
@@ -1579,9 +1591,62 @@ def edit_slide(
         thread_id,
         state,
         event_type="SLIDE_EDITED_BY_USER",
-        actor="user",
-        extra_audit={"slide_index": index, "content_origin": request.content_origin},
+        actor=authenticated_user,
+        extra_audit={"slide_index": index, "content_origin": request.content_origin, "content_classification": request.content_classification},
     )
+
+
+@app.put("/projects/{user_id}/{project_id}/slides/{index}/reformulation")
+def save_slide_reformulation(
+    user_id: str, project_id: str, index: int, request: SlideReformulationRequest,
+    authenticated_user: str = Depends(_authenticated_user),
+):
+    """Persist a reformulation supplied or accepted by the human reviewer."""
+    _assert_owner(user_id, authenticated_user)
+    _require_prototype_input(request)
+    thread_id, state = _get_project(user_id, project_id)
+    try:
+        state = EditSlideUseCase().execute(state, index, **request.model_dump())
+    except (DomainError, ValueError) as exc:
+        raise _workflow_conflict(exc) from exc
+    return _save_project(user_id, project_id, thread_id, state, event_type="SLIDE_REFORMULATION_ACCEPTED", actor=authenticated_user, extra_audit={"slide_index": index, "content_classification": request.content_classification})
+
+
+@app.put("/projects/{user_id}/{project_id}/slides/{index}/comments")
+def comment_slide(user_id: str, project_id: str, index: int, request: ReviewRequest, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
+    _require_prototype_input(request)
+    thread_id, state = _get_project(user_id, project_id)
+    try:
+        state = CommentSlideUseCase().execute(state, index, request.comments)
+    except (DomainError, ValueError) as exc:
+        raise _workflow_conflict(exc) from exc
+    return _save_project(user_id, project_id, thread_id, state, event_type="SLIDE_COMMENT_UPDATED", actor=authenticated_user, extra_audit={"slide_index": index, "has_comment": bool(request.comments.strip())})
+
+
+@app.delete("/projects/{user_id}/{project_id}/slides/{index}")
+def delete_slide(user_id: str, project_id: str, index: int, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
+    thread_id, state = _get_project(user_id, project_id)
+    try:
+        state = DeleteSlideUseCase().execute(state, index)
+    except ValueError as exc:
+        raise _workflow_conflict(exc) from exc
+    return _save_project(user_id, project_id, thread_id, state, event_type="SLIDE_DELETED", actor=authenticated_user, extra_audit={"slide_index": index})
+
+
+@app.post("/projects/{user_id}/{project_id}/slides/{index}/speaker-note/review")
+def review_speaker_note(user_id: str, project_id: str, index: int, request: SpeakerNoteReviewRequest, authenticated_user: str = Depends(_authenticated_user)):
+    _assert_owner(user_id, authenticated_user)
+    thread_id, state = _get_project(user_id, project_id)
+    try:
+        state = ReviewSpeakerNoteUseCase().execute(state, index, approved=request.approved)
+        if state.presentation.slides[index].speaker_note and request.approved:
+            state.presentation.slides[index].speaker_note.approved_by = authenticated_user
+    except (DomainError, ValueError) as exc:
+        raise _workflow_conflict(exc) from exc
+    event = "SPEAKER_NOTE_APPROVED" if request.approved else "SPEAKER_NOTE_REJECTED"
+    return _save_project(user_id, project_id, thread_id, state, event_type=event, actor=authenticated_user, extra_audit={"slide_index": index, "approval": request.approved})
 
 
 @app.post("/projects/{user_id}/{project_id}/slides/approve")
@@ -1592,7 +1657,7 @@ def approve_slides(user_id: str, project_id: str, authenticated_user: str = Depe
         state = validate_slides.func(state, approved=True)
     except ValueError as exc:
         raise _workflow_conflict(exc) from exc
-    return _save_project(user_id, project_id, thread_id, state, event_type="SLIDES_APPROVED", actor="user")
+    return _save_project(user_id, project_id, thread_id, state, event_type="SLIDES_APPROVED", actor=authenticated_user)
 
 
 @app.post("/projects/{user_id}/{project_id}/presentation/approve")

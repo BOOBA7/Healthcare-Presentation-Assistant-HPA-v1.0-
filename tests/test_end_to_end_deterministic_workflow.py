@@ -424,6 +424,7 @@ def test_end_to_end_human_controlled_workflow_without_live_model(tmp_path, monke
             "content": "This conclusion was written by the HCP.",
             "speaker_notes": "Close and invite discussion.",
             "content_origin": "user_authored",
+            "content_classification": "nonmedical",
         },
     )
     assert edited.status_code == 200
