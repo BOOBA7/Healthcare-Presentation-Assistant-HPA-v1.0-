@@ -42,8 +42,9 @@ Present a reviewable diff and evidence against every criterion. Record product-o
 
 ## Session handoff
 
-- Current slice: 08.3 completed locally; phase review pending. No commit.
+- Current slice: phase 08 completed locally and product-owner approved on 2026-09-25. No commit recorded by the agent.
 - Result/files: slide and speaker-note approvals now persist authenticated actor/time. Content, claim/data, source-set and visual/style changes invalidate affected slide/final approvals at use-case and SQLite persistence boundaries. One deterministic export policy is enforced during slide-set approval, final approval, API download and PowerPoint generation for AI, edited and authored content; medical human content needs approved claim evidence, every slide needs audited approval, and every non-empty note needs separate audited approval.
 - Checks/results: focused provider-free file 7 passed; affected regression pass initially 58 passed/5 failed, then all five corrected cases passed; closest invalidation test passed again. Ruff on all modified Python files, `compileall -q app`, and `git diff --check` passed. Node/JavaScript check was unavailable because `node` is not installed.
-- Decisions/reservations: legacy AI slides retain their existing exact-provenance export path; this does not let edited/authored medical content inherit AI evidence. No provider, browser or external source was used. Product-owner gate approval remains pending.
-- Next action: review and explicitly approve phase 08; do not start phase 09 automatically.
+- Decisions/reservations: legacy AI slides retain their existing exact-provenance export path; this does not let edited/authored medical content inherit AI evidence. No provider, browser or external source was used.
+- Next action: phase 09.1 may start only on explicit authorisation.
+- Product-owner gate approval: approved 2026-09-25 for phase 08 as implemented and evidenced in this handoff.
